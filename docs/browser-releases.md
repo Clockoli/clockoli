@@ -12,7 +12,6 @@ Checked against Mozilla's Browser Compatibility Data and vendor documentation on
 | Static content-script `world: MAIN` | 128 | 18 | [content script compatibility](https://github.com/mdn/browser-compat-data/blob/main/webextensions/manifest/content_scripts.json) |
 | `optional_host_permissions` | 128 | 15.5 | [optional host compatibility](https://github.com/mdn/browser-compat-data/blob/main/webextensions/manifest/optional_host_permissions.json) |
 | `alarms` | 45 | 14 | [alarms compatibility](https://github.com/mdn/browser-compat-data/blob/main/webextensions/api/alarms.json) |
-| `scripting` / `executeScript` | 102 | 15.4 | [scripting compatibility](https://github.com/mdn/browser-compat-data/blob/main/webextensions/api/scripting.json) |
 | `activeTab` | 48 | 14 | [permission compatibility](https://github.com/mdn/browser-compat-data/blob/main/webextensions/manifest/permissions.json) |
 | Built-in data consent | Desktop 140; Android 142 | Not applicable | [Mozilla consent guidance](https://extensionworkshop.com/documentation/develop/firefox-builtin-data-consent/) |
 

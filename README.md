@@ -131,7 +131,7 @@ Clockoli sends data only to GitHub, plus currency codes and dates to the [Frankf
 | `github.com/login` | GitHub device-flow sign-in. |
 | `github.com/*` (content script) | Show the stopwatch button on GitHub pages and each participant's tracked time on issues and pull requests. |
 | `api.frankfurter.dev` | Historical exchange rates for mixed-currency reports. |
-| `activeTab`, `scripting` | Read the current tab's URL and title when you click the toolbar button. |
+| `activeTab` | Read the current tab's URL and title when you click the toolbar button. |
 | `tabs` | Focus an open Activity tab instead of opening another, and notice an open team invitation page. |
 | `alarms` | Retry queued writes to GitHub once a minute. |
 | `favicon` (Chrome only) | Show each task's site icon. |
