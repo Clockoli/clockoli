@@ -29,7 +29,7 @@ test('public CI runs private regressions for trusted main and same-repository PR
   assert.match(privateJob, /needs: test/);
   const condition = privateJob.match(/    if: >-\n([\s\S]*?)\n    runs-on:/)?.[1].trim().replace(/\s+/g, ' ');
   assert.equal(condition,
-    "github.repository == 'Clockoli/wip' && " +
+    "github.repository == 'Clockoli/clockoli' && " +
     "((github.event_name == 'push' && github.ref == 'refs/heads/main') || " +
     "(github.event_name == 'pull_request' && github.base_ref == 'main' && " +
     "github.event.pull_request.head.repo.full_name == github.repository && " +

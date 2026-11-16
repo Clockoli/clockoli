@@ -1,317 +1,69 @@
 # Changelog
 
-## [0.3.0] - 2026-10-13
-
-### 📋 Release Summary
-
-Added Firefox and Safari releases, Activity timeline and calendar editing, multi-repository and arbitrary-URL tracking, GitHub teammate invitations, Clockify migration, task merging, invoicing and reporting workflows, and onboarding and storage improvements. Fixed timeline styling and editing, timer behavior, GitHub and Clockify integration, repository setup and migration, settings and backups, and invoice and report rendering.
-
-### ✨ New Features & Enhancements
-
-- **release**: support Firefox and Safari releases `dce04dfc`
-- add Activity timeline and calendar with older-entry editing `63b21ff3`
-- complete Clockify multi-user migration and optional invitations `26155373`
-- add verified GitHub teammate invitations `5a1a8a0b`
-- explicitly connect repositories and support unresolved work `26545664`
-- Improve docs ref: #6 `26405986`
-- **activity**: compact tracked-time rows `95d04b40`
-- **settings**: scope task merges by repository `777cf060`
-- **settings**: batch merge tracked tasks `d0905cbe`
-- **tasks**: merge tracked task identities `2302c22b`
-- **navigation**: link Clockoli logo to website `54fd1b4d`
-- **invoices**: improve task details and PDF export `e81c00ba`
-- extend multi-repository tracking workflow `f7c7f2c6`
-- **reports**: support UTC date range reporting `29b8ac18`
-- **invoicing**: modernize invoice workflows `a706fff1`
-- **invoicing**: link clients to projects `c1c8649a`
-- **invoicing**: add local invoice workflows `53f864e6`
-- replace timeline editor and harden tracking UI `3c8effb5`
-- **ui**: improve tracking and timeline UX `abbe846d`
-- move timeline tracking into toolbar `9475ef0b`
-- add Clockify migration `f7ee8cde`
-- add durable timeline entry deletion `b30b4b29`
-- add durable full-width timeline tracking `456190d7`
-- animate Clockoli while tracking current task `35a4c4bb`
-- capture GitHub work item snapshots `4214d296`
-- adopt canonical work record format `20d43eca`
-- add currency conversion and task switching `6cea590f`
-- improve repository setup and PDF timesheets `e74294f5`
-- improve Clockoli settings and onboarding `5e045e64`
-- use combined Clockoli wordmark `ed9781bb`
-- streamline Clockoli tracking UI `55c547e1`
-- rebrand RepoClock as Clockoli `7eb23c88`
-- add page tabs and currency-aware billing `bcebc6ff`
-- add unified time workflows `d8bcc7ee`
-- refine tracking layout `071c2740`
-- track arbitrary URL tasks `667abce8`
-- add personal storage branches and billing reports `bb1b2630`
-- streamline data repository setup `1e10dd8e`
-- streamline GitHub App onboarding `12dba53b`
-- add secure onboarding and inline time editing `0a928ff6`
-
-### 🔧 Improvements & Optimizations
-
-- **ui**: customize dropdown arrows and toolbar backgrounds `edba9ced`
-- **task-timeline**: stabilize style assertions against cell replacement `f29142d6`
-- **e2e**: use locator assertions for calendar styles `7d44b074`
-- restrict timeline switches and queued edits `5bba03fc`
-- **task-timeline**: stabilize calendar resize visibility test `7f9ad7dc`
-- **release**: 0.2.0 `18345063`
-- **release**: automate tagged release packaging `af77461d`
-- **styles**: align GitHub and options UI `39dbb4d1`
-- **ui**: refine forms and invoice previews `f8bf13e8`
-- **timeline**: refine editor and visual states `391fe85d`
-- integrate timeline into Clockoli `14900593`
-
-### 🐛 Bug Fixes & Stability
-
-- **task-timeline**: fix major grid color fallback `dc0e0cf8`
-- **task-timeline**: fix theme styling across timeline surfaces `f7d91ed8`
-- **release**: harden browser release validation `3cfbc620`
-- prevent completed edits overlapping active timer `67db4abe`
-- **content**: recognize extension pages across URL schemes `2f29f1c9`
-- make GitHub device code handoff visible and resilient `196ab569`
-- track GitHub Projects issues by canonical issue URL `a6ced301`
-- allow merging imported task identities into URL tasks `7934f488`
-- align Activity Calendar with selected periods `1d588889`
-- allow tracking imported Clockify tasks `5c57312c`
-- dismiss tracking panel when its tab loses focus `3af26038`
-- dismiss tracking panel when its tab loses focus `9b156cdf`
-- **content-runtime**: fix timezone-dependent timeline test `f4cda909`
-- bind Clockify report pages to capture requests `39038a6d`
-- show empty Top tasks for no selected users `7e5d6e5c`
-- Imported records mismatch `9015ae67`
-- make Clockify migration jobs durable and retryable `a796a00f`
-- hide repository status during discovery `735a94e4`
-- tolerate sync alarm rejection during worker replacement `b7603d2a`
-- stabilize repository setup and status feedback `f80b1205`
-- preserve timeline task focus across renders `d02acfdf`
-- GH connection issues ref: #15 `1c88eaf2`
-- fix tests `a7007ec1`
-- keep timeline grips and saving indicator clear of content `70ead912`
-- show timeline resize grips only on interaction `a5f80856`
-- keep timeline entries editable while saves are queued `f5e9f743`
-- open navigation tabs without waiting for refresh `6ed1174f`
-- preserve unresolved work across activity and repository flows `1e7e2168`
-- stabilize Clockify migration controls `d84b8a45`
-- remove Clockify URL inference `f9840eda`
-- stabilize Clockify page migration `5c2b974f`
-- **activity**: unify record editing `0b1e404e`
-- **activity**: remove time repository labels `30d42f19`
-- **tasks**: separate titled task URLs `4dcd2e95`
-- **settings**: partially restore backups `6adaf1ae`
-- **invoices**: increase PDF render resolution `cfad110c`
-- **invoices**: preserve seller spacing in PDF export `14f4ea1c`
-- **settings**: retain selected default destination `70de6d4a`
-- **settings**: reject stale preference saves `b3c72d03`
-- **settings**: preserve project client links in backups `7c56ded8`
-- **settings**: import routed v6 invoicing backups `5829c83e`
-- **invoices**: keep seller spacing on rendered words `a8df3bc8`
-- **invoices**: preserve seller gap in canvas export `fb953e5e`
-- **invoices**: render explicit seller name gap `27ac1bbc`
-- **invoices**: preserve seller name spacing in PDFs `05ef8b49`
-- **invoices**: render PDFs from HTML preview `2d66f337`
-- **invoices**: emit real PDF stream newlines `eea1417a`
-- **invoices**: render readable multipage PDFs `0c3f2e95`
-- **invoices**: use seller name for PDF filename `a43e5d1e`
-- **invoices**: write valid PDFs without closing preview `34a7a6c7`
-- **invoices**: download PDFs and keep numeric columns intact `d835fdf7`
-- **settings**: expand repositories individually `69633250`
-- **settings**: hide empty default repository controls `ceaeb46b`
-- **settings**: collapse time repositories by default `b699acdd`
-- **ui**: recover UI/UX interface fixes during merge in past (#8) `49581001`
-- **reports**: show resolved dates for period presets `ce84e98a`
-- **reports**: refine report layouts `12ef91cf`
-- **settings**: improve form handling `bac0a42c`
-- **billing**: preserve invoice counters on restore `e61e8978`
-- **timeline**: align full-width panel gutters `b65e446f`
-- keep short timeline blocks in their hour `47a314f6`
-- allow cross-page timeline edits `5e5c3118`
-- label single empty timeline hours plainly `702ec7d5`
-- keep timeline edits within item rows `9643d112`
-- augment only native GitHub participants `3b73ac5d`
-- sharpen timeline icon on high-DPI displays `f44555de`
-- preserve GitHub timeline badge geometry `fe8ed48b`
-- support GitHub React timeline events `df98167c`
-- render truncated Clockoli timeline entries `a821dda4`
-- harden timer reconciliation and task views `eb60c847`
-- make background timer sync automatic `331d6eee`
-- make timer actions respond immediately `70cbce45`
-- streamline tracking and reporting workflows `cb31f29e`
-- complete Clockoli namespace migration `30e57150`
-- migrate storage markers to Clockoli `8713e426`
-- migrate to Clockoli GitHub App `faed5f53`
-- use Clockoli data repository template `151d6a15`
-- improve Clockoli icon visibility `4235f0fa`
-- restore direct recent time editing `84d04438`
-- simplify recent time controls `1e7b7603`
-- preserve linked time boundaries `35391be1`
-- make tracking panel interactions immediate `ed25af47`
-- clarify device authorization actions `8adc92b8`
-- advance after repository access `31351a57`
-- clarify repository access monitoring `21087368`
-- make repository setup self-healing `84f16bac`
-- close repository setup races `466e7661`
-- simplify repository setup `5aee75b4`
-- harden stop conflicts and enable GitHub App `a233a61b`
-
-### 📚 Documentation & Examples
-
-- **privacy**: document invoice settings storage `a160b352`
-- align setup and migration guides with current flows `bda61872`
-- **design**: capture current Activity view `9b3c4833`
-- add contributor and agent guides `a562e6a4`
-- add RepoClock user guide `1e2c7462`
-
-### 🔄 Other Changes
-
-31 maintenance, dependency, and tooling updates not listed individually.
-
 All notable changes to this project will be documented in this file.
 
-## [0.2.0] - 2026-10-07
+## [1.0.0] - 2026-11-16
 
 ### 📋 Release Summary
 
-Clockoli now supports multi-user and multi-repository tracking, GitHub teammate invitations, arbitrary URL tasks, work-item snapshots, task merging, and redesigned timeline and tracking workflows. It adds Clockify migration, UTC reporting, currency conversion, local invoicing, client-linked projects, and improved PDF exports. Fixes improve GitHub connections, repository setup, timer synchronization, timeline editing, backup restoration, and invoice PDF rendering.
+First public release of Clockoli, a browser extension that tracks time on any task URL and writes the records to a private GitHub repository you control. There is no Clockoli account or server: the extension talks directly to GitHub. Each completed entry is one line of JSON in a monthly file, so `git clone` backs up all your time and `git log` shows every synchronized change. This release covers tracking, editing, reports, invoices, shared team repositories and Clockify import. Chrome and other Chromium browsers (102+) are supported; Firefox (140+) and Safari (18+, macOS) builds are previews.
 
-### ✨ New Features & Enhancements
+### ⏱️ Tracking
 
-- complete Clockify multi-user migration and optional invitations `26155373`
-- add verified GitHub teammate invitations `5a1a8a0b`
-- explicitly connect repositories and support unresolved work `26545664`
-- Improve docs ref: #6 `26405986`
-- **activity**: compact tracked-time rows `95d04b40`
-- **settings**: scope task merges by repository `777cf060`
-- **settings**: batch merge tracked tasks `d0905cbe`
-- **tasks**: merge tracked task identities `2302c22b`
-- **navigation**: link Clockoli logo to website `54fd1b4d`
-- **invoices**: improve task details and PDF export `e81c00ba`
-- extend multi-repository tracking workflow `f7c7f2c6`
-- **reports**: support UTC date range reporting `29b8ac18`
-- **invoicing**: modernize invoice workflows `a706fff1`
-- **invoicing**: link clients to projects `c1c8649a`
-- **invoicing**: add local invoice workflows `53f864e6`
-- replace timeline editor and harden tracking UI `3c8effb5`
-- **ui**: improve tracking and timeline UX `abbe846d`
-- move timeline tracking into toolbar `9475ef0b`
-- add Clockify migration `f7ee8cde`
-- add durable timeline entry deletion `b30b4b29`
-- add durable full-width timeline tracking `456190d7`
-- animate Clockoli while tracking current task `35a4c4bb`
-- capture GitHub work item snapshots `4214d296`
-- adopt canonical work record format `20d43eca`
-- add currency conversion and task switching `6cea590f`
-- improve repository setup and PDF timesheets `e74294f5`
-- improve Clockoli settings and onboarding `5e045e64`
-- use combined Clockoli wordmark `ed9781bb`
-- streamline Clockoli tracking UI `55c547e1`
-- rebrand RepoClock as Clockoli `7eb23c88`
-- add page tabs and currency-aware billing `bcebc6ff`
-- add unified time workflows `d8bcc7ee`
-- refine tracking layout `071c2740`
-- track arbitrary URL tasks `667abce8`
-- add personal storage branches and billing reports `bb1b2630`
-- streamline data repository setup `1e10dd8e`
-- streamline GitHub App onboarding `12dba53b`
-- add secure onboarding and inline time editing `0a928ff6`
+- Start a timer on any HTTP(S) page from the toolbar button, or from the stopwatch on GitHub issue and pull-request pages.
+- The page URL identifies the task; a title is optional. Links to the same GitHub issue or pull request count as one task, and GitHub Projects issue panes track the underlying issue.
+- One timer runs per GitHub account across repositories and browsers: starting another task saves the current one first.
+- Timer changes are saved in the browser first and synchronized with GitHub in the background, so tracking continues while GitHub is offline or rate-limited.
+- Live **Today** and **This week** totals, and **Top tasks** to restart recent work.
+- GitHub issues and pull requests show each participant's tracked time.
+- Optional quick popup instead of the Activity tab, multi-line descriptions up to 2,000 characters, and a confirmation before stopping a timer that ran longer than 12 hours.
 
-### 🔧 Improvements & Optimizations
+### ✏️ Editing time
 
-- **release**: automate tagged release packaging `af77461d`
-- **styles**: align GitHub and options UI `39dbb4d1`
-- **ui**: refine forms and invoice previews `f8bf13e8`
-- **timeline**: refine editor and visual states `391fe85d`
-- integrate timeline into Clockoli `14900593`
+- Edit entries in Timeline, Calendar or List view. Drag and resize blocks; moving an entry into its neighbour adjusts the neighbour in the same commit.
+- Add completed entries in bulk, delete entries, and correct a running timer's start time.
+- Merge two task identities that refer to the same work, for example a Clockify import and its GitHub issue.
 
-### 🐛 Bug Fixes & Stability
+### 📊 Reports and invoicing
 
-- **content-runtime**: fix timezone-dependent timeline test `f4cda909`
-- bind Clockify report pages to capture requests `39038a6d`
-- show empty Top tasks for no selected users `7e5d6e5c`
-- Imported records mismatch `9015ae67`
-- make Clockify migration jobs durable and retryable `a796a00f`
-- hide repository status during discovery `735a94e4`
-- tolerate sync alarm rejection during worker replacement `b7603d2a`
-- stabilize repository setup and status feedback `f80b1205`
-- preserve timeline task focus across renders `d02acfdf`
-- GH connection issues ref: #15 `1c88eaf2`
-- fix tests `a7007ec1`
-- keep timeline grips and saving indicator clear of content `70ead912`
-- show timeline resize grips only on interaction `a5f80856`
-- keep timeline entries editable while saves are queued `f5e9f743`
-- open navigation tabs without waiting for refresh `6ed1174f`
-- preserve unresolved work across activity and repository flows `1e7e2168`
-- stabilize Clockify migration controls `d84b8a45`
-- remove Clockify URL inference `f9840eda`
-- stabilize Clockify page migration `5c2b974f`
-- **activity**: unify record editing `0b1e404e`
-- **activity**: remove time repository labels `30d42f19`
-- **tasks**: separate titled task URLs `4dcd2e95`
-- **settings**: partially restore backups `6adaf1ae`
-- **invoices**: increase PDF render resolution `cfad110c`
-- **invoices**: preserve seller spacing in PDF export `14f4ea1c`
-- **settings**: retain selected default destination `70de6d4a`
-- **settings**: reject stale preference saves `b3c72d03`
-- **settings**: preserve project client links in backups `7c56ded8`
-- **settings**: import routed v6 invoicing backups `5829c83e`
-- **invoices**: keep seller spacing on rendered words `a8df3bc8`
-- **invoices**: preserve seller gap in canvas export `fb953e5e`
-- **invoices**: render explicit seller name gap `27ac1bbc`
-- **invoices**: preserve seller name spacing in PDFs `05ef8b49`
-- **invoices**: render PDFs from HTML preview `2d66f337`
-- **invoices**: emit real PDF stream newlines `eea1417a`
-- **invoices**: render readable multipage PDFs `0c3f2e95`
-- **invoices**: use seller name for PDF filename `a43e5d1e`
-- **invoices**: write valid PDFs without closing preview `34a7a6c7`
-- **invoices**: download PDFs and keep numeric columns intact `d835fdf7`
-- **settings**: expand repositories individually `69633250`
-- **settings**: hide empty default repository controls `ceaeb46b`
-- **settings**: collapse time repositories by default `b699acdd`
-- **ui**: recover UI/UX interface fixes during merge in past (#8) `49581001`
-- **reports**: show resolved dates for period presets `ce84e98a`
-- **reports**: refine report layouts `12ef91cf`
-- **settings**: improve form handling `bac0a42c`
-- **billing**: preserve invoice counters on restore `e61e8978`
-- **timeline**: align full-width panel gutters `b65e446f`
-- keep short timeline blocks in their hour `47a314f6`
-- allow cross-page timeline edits `5e5c3118`
-- label single empty timeline hours plainly `702ec7d5`
-- keep timeline edits within item rows `9643d112`
-- augment only native GitHub participants `3b73ac5d`
-- sharpen timeline icon on high-DPI displays `f44555de`
-- preserve GitHub timeline badge geometry `fe8ed48b`
-- support GitHub React timeline events `df98167c`
-- render truncated Clockoli timeline entries `a821dda4`
-- harden timer reconciliation and task views `eb60c847`
-- make background timer sync automatic `331d6eee`
-- make timer actions respond immediately `70cbce45`
-- streamline tracking and reporting workflows `cb31f29e`
-- complete Clockoli namespace migration `30e57150`
-- migrate storage markers to Clockoli `8713e426`
-- migrate to Clockoli GitHub App `faed5f53`
-- use Clockoli data repository template `151d6a15`
-- improve Clockoli icon visibility `4235f0fa`
-- restore direct recent time editing `84d04438`
-- simplify recent time controls `1e7b7603`
-- preserve linked time boundaries `35391be1`
-- make tracking panel interactions immediate `ed25af47`
-- clarify device authorization actions `8adc92b8`
-- advance after repository access `31351a57`
-- clarify repository access monitoring `21087368`
-- make repository setup self-healing `84f16bac`
-- close repository setup races `466e7661`
-- simplify repository setup `5aee75b4`
-- harden stop conflicts and enable GitHub App `a233a61b`
+- Reports across personal and organization time repositories, with breakdowns by day, week, month, person, source or task.
+- Export CSV or JSON timesheets, or print a report to PDF.
+- Effective-dated hourly rates per person for each client. Mixed currencies are converted at each day's exchange rate.
+- Numbered invoices with taxes, created from a filtered report and printed or saved as PDF in the browser.
+- Rates, clients and invoice details stay in browser storage and are never written to the time repository.
 
-### 📚 Documentation & Examples
+### 👥 Teams
 
-- **privacy**: document invoice settings storage `a160b352`
-- align setup and migration guides with current flows `bda61872`
-- **design**: capture current Activity view `9b3c4833`
-- add contributor and agent guides `a562e6a4`
-- add RepoClock user guide `1e2c7462`
+- Teammates track into the same private repository, each on a personal branch, and Reports shows them as one view.
+- Repository administrators can invite teammates from Settings.
+- Project routing rules send each task URL to the right time repository and client.
+- Optional Clockify migration add-on: imports completed history from a signed-in Clockify tab, with a preview and explicit mapping of Clockify people to GitHub accounts.
 
-### 🔄 Other Changes
+### ⚙️ Setup and settings
 
-23 maintenance, dependency, and tooling updates not listed individually.
+- GitHub sign-in through device flow: you enter a one-time code on github.com, with no token to create or paste. A personal access token remains available for single-repository setups.
+- Connect an existing private repository or create one from the Clockoli template.
+- Light and dark themes, and a centered or full-width layout.
+- Settings backup and restore as a JSON file. Backups exclude GitHub credentials and time records.
+
+### 🔒 Data and privacy
+
+- Records use a versioned, documented format (`schema_version` 1): completed entries in `times/{YYYY-MM}/{login}.jsonl`, the running timer under `active/`.
+- Data goes only to GitHub, plus currency codes and dates to the Frankfurter exchange-rate service when a report converts currencies. No analytics.
+- GitHub credentials stay in the extension's background code; web pages never receive them.
+
+### 🌐 Browsers and packages
+
+- Chrome and Chromium 102+ through the Chrome Web Store, with automatic updates.
+- Firefox 140+ and Safari 18+ (macOS) preview builds attached to the GitHub release. They install manually and do not update automatically.
+- Licensed under GPL-3.0-only. Each release includes a matching source archive.
+
+### ⚠️ Known limitations
+
+- No mobile app, no reminders and no side-by-side conflict editor. Some sync conflicts need your action.
+- Everyone who tracks time needs a GitHub account. GitHub outages and API rate limits affect Clockoli.
+- Git history shows edits, but repository administrators can rewrite it. It is not a tamper-proof audit log.
+
+### 📚 Documentation
+
+- User guides for setup, tracking, editing, reports, invoicing, teams, sync and troubleshooting, plus a separate technical reference for the data format and repository operations (#95).
