@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.1] - 2026-11-16
+
+### 📋 Release Summary
+
+The extension no longer requests the unused scripting permission.
+
+### 🐛 Bug Fixes & Stability
+
+- **permissions**: remove unused scripting permission `187cf262`
+
 All notable changes to this project will be documented in this file.
 
 ## [1.0.0] - 2026-11-16
