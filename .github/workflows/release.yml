@@ -65,20 +65,38 @@ jobs:
         if: steps.context.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          # The tag is usually pushed together with main, so main CI is still running when this step starts.
+          POLL_SECONDS: 30
+          MAX_WAIT_SECONDS: 3600
         run: |
           set -euo pipefail
           SHA="$(git rev-parse "$RELEASE_REF^{commit}")"
-          RUN_ID="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${SHA}&per_page=100" \
-            | jq -s -r --arg sha "$SHA" \
-              '[.[].workflow_runs[] | select(.head_sha == $sha and .event == "push" and .head_branch == "main")]
-               | sort_by(.id) | last | .id // empty')"
-          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]]; then
-            echo 'No trusted main CI run for the tagged commit' >&2
-            exit 1
-          fi
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
-            | jq -s -e '[.[].jobs[] | select(.name == "private-regressions")]
-                        | sort_by(.id) | last | .conclusion == "success"' >/dev/null
+          DEADLINE=$((SECONDS + MAX_WAIT_SECONDS))
+          while true; do
+            RUN="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=${SHA}&per_page=100" \
+              | jq -s -c --arg sha "$SHA" \
+                '[.[].workflow_runs[] | select(.head_sha == $sha and .event == "push" and .head_branch == "main")]
+                 | sort_by(.id) | last // empty | {id, status}')"
+            RUN_ID="$(jq -r '.id // empty' <<<"$RUN")"
+            if [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+              CONCLUSION="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
+                | jq -s -r '[.[].jobs[] | select(.name == "private-regressions")] | sort_by(.id) | last | .conclusion // empty')"
+              if [ "$CONCLUSION" = "success" ]; then
+                echo "private-regressions passed in main CI run $RUN_ID"
+                break
+              fi
+              if [ -n "$CONCLUSION" ] || [ "$(jq -r '.status' <<<"$RUN")" = "completed" ]; then
+                echo "::error::private-regressions did not pass in main CI run $RUN_ID (conclusion: ${CONCLUSION:-missing})"
+                exit 1
+              fi
+            fi
+            if (( SECONDS >= DEADLINE )); then
+              echo "::error::No passing private-regressions job in main CI for $SHA after ${MAX_WAIT_SECONDS}s"
+              exit 1
+            fi
+            echo "Waiting for main CI private-regressions on $SHA"
+            sleep "$POLL_SECONDS"
+          done
       - uses: actions/setup-node@v4
         with:
           node-version: 22

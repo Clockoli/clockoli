@@ -190,7 +190,7 @@ Use the Clockoli name only. Do not introduce legacy product names or unsupported
 
 ## Build release packages
 
-Version values in `package.json` and `manifest.json` must match. `manifest.json` remains the Chrome development manifest. `scripts/target-manifest.js` derives Firefox and Safari manifests without changing it; validation and inventory traversal use those generated manifests. Chrome archive bytes retain the original packaging format. Actual releases require the latest trusted `main` CI run for the tagged commit to contain a successful `private-regressions` job; dry-run previews do not. Wait for that job before publishing.
+Version values in `package.json` and `manifest.json` must match. `manifest.json` remains the Chrome development manifest. `scripts/target-manifest.js` derives Firefox and Safari manifests without changing it; validation and inventory traversal use those generated manifests. Chrome archive bytes retain the original packaging format. Actual releases require the latest trusted `main` CI run for the tagged commit to contain a successful `private-regressions` job; dry-run previews do not. The release workflow waits up to 60 minutes for that job, so `main` and the tag can be pushed together; it fails if the job fails, is missing from a finished run, or does not pass in time.
 
 Run all checks, then build outside the repository:
 
