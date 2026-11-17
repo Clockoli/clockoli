@@ -212,6 +212,12 @@ Settings backups include local display preferences, client-specific rate cards, 
 
 Import validates the entire file and applies supported local preferences atomically. It restores project routes to destinations already configured in this browser and reports missing repositories and their routes as not restored; other eligible routes can still be restored. Destination references remain unverified, and the imported default does not replace this browser's current default. Import does not inspect repositories, verify access, add destinations, or reconnect GitHub.
 
+## Full local backup
+
+The separate **Settings → More settings → Advanced → Full local backup** feature exports all extension-origin IndexedDB values (including credentials, unsynced mutations and conflict state) and extension-page localStorage preferences. The GitHub username is part of the encrypted payload. This is **not** the credential-free settings backup described above.
+
+Full backups use AES-256-GCM encryption with a password-derived PBKDF2-SHA256 key (310,000 iterations, random salt and nonce). The plaintext database and access tokens never pass to the options page: encryption and decryption happen in the privileged background worker. Store the downloaded file and password separately. Anyone who obtains both may be able to reuse its GitHub credentials. Restoring validates and decrypts the whole file before atomically replacing the IndexedDB contents, then reloads the extension. Reset removes the database and extension-page browser preferences; reconnecting GitHub retrieves the real account identity again. Neither operation deletes GitHub repository data.
+
 ## Access and privacy consequences
 
 Anyone with read access to a time repository can inspect the task URLs, titles, timestamps, descriptions, and user branches stored there. URLs and descriptions can reveal sensitive customer or project information.

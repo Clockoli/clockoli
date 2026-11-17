@@ -1018,10 +1018,25 @@ function resumeClockifyMigration(requestId = null) {
   return runningClockifyMigration;
 }
 
+async function replaceFullLocalData(operation) {
+  // A passive GitHub pull is not on the mutation executor. Finish any pull
+  // before wiping storage, and stop new pulls and syncs until the reload.
+  globalThis.clockoliLocalDataTransitioning = true;
+  try {
+    if (pendingPull) await pendingPull.catch(() => {});
+    return await operation();
+  } catch (error) {
+    globalThis.clockoliLocalDataTransitioning = false;
+    requestPendingSync();
+    throw error;
+  }
+}
+
 async function handle(message, sender) {
   if (!message || typeof message.type !== 'string') throw new Error('Invalid extension message');
   const extensionOrigin = chrome.runtime.getURL('');
   assertMessageAllowed(message.type, sender, extensionOrigin);
+  if (globalThis.clockoliLocalDataTransitioning) throw new Error('Clockoli is reloading after a local data change.');
   if (message.type === 'CONSUME_TOOLBAR_TASK_CONTEXT') {
     if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) {
       throw new Error('Only Activity can consume the toolbar task context');
@@ -1402,6 +1417,33 @@ async function handle(message, sender) {
     return result;
   }
   if (message.type === 'RESERVE_INVOICE_NUMBER') return store.reserveInvoiceNumber();
+  if (['EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA'].includes(message.type)) {
+    if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) {
+      throw new Error('Only Settings can manage full local backups.');
+    }
+    if (message.type === 'RESET_FULL_LOCAL_DATA') {
+      if (Object.keys(message).length !== 1) throw new Error('Invalid local reset request.');
+      return replaceFullLocalData(async () => {
+        await store.resetFullLocalData();
+        return { reset: true };
+      });
+    }
+    if (typeof message.password !== 'string' || message.password.length > 1024) {
+      throw new Error('Invalid full backup password.');
+    }
+    if (message.type === 'EXPORT_FULL_LOCAL_BACKUP') {
+      const localStorage = message.localStorage;
+      if (Object.keys(message).length !== 3
+          || !localStorage || typeof localStorage !== 'object' || Array.isArray(localStorage)
+          || Object.entries(localStorage).some(([key, value]) => !key || typeof value !== 'string')) {
+        throw new Error('Invalid local browser preferences.');
+      }
+      return { text: await store.exportFullLocalBackup(message.password, localStorage) };
+    }
+    if (Object.keys(message).length !== 3 || typeof message.text !== 'string'
+        || message.text.length > 64 * 1024 * 1024) throw new Error('Invalid full backup file.');
+    return replaceFullLocalData(() => store.importFullLocalBackup(message.text, message.password));
+  }
   if (message.type === 'EXPORT_SETTINGS') return store.exportSettings();
   if (message.type === 'MARK_SETTINGS_EXPORTED') return { marked: await store.markSettingsExported(message.revision) };
   if (message.type === 'IMPORT_SETTINGS') {
@@ -1750,7 +1792,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const reportReadOnly = ['LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
   const localStateRead = ['GET_STATE', 'GET_PAGE_STATE'].includes(message?.type) && !message?.refresh;
   const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS'].includes(message?.type);
-  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER'].includes(message?.type);
+  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER'].includes(message?.type);
   let operation;
   if (changesConfiguration) {
     try {
@@ -1827,6 +1869,7 @@ async function schedulePendingSyncFromStore() {
   armPendingSyncWake(deadline);
 }
 function pullRemoteNow() {
+  if (globalThis.clockoliLocalDataTransitioning) return Promise.resolve();
   if (pendingPull) return pendingPull;
   // No UI messages, spinners or mutation executor: this only updates the
   // extension-local cache after a complete, conflict-safe GitHub snapshot.
@@ -1898,6 +1941,7 @@ async function refreshTaskSearchAfterSync({ retry = false } = {}) {
   }
 }
 function syncPendingNow() {
+  if (globalThis.clockoliLocalDataTransitioning) return Promise.resolve();
   if (pendingSync) return pendingSync;
   pendingSyncFollowupRequested = false;
   pendingSync = withCurrentRepositoryRecovery({ type: 'SYNC' }, () => executor.run(async () => {
@@ -1947,6 +1991,7 @@ function syncPendingNow() {
 }
 
 function requestPendingSync() {
+  if (globalThis.clockoliLocalDataTransitioning) return;
   // Every local mutation was committed to IndexedDB before this is called.
   // Preserve a follow-up wakeup if an earlier GitHub flush is still in flight.
   if (pendingSync) pendingSyncFollowupRequested = true;

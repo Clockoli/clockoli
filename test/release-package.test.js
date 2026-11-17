@@ -109,6 +109,7 @@ const EXPECTED_RUNTIME_INVENTORY = [
   'src/services/tracker.js',
   'src/services/user-storage-branch.js',
   'src/storage/chrome-store.js',
+  'src/storage/full-local-backup.js',
   'src/styles/github-primer.css',
   'src/styles/interface-width.css',
   'src/styles/page-tabs.css',

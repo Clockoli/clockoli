@@ -3,6 +3,7 @@ import {
   normalizeProjectDefinitions, normalizeProjects, normalizeReportingUtc, parseSettingsImport, projectClientPreferences, settingsExportText,
 } from '../domain/local-settings.js';
 import { listAddons } from '../addons/registry.js';
+import { decryptFullBackup, encryptFullBackup } from './full-local-backup.js';
 import { validateJoinRepository } from '../domain/join-invitation.js';
 const DEFAULT_STATE = Object.freeze({ activeCache: null, recentCache: [], summaryCache: null, pendingWrites: [], user: null, dataVersion: 0 });
 const DESTINATION_STATE_DEFAULT = Object.freeze({ user: null, recentCache: [], summaryCache: null, pendingWrites: [], dayRangeIntervals: [] });
@@ -169,6 +170,28 @@ export class IndexedDbBackend {
     return Object.fromEntries(results.filter(([, value]) => value !== undefined));
   }
 
+  async getAllEntries() {
+    const database = await this.open();
+    const transaction = database.transaction('values', 'readonly');
+    const done = transactionDone(transaction);
+    const objectStore = transaction.objectStore('values');
+    const [keys, values] = await Promise.all([
+      requestResult(objectStore.getAllKeys()), requestResult(objectStore.getAll()),
+    ]);
+    await done;
+    return keys.map((key, index) => [key, values[index]]);
+  }
+
+  async replaceAllEntries(entries) {
+    const database = await this.open();
+    const transaction = database.transaction('values', 'readwrite');
+    const done = transactionDone(transaction);
+    const objectStore = transaction.objectStore('values');
+    objectStore.clear();
+    for (const [key, value] of entries) objectStore.put(value, key);
+    await done;
+  }
+
   async setMany(values) {
     const database = await this.open();
     const transaction = database.transaction('values', 'readwrite');
@@ -230,6 +253,25 @@ export class IndexedDbBackend {
 
 export class ChromeStore {
   constructor(backend = new IndexedDbBackend()) { this.backend = backend; }
+
+  async exportFullLocalBackup(password, localStorage = {}) {
+    const entries = await this.backend.getAllEntries();
+    const saved = Object.fromEntries(entries);
+    const githubLogin = saved.auth?.githubLogin || saved.user
+      || Object.values(saved.destinationStates?.entries ?? {}).find(state => state?.user)?.user || '';
+    return encryptFullBackup({ version: 1, entries, githubLogin, localStorage }, password);
+  }
+
+  async importFullLocalBackup(text, password) {
+    const backup = await decryptFullBackup(text, password);
+    await this.backend.replaceAllEntries(backup.entries);
+    // Credentials and the full database remain within this privileged context.
+    return { localStorage: backup.localStorage, githubLogin: backup.githubLogin };
+  }
+
+  async resetFullLocalData() {
+    await this.backend.replaceAllEntries([]);
+  }
 
   // Repository identifiers are unverified intent, never evidence of GitHub access.
   async getJoinInvitation() {

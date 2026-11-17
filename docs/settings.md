@@ -100,6 +100,14 @@ See [Settings backup exclusions](data-and-privacy.md#settings-backup-exclusions)
 
 ### Advanced
 
+#### Full local backup
+
+**Export all local data** downloads a password-encrypted JSON backup containing the complete extension-local IndexedDB database and extension-page browser preferences. This includes the saved GitHub username, GitHub access/refresh tokens or PAT, active timers, pending writes, conflict state, cached records, billing and other local settings. Choose a password of at least eight characters. Store the file and password securely; anyone with both can use the saved GitHub credentials.
+
+**Restore all local data** replaces the entire local database and extension-page browser preferences with the selected encrypted backup. The existing GitHub account, settings, and unsynced work in this browser are replaced, not merged. Clockoli validates and decrypts the file before changing its IndexedDB database, then reloads the extension. It does not upload the backup to GitHub or change repository data. A restore link is also available during first-time setup, before connecting GitHub.
+
+This is different from the credential-free **Backup & restore** settings feature above. GitHub access in a restored backup is subject to any token expiration or revocation that happened after exporting it.
+
 #### Diagnostics
 
 **Show queue diagnostics in the tracking panel** displays a local operation log for investigating sync issues. Leave it disabled unless you are troubleshooting.
@@ -110,7 +118,7 @@ A single-repository alternative if the GitHub App cannot be used. See [PAT setup
 
 #### Recovery and access
 
-- **Clear all local Clockoli data** removes local settings, credentials, and **unsynced work** from this browser. Stop timers and verify synchronization first.
+- **Reset to defaults** removes the entire local database and browser preferences, including credentials, saved username, running timers, and **unsynced work**. This cannot be undone without a backup. Reconnect to GitHub afterward to use the account's real username.
 - **Revoke GitHub sign-in** opens GitHub settings to revoke Clockoli's user authorization. It does not uninstall the GitHub App or delete repository records.
 
 ## Appearance

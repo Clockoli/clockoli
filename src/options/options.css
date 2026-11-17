@@ -140,3 +140,6 @@ select{appearance:none;padding-right:32px;background-image:url("data:image/svg+x
 .repository-team .repository-manage-feedback.error{border-left-color:var(--fgColor-danger)}
 
 .repository-team .repository-manage-feedback a{display:block;margin-top:6px}
+
+.full-backup-restore-prompt{margin:8px 0 0;color:var(--fgColor-muted);font:var(--text-body-shorthand-small)}
+.full-backup-password{max-width:360px;margin:16px 0}
