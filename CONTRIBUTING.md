@@ -25,10 +25,10 @@ To measure coverage from the public Node suite, run `npm run test:coverage`.
 It is not a measure of the private regression suite. The generated timeline
 bundle is excluded because the timeline workspace checks its build.
 
-Maintainers with access to the private regression suite can additionally run:
+Maintainers with access to the internal regression suite can obtain its clone URL through a private channel, set `PRIVATE_REGRESSION_REPO_URL`, and run:
 
 ```bash
-git clone git@github.com:Clockoli/tests-private.git test-private
+git clone "$PRIVATE_REGRESSION_REPO_URL" test-private
 npm run test:private
 ```
 
@@ -151,7 +151,7 @@ npm run check
 git diff --check
 ```
 
-`npm test` runs the public Clockoli Node contracts, timeline theme, build, and package-consumer smoke checks. `npm run test:browser` opens Settings and Activity in a fresh Chromium profile. `npm run check` validates the extension and release inventory. Public CI runs all three, including on fork pull requests, without private credentials. On trusted pushes to `main`, a separate job checks out the private suite with a read-only token and runs it against the exact public commit. Configure the public repository's Actions secret `PRIVATE_TESTS_READ_TOKEN` with a fine-grained token limited to `Clockoli/tests-private` and Contents: Read-only; no secret is needed in the private repository. Private test output stays off the public Actions logs, so maintainers reproduce failures locally. Fork pull requests never receive the token or private tests. The public test job passing does not mean that the separate private job has passed. `npm run test:coverage` reports only public Node coverage under `src/` and excludes the generated timeline bundle.
+`npm test` runs the public Clockoli Node contracts, timeline theme, build, and package-consumer smoke checks. `npm run test:browser` opens Settings and Activity in a fresh Chromium profile. `npm run check` validates the extension and release inventory. Public CI runs all three, including on fork pull requests, without private credentials. On trusted same-repository PRs to `main` and trusted pushes to `main`, a separate job first checks for a matching branch in the internal regression suite and falls back to its `main` branch if none exists. It checks out the selected private suite with a read-only token, runs Node regressions once, and distributes Playwright tests across 20 isolated CI runners against the exact public commit. All 20 shards must pass before a release. Configure the public repository's Actions secrets `PRIVATE_TESTS_REPOSITORY` (private `owner/name` coordinates) and `PRIVATE_TESTS_READ_TOKEN` (fine-grained Contents: Read-only access limited to that repository). Never put the repository coordinates or token in public source, output, or logs. Private test output stays off the public Actions logs, so maintainers reproduce failures locally. Fork pull requests never receive the token or private tests. The public test job passing does not mean that the separate private job has passed. `npm run test:coverage` reports only public Node coverage under `src/` and excludes the generated timeline bundle.
 
 ## Browser verification
 
@@ -190,7 +190,7 @@ Use the Clockoli name only. Do not introduce legacy product names or unsupported
 
 ## Build release packages
 
-Version values in `package.json` and `manifest.json` must match. `manifest.json` remains the Chrome development manifest. `scripts/target-manifest.js` derives Firefox and Safari manifests without changing it; validation and inventory traversal use those generated manifests. Chrome archive bytes retain the original packaging format. Actual releases require the latest trusted `main` CI run for the tagged commit to contain a successful `private-regressions` job; dry-run previews do not. The release workflow waits up to 60 minutes for that job, so `main` and the tag can be pushed together; it fails if the job fails, is missing from a finished run, or does not pass in time.
+Version values in `package.json` and `manifest.json` must match. `manifest.json` remains the Chrome development manifest. `scripts/target-manifest.js` derives Firefox and Safari manifests without changing it; validation and inventory traversal use those generated manifests. Chrome archive bytes retain the original packaging format. Actual releases require the latest trusted `main` CI run for the tagged commit to contain a successful `private-regressions` job; dry-run previews do not. The release workflow waits up to 60 minutes for all 20 private regression shards; it fails if any shard fails, is missing from a finished run, or does not pass in time.
 
 Run all checks, then build outside the repository:
 

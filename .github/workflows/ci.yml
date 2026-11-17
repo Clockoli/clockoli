@@ -140,7 +140,7 @@ jobs:
           test -f "$RUNNER_TEMP/safari/Clockoli-$VERSION-safari-unsigned.zip"
 
   private-regressions:
-    name: private-regressions
+    name: private-regressions (${{ matrix.shard }}/20)
     needs: test
     if: >-
       github.repository == 'Clockoli/clockoli' &&
@@ -148,6 +148,10 @@ jobs:
        (github.event_name == 'pull_request' && github.base_ref == 'main' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
         github.event.pull_request.user.login != 'dependabot[bot]'))
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -155,10 +159,38 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Select matching private-test branch
+        id: private-test-ref
+        env:
+          PRIVATE_TESTS_READ_TOKEN: ${{ secrets.PRIVATE_TESTS_READ_TOKEN }}
+          PRIVATE_TESTS_REPOSITORY: ${{ secrets.PRIVATE_TESTS_REPOSITORY }}
+          PUBLIC_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if [ -z "$PRIVATE_TESTS_READ_TOKEN" ] || [ -z "$PRIVATE_TESTS_REPOSITORY" ]; then
+            echo '::error::Internal regression source is not configured.'
+            exit 1
+          fi
+          if [[ ! "$PRIVATE_TESTS_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo '::error::Invalid internal regression repository coordinates.'
+            exit 1
+          fi
+          branch_path="$(python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["PUBLIC_BRANCH"], safe="/"))')"
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer $PRIVATE_TESTS_READ_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$PRIVATE_TESTS_REPOSITORY/git/ref/heads/$branch_path")"
+          case "$status" in
+            200) selected="$PUBLIC_BRANCH" ;;
+            404) selected=main ;;
+            *) echo "::error::Could not check internal regression branch (HTTP $status)."; exit 1 ;;
+          esac
+          echo "ref=$selected" >> "$GITHUB_OUTPUT"
+          echo "Using internal regression branch: $selected"
       - name: Check out the private test suite
         uses: actions/checkout@v4
         with:
-          repository: Clockoli/tests
+          repository: ${{ secrets.PRIVATE_TESTS_REPOSITORY }}
+          ref: ${{ steps.private-test-ref.outputs.ref }}
           path: test-private
           token: ${{ secrets.PRIVATE_TESTS_READ_TOKEN }}
           persist-credentials: false
@@ -167,12 +199,23 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - name: Run private regressions without exposing test names
+      # Node regressions run once; Playwright shards run on 20 separate machines.
+      - name: Run private Node regressions
+        if: matrix.shard == 1
         run: |
-          if npm run test:private > "$RUNNER_TEMP/private-regressions.log" 2>&1; then
-            echo 'Private regressions passed'
-          else
-            echo '::error::Private regressions failed; run npm run test:private locally for details.'
+          if ! npm run test:private -- --unit > "$RUNNER_TEMP/private-regressions-unit.log" 2>&1; then
+            echo '::error::Private Node regressions failed; reproduce locally using npm run test:private -- --unit.'
             exit 1
           fi
+      - run: npx playwright install --with-deps chromium
+      - name: Run private Chromium shard
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          if ! npm exec -- playwright test --config test-private/playwright.config.js \
+            --fully-parallel --workers=1 --shard="$SHARD_INDEX/20" \
+            > "$RUNNER_TEMP/private-regressions-browser.log" 2>&1; then
+            echo "::error::Private Chromium shard $SHARD_INDEX failed; reproduce locally with the same shard."
+            exit 1
+          fi
+          echo "Private Chromium shard $SHARD_INDEX passed"

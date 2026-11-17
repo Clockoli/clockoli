@@ -11,7 +11,7 @@ try {
   if (metadata.name !== 'clockoli-private-tests' || metadata.private !== true) throw new Error('unexpected private suite');
   files = readdirSync(privateRoot);
 } catch {
-  console.error('Clone Clockoli/tests into test-private/ before running the private suite.');
+  console.error('Clone the internal regression suite into test-private/ before running this command.');
   process.exit(1);
 }
 
