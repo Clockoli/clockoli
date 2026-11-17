@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.1.0] - 2026-11-17
+
+### 📋 Release Summary
+
+Time entries can now be marked as non-billable. Non-billable work remains in tracked-time totals but contributes no amount to reports or invoices.
+
+### ⏱️ Tracking and Editing
+
+- Mark individual entries as **Non-billable** when adding time, starting or saving a timer, and editing time entries.
+- Apply the flag to multiple-day entries or bulk input, including specific bulk lines with `!non-billable`.
+- See and update the status in Activity views and the running tracker. Existing entries remain billable by default.
+
+### 📊 Reports, Invoices, and Imports
+
+- Exclude non-billable work from calculated amounts and invoices while preserving its tracked duration.
+- Preserve non-billable status when importing Clockify time entries.
+- Store the optional billable flag in shared time records, without sharing hourly rates.
+
+### ⚙️ Release and CI
+
+- Run private regression tests across 20 parallel shards and require all shards to pass for the tagged commit before publishing a release.
+
 ## [1.0.1] - 2026-11-16
 
 ### 📋 Release Summary
