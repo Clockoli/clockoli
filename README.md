@@ -190,10 +190,10 @@ npm run check
 ```
 
 Maintainers with access to the private regression tests should clone them into
-`test-private/` **inside the Clockoli checkout** (that is, `clockoli/test-private/`):
+`test-private/` **inside the Clockoli checkout** (that is, `clockoli/test-private/`). Obtain the clone URL through a private maintainer channel and set `PRIVATE_REGRESSION_REPO_URL` before running:
 
 ```bash
-git clone git@github.com:Clockoli/tests.git test-private
+git clone "$PRIVATE_REGRESSION_REPO_URL" test-private
 npm run test:private
 ```
 

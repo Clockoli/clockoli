@@ -79,22 +79,27 @@ jobs:
                  | sort_by(.id) | last // empty | {id, status}')"
             RUN_ID="$(jq -r '.id // empty' <<<"$RUN")"
             if [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
-              CONCLUSION="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
-                | jq -s -r '[.[].jobs[] | select(.name == "private-regressions")] | sort_by(.id) | last | .conclusion // empty')"
-              if [ "$CONCLUSION" = "success" ]; then
-                echo "private-regressions passed in main CI run $RUN_ID"
+              SHARD_JOBS="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
+                | jq -s -c '
+                    [.[].jobs[]
+                      | select(.name | test("^private-regressions \\([0-9]+/20\\)$"))
+                      | {index: (.name | capture("^private-regressions \\((?<n>[0-9]+)/20\\)$").n | tonumber),
+                         id, conclusion}]
+                    | group_by(.index) | map(max_by(.id)) | sort_by(.index)')"
+              if jq -e 'length == 20 and ([.[].index] == [range(1; 21)]) and all(.[]; .conclusion == "success")' <<<"$SHARD_JOBS" > /dev/null; then
+                echo "All 20 private regression shards passed in main CI run $RUN_ID"
                 break
               fi
-              if [ -n "$CONCLUSION" ] || [ "$(jq -r '.status' <<<"$RUN")" = "completed" ]; then
-                echo "::error::private-regressions did not pass in main CI run $RUN_ID (conclusion: ${CONCLUSION:-missing})"
+              if jq -e 'any(.[]; .conclusion != null and .conclusion != "success")' <<<"$SHARD_JOBS" > /dev/null || [ "$(jq -r '.status' <<<"$RUN")" = "completed" ]; then
+                echo "::error::Private regression shards failed or are missing in main CI run $RUN_ID"
                 exit 1
               fi
             fi
             if (( SECONDS >= DEADLINE )); then
-              echo "::error::No passing private-regressions job in main CI for $SHA after ${MAX_WAIT_SECONDS}s"
+              echo "::error::Not all 20 private regression shards passed in main CI for $SHA after ${MAX_WAIT_SECONDS}s"
               exit 1
             fi
-            echo "Waiting for main CI private-regressions on $SHA"
+            echo "Waiting for all 20 private regression shards in main CI on $SHA"
             sleep "$POLL_SECONDS"
           done
       - uses: actions/setup-node@v4
