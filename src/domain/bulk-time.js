@@ -44,7 +44,8 @@ function parseDuration(value, line) {
   return seconds;
 }
 
-export function parseBulkTimeText(text, { maxEntries = 500 } = {}) {
+export function parseBulkTimeText(text, { maxEntries = 500, billable = true } = {}) {
+  if (typeof billable !== 'boolean') throw new Error('Billable status must be true or false');
   const source = String(text ?? '');
   if (source.length > 256 * 1024) throw new Error('Bulk input is too large');
   const entries = [];
@@ -54,11 +55,12 @@ export function parseBulkTimeText(text, { maxEntries = 500 } = {}) {
     const parts = value.split(/\s+/);
     if (parts.length < 3) throw new Error(`Line ${line}: expected date, URL, optional description, and hours`);
     const date = parseDate(parts[0], line), rawUrl = parts[1], durationSeconds = parseDuration(parts.at(-1), line);
+    const nonBillable = parts.at(-2) === '!non-billable';
     let taskUrl;
     try { taskUrl = normalizeTaskUrl(rawUrl); } catch { throw new Error(`Line ${line}: enter a valid HTTP(S) URL without spaces`); }
-    const description = parts.slice(2, -1).join(' ').replace(/[\r\n\t]+/g, ' ').replace(/ {2,}/g, ' ').trim();
+    const description = parts.slice(2, nonBillable ? -2 : -1).join(' ').replace(/[\r\n\t]+/g, ' ').replace(/ {2,}/g, ' ').trim();
     if (description.length > 2000) throw new Error(`Line ${line}: description exceeds 2000 characters`);
-    entries.push({ line, date, taskUrl, description, durationSeconds });
+    entries.push({ line, date, taskUrl, description, durationSeconds, billable: billable && !nonBillable });
     if (entries.length > maxEntries) throw new Error(`Bulk input cannot contain more than ${maxEntries} entries`);
   }
   if (!entries.length) throw new Error('Enter at least one time entry');

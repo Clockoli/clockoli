@@ -43,6 +43,8 @@ a.quick-title:hover, a.quick-entry-title:hover { text-decoration: underline; }
 .quick-elapsed { flex: none; font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.2; }
 .quick-muted { font-size: 12px; color: var(--fgColor-muted, #59636e); margin: 6px 0 12px; }
 .quick-description-wrap { margin: 0 0 12px; }
+.quick-non-billable { display:flex;align-items:center;gap:8px;width:max-content;max-width:100%;margin-top:8px;cursor:pointer;font-size:13px }
+.quick-non-billable input { width:16px;height:16px;margin:0;accent-color:var(--button-primary-bgColor-rest,#1f883d) }
 .quick-description {
   box-sizing: border-box;
   display: block;

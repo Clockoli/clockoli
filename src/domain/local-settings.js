@@ -1,3 +1,5 @@
+import { isBillable } from './records.js';
+
 const CLIENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -504,6 +506,7 @@ export function rateMinorForUser(user, rates = {}, date = '') {
 }
 
 export function billableMinorForRecord(record, rates = {}, date = String(record?.entryDate || record?.startedAt || '').slice(0, 10)) {
+  if (!isBillable(record)) return 0;
   const rate = rateForUser(record?.user, rates, date);
   if (!rate) return 0;
   const seconds = Math.max(0, Number(record?.durationSeconds) || 0);
@@ -513,6 +516,7 @@ export function billableMinorForRecord(record, rates = {}, date = String(record?
 export function billableTotalsByCurrency(records, rates = {}) {
   const totals = new Map();
   for (const record of records ?? []) {
+    if (!isBillable(record)) continue;
     const date = String(record?.entryDate || record?.startedAt || '').slice(0, 10);
     const rate = rateForUser(record?.user, rates, date);
     if (!rate) continue;

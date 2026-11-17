@@ -8,6 +8,13 @@ export const DEFAULT_PRODUCER = Object.freeze({
   kind: 'browser_extension', name: 'clockoli-chrome', version: '0.2.0',
 });
 
+export function isBillable(record) { return record?.metadata?.billable !== false; }
+
+function checkedBillable(value) {
+  if (typeof value !== 'boolean') throw new Error('Billable status must be true or false');
+  return value;
+}
+
 const TIMEZONE_FORMATTER_CACHE_LIMIT = 64;
 const timezoneValidationFormatters = new Map();
 const localDateFormatters = new Map();
@@ -95,7 +102,7 @@ function producerValue(producer) { return structuredClone(producer ?? DEFAULT_PR
 
 export function buildActiveTimer({
   user, id, entryId, actor, producer, taskUrl, taskTitle = '', issue, issueTitle = '', startedAt,
-  entryDate, timezone, description = '', metadata = {}, metrics = {}, execution, importedStoredIdentity = false,
+  entryDate, timezone, description = '', metadata = {}, billable, metrics = {}, execution, importedStoredIdentity = false,
 }) {
   const validUser = validatePathSegment(user, 'user'), started = toIso(startedAt);
   const zone = normalizeTimezone(timezone), date = entryDate ?? localDateInTimezone(started, zone);
@@ -118,7 +125,7 @@ export function buildActiveTimer({
     timezone: zone,
     startedAt: started,
     description: String(description ?? '').slice(0, 2000),
-    metadata: structuredClone(metadata ?? {}),
+    metadata: { ...structuredClone(metadata ?? {}), ...(billable === undefined ? {} : { billable: checkedBillable(billable) }) },
     metrics: structuredClone(metrics ?? {}),
     ...(execution === undefined ? {} : { execution: structuredClone(execution) }),
     createdAt: started,
@@ -148,13 +155,14 @@ export function validateActiveTimer(active) {
   return active;
 }
 
-export function buildEntry({ active, id = active?.id, endedAt, now = endedAt, description = active?.description ?? '' }) {
+export function buildEntry({ active, id = active?.id, endedAt, now = endedAt, description = active?.description ?? '', billable }) {
   if (!active) throw new Error('No active timer');
   validateActiveTimer(active);
   if (id !== active.id) throw new Error('Completed record ID must match the active timer ID');
   const ended = toIso(endedAt), updated = toIso(now);
   return {
     ...active,
+    ...(billable === undefined ? {} : { metadata: { ...active.metadata, billable: checkedBillable(billable) } }),
     id: validateEntryId(active.id),
     entryId: active.id,
     endedAt: ended,
@@ -202,6 +210,7 @@ export function applyActiveEdits(active, edits = {}, now = new Date()) {
     ? normalizeTaskUrl(edits.taskUrl ?? edits.issue) : currentUrl;
   const { issue: _issue, issueTitle: _issueTitle, taskUrl: _taskUrl, taskTitle: _taskTitle, ...base } = active;
   const metadata = structuredClone(active.metadata);
+  if (edits.billable !== undefined) metadata.billable = checkedBillable(edits.billable);
   if (taskUrl !== currentUrl) delete metadata.github;
   const title = normalizeTaskTitle(edits.taskTitle ?? edits.issueTitle ?? (taskUrl === currentUrl ? (active.taskTitle ?? active.issueTitle) : ''));
   return validateActiveTimer({
@@ -226,6 +235,9 @@ export function applyEntryEdits(entry, edits, now = new Date()) {
   const startedAt = toIso(edits.startedAt ?? entry.startedAt), timezone = normalizeTimezone(edits.timezone ?? entry.timezone);
   const { issue: _issue, issueTitle: _issueTitle, taskUrl: _taskUrl, taskTitle: _taskTitle, ...base } = entry;
   const metadata = structuredClone(entry.metadata);
+  if (edits.billable !== undefined) {
+    metadata.billable = checkedBillable(edits.billable);
+  }
   if (taskUrl !== currentUrl) delete metadata.github;
   const title = normalizeTaskTitle(edits.taskTitle ?? edits.issueTitle ?? (taskUrl === currentUrl ? (entry.taskTitle ?? entry.issueTitle) : ''));
   const next = {

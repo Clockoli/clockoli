@@ -1,4 +1,5 @@
 import { parseGitHubTaskUrl, taskUrlOf } from './values.js';
+import { isBillable } from './records.js';
 import { clientIdForRecord, exchangeCurrencyCode, projectNameForUrl, rateForRecord } from './local-settings.js';
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const AXES = new Set(['day', 'week', 'month', 'person', 'repository', 'time-repository', 'task']);
@@ -104,7 +105,7 @@ function rateForReportRecord(record, options, date = recordDate(record, options.
   });
 }
 
-function recordBillableMinor(record, rate) { return rate ? rate.amountMinorPerHour * Math.max(0, Number(record.durationSeconds) || 0) / 3600 : 0; }
+function recordBillableMinor(record, rate) { return rate && isBillable(record) ? rate.amountMinorPerHour * Math.max(0, Number(record.durationSeconds) || 0) / 3600 : 0; }
 
 export function filterReportRecords(records, filters = {}) {
   const people = selected(filters.people), projects = selected(filters.projects), repositories = selected(filters.repositories), timeRepositories = selected(filters.timeRepositories);
@@ -194,7 +195,7 @@ export function buildAnalytics(records, options = {}) {
     const recordRate = rateForReportRecord(record, options, date);
     let convertedBillableMinor = 0;
     if (metric === 'billable-amount') {
-      if (!recordRate) continue;
+      if (!recordRate || !isBillable(record)) continue;
       if (!billableCurrency) { billableCurrency = recordRate.currency; billableCurrencyCode = exchangeCurrencyCode(recordRate.currency); }
       const sourceCode = exchangeCurrencyCode(recordRate.currency);
       const factor = sourceCode === billableCurrencyCode ? 1 : Number(options.exchangeRates?.[date]?.[sourceCode]);
@@ -278,6 +279,7 @@ export function exportTimesheet(records, { format, startDate, endDate, clientRat
       end: record.endedAt,
       duration: hms(record.durationSeconds),
       durationSeconds: record.durationSeconds,
+      billable: isBillable(record),
       ...(includeRates ? {
         hourlyRate: rate ? (rate.amountMinorPerHour / 100).toFixed(2) : '',
         billableAmount: rate ? (recordBillableMinor(record, rate) / 100).toFixed(2) : '',
@@ -288,8 +290,8 @@ export function exportTimesheet(records, { format, startDate, endDate, clientRat
   });
   if (format === 'csv') {
     const rows = [includeRates
-      ? ['Person', 'Task URL', 'Task title', 'Start', 'End', 'Duration', 'Duration seconds', 'Hourly rate', 'Billable amount', 'Currency', 'Description']
-      : ['Person', 'Task URL', 'Task title', 'Start', 'End', 'Duration', 'Duration seconds', 'Description']];
+      ? ['Person', 'Task URL', 'Task title', 'Start', 'End', 'Duration', 'Duration seconds', 'Billable', 'Hourly rate', 'Billable amount', 'Currency', 'Description']
+      : ['Person', 'Task URL', 'Task title', 'Start', 'End', 'Duration', 'Duration seconds', 'Billable', 'Description']];
     for (const entry of entries) rows.push(Object.values(entry));
     return `${rows.map(row => row.map(csvCell).join(',')).join('\r\n')}\r\n`;
   }

@@ -117,7 +117,7 @@
   const queueDiagnostics = [];
 
   let menuOpen = false, menuScrollTop = 0;
-  let descriptionDraft = null;
+  let descriptionDraft = null, billableDraft = null;
   const timelineDescriptionDrafts = new Map();
   let pageState = { configured: null, active: null, pendingCount: 0, pendingWrites: [], projects: [] };
   let syncIssuesSignature = null, syncIssuesOpen = false, selectedSyncIssueKey = null, syncIssueError = '';
@@ -153,7 +153,7 @@
   let activitySearchTimer = null;
   let activitySearchGeneration = 0;
   let renderActivitySearch = null;
-  let bulkDraft = '';
+  let bulkDraft = '', bulkNonBillable = false;
   let bulkMutation = false;
   let bulkOpen = false;
   let bulkFeedback = null;
@@ -336,6 +336,17 @@
       : timelineOptimisticEdits.get(id)?.description ?? active.description ?? '';
   }
 
+  function savedActiveBillableValue(active = pageState.active) {
+    if (!active) return true;
+    return timelineOptimisticEdits.get(active.id || active.startedAt)?.billable
+      ?? (active.metadata?.billable !== false);
+  }
+  function activeBillableValue(active = pageState.active) {
+    if (!active) return true;
+    const id = active.id || active.startedAt;
+    return billableDraft && billableDraft.id === id && billableDraft.taskUrl === taskUrlOf(active)
+      ? billableDraft.value : savedActiveBillableValue(active);
+  }
   function savedActiveDescriptionValue(active = pageState.active) {
     if (!active) return '';
     return timelineOptimisticEdits.get(active.id || active.startedAt)?.description ?? active.description ?? '';
@@ -364,6 +375,11 @@
     const id = active?.id || active?.startedAt;
     if (descriptionDraft?.id === id && descriptionDraft.taskUrl === taskUrlOf(active)
         && normalizedDescription(descriptionDraft.value) === value) descriptionDraft = null;
+  }
+  function retireActiveBillableDraft(active, value) {
+    const id = active?.id || active?.startedAt;
+    if (billableDraft?.id === id && billableDraft.taskUrl === taskUrlOf(active)
+        && billableDraft.value === value) billableDraft = null;
   }
   function projectNameForUrl(url, projects = [], otherProjectName = 'Other') {
     const candidate = String(url || '').toLowerCase();
@@ -1858,8 +1874,10 @@
       const edits = changes.get(`${entry.destinationId}\u0000${entry._path}\u0000${entry.id}`);
       if (!edits) return entry;
       const startedAt = edits.startedAt ?? entry.startedAt, endedAt = edits.endedAt ?? entry.endedAt;
+      const { billable, ...recordEdits } = edits;
       return {
-        ...entry, ...edits, startedAt, endedAt,
+        ...entry, ...recordEdits, startedAt, endedAt,
+        ...(billable === undefined ? {} : { metadata: { ...(entry.metadata || {}), billable } }),
         entryDate: timestampParts(startedAt, entry.timezone).date,
         durationSeconds: Math.max(0, Math.floor((new Date(endedAt) - new Date(startedAt)) / 1000)),
       };
@@ -1929,8 +1947,9 @@
           if (!task?.taskUrl) throw new Error('Enter a valid HTTP(S) task URL.');
           const description = normalizedDescription(value.metadataActive ? value.description : target.description);
           const edits = { ...(task.taskUrl === originalIdentity && !taskUrlOf(target) ? {} : { taskUrl: task.taskUrl }),
-            taskTitle: task.taskTitle, startedAt: editor.startPicker.value(), endedAt: editor.stopPicker.value(), description };
-          const changed = task.taskUrl !== originalIdentity || edits.taskTitle !== taskTitleOf(target) || edits.startedAt !== target.startedAt || edits.endedAt !== target.endedAt || edits.description !== (target.description || '');
+            taskTitle: task.taskTitle, startedAt: editor.startPicker.value(), endedAt: editor.stopPicker.value(), description,
+            ...(value.metadataActive && value.billable !== (target.metadata?.billable !== false) ? { billable: value.billable } : {}) };
+          const changed = task.taskUrl !== originalIdentity || edits.taskTitle !== taskTitleOf(target) || edits.startedAt !== target.startedAt || edits.endedAt !== target.endedAt || edits.description !== (target.description || '') || Object.hasOwn(edits, 'billable');
           return changed ? { destinationId: target.destinationId, path: target._path, originalSha: target._sha, index: target._index, original: originalRecord(target), edits } : null;
         }).filter(Boolean);
         const savedKeys = new Set(submittedDrafts.keys());
@@ -1995,7 +2014,7 @@
         stop: { ...timestampParts(entry.endedAt, entry.timezone), timestamp: entry.endedAt },
         group: key,
       }),
-      metadataActive: true, taskUrl: storedTaskIdentityOf(entry), taskTitle: taskTitleOf(entry), description: entry.description || '',
+      metadataActive: true, taskUrl: storedTaskIdentityOf(entry), taskTitle: taskTitleOf(entry), description: entry.description || '', billable: existing?.billable ?? (entry.metadata?.billable !== false),
     });
     renderUi(); globalThis.requestAnimationFrame?.(() => {
       const editor = inlineEditors.get(key);
@@ -2049,7 +2068,7 @@
     timeEntrySearchRecord = current;
     form.openEdit({ taskUrl: storedTaskIdentityOf(current), taskTitle: taskTitleOf(current),
       destinationId: current.destinationId, startedAt: current.startedAt,
-      endedAt: current.endedAt, description: current.description || '' }, async value => {
+      endedAt: current.endedAt, description: current.description || '', metadata: current.metadata }, async value => {
         const imported = value.taskUrl && !/^https?:\/\//i.test(value.taskUrl);
         if (imported && value.destinationId !== current.destinationId) {
           throw new Error('The selected imported task belongs to a different time repository.');
@@ -2059,10 +2078,12 @@
         if (!identity || imported && !value.destinationId) throw new Error('Select an existing imported task or enter an HTTP(S) task URL.');
         const edits = { ...(identity === storedTaskIdentityOf(current) && !taskUrlOf(current) ? {} : { taskUrl: identity }),
           taskTitle: value.taskTitle, startedAt: value.startedAt,
-          endedAt: value.endedAt, description: value.description };
+          endedAt: value.endedAt, description: value.description,
+          ...(typeof value.billable === 'boolean' && value.billable !== (current.metadata?.billable !== false)
+            ? { billable: value.billable } : {}) };
         if (identity === storedTaskIdentityOf(current) && value.taskTitle === taskTitleOf(current)
             && value.startedAt === current.startedAt && value.endedAt === current.endedAt
-            && value.description === (current.description || '')) return;
+            && value.description === (current.description || '') && !Object.hasOwn(edits, 'billable')) return;
         await queueCalendarEntry(current, edits);
         renderUi();
       }, trigger);
@@ -2230,7 +2251,9 @@
 
   function recentRecord(entry, overlaps) {
     const key = entryKey(entry), overlapping = overlaps.has(key), draft = inlineDrafts.get(key);
+    const nonBillable = (entry.billable ?? (entry.metadata?.billable !== false)) === false;
     const record = el('div', undefined, 'entry-record');
+    if (nonBillable) record.classList.add('entry-non-billable');
     if (draft?.metadataActive) record.classList.add('entry-editing');
     const warning = el('div', 'Overlaps another entry', 'overlap-warning');
     const setOverlap = active => {
@@ -2274,6 +2297,7 @@
       if (!inline.save.hidden) actions.classList.add('dirty');
       const time = el('span', recentTimeText(entry), 'entry-time-range entry-time-display');
       timeRow.append(time, inline.node, inline.duration, actions);
+      if (nonBillable) actions.before(el('span', 'Non-billable', 'entry-non-billable-badge'));
       timeRow.append(inline.unsaved);
       if (draft?.metadataActive) {
         const metadata = el('div', undefined, 'inline-metadata-editor');
@@ -2283,7 +2307,11 @@
         const descriptionMore = el('span', '↓ More lines — scroll', 'description-overflow-hint'); descriptionMore.hidden = true;
         fitDescriptionTextarea(descriptionField, { minRows: 2, more: descriptionMore });
         descriptionField.addEventListener('input', () => fitDescriptionTextarea(descriptionField, { minRows: 2, more: descriptionMore }));
-        const updateMetadata = () => { const value = inlineDrafts.get(key); if (value) inlineDrafts.set(key, { ...value, taskUrl: urlField.value, taskTitle: titleField.value, description: descriptionField.value }); };
+        const updateMetadata = () => { const value = inlineDrafts.get(key); if (value) inlineDrafts.set(key, { ...value, taskUrl: urlField.value, taskTitle: titleField.value, description: descriptionField.value, billable: !nonBillable.checked }); };
+        const nonBillableLabel = el('label', 'Non-billable', 'inline-non-billable');
+        const nonBillable = el('input'); nonBillable.type = 'checkbox'; nonBillable.checked = draft.billable === false;
+        nonBillableLabel.prepend(nonBillable); nonBillable.disabled = disabled;
+        nonBillable.addEventListener('change', () => { updateMetadata(); editor.updateDraft(); });
         const field = (labelText, input, saveLabel) => {
           const label = el('label', labelText), control = el('span', undefined, 'save-field');
           const save = saveCheckButton(saveLabel, async () => { updateMetadata(); await inline.saveGroup(); });
@@ -2296,6 +2324,7 @@
           field(taskUrlOf(entry) ? 'Task URL' : 'Imported task identity (replace with an HTTP(S) URL)', urlField, 'Save task URL'),
           field('Task title (optional)', titleField, 'Save task title'),
           field('Description', descriptionField, 'Save description'),
+          nonBillableLabel,
         );
         for (const input of [urlField, titleField, descriptionField]) {
           input.disabled = disabled; input.addEventListener('input', updateMetadata);
@@ -2905,23 +2934,27 @@
     const bulk = el('details', undefined, 'bulk-time');
     bulk.open = bulkOpen; bulk.addEventListener('toggle', () => { bulkOpen = bulk.open; });
     const summary = el('summary', 'Bulk time adding'); bulk.append(summary);
-    const help = el('p', 'One entry per line: date, URL, optional description, then hours. Imports are all-or-nothing and are appended after existing time on each day.', 'muted');
+    const help = el('p', 'One entry per line: date, URL, optional description, then hours. Add !non-billable before hours to mark an individual entry. Imports are all-or-nothing.', 'muted');
     const examples = el('div', undefined, 'bulk-time-examples');
     examples.append(el('strong', 'Examples'), el('pre', `2026/08/21 https://example.com/task Search relevance 6:00
 2026-08-22 https://github.com/acme/app/issues/42 Fix ranking 6.5
 23.08.2026 https://example.com/call Customer call 1:30
-24/08/2026 https://example.com/release Release preparation 0.25`));
+24/08/2026 https://example.com/release Release preparation !non-billable 0.25`));
     const input = el('textarea'); input.rows = 8; input.className = 'bulk-time-input'; input.setAttribute('aria-label', 'Bulk time entries'); input.value = bulkDraft; input.disabled = bulkMutation;
     input.placeholder = 'Enter one entry per line';
     input.addEventListener('input', () => { bulkDraft = input.value; bulkFeedback = null; shadow?.querySelector('.bulk-time-feedback')?.remove(); });
+    const nonBillableLabel = el('label', 'Non-billable (all entries)', 'bulk-non-billable');
+    const nonBillable = el('input'); nonBillable.type = 'checkbox'; nonBillable.checked = bulkNonBillable;
+    nonBillableLabel.prepend(nonBillable);
+    nonBillable.addEventListener('change', () => { bulkNonBillable = nonBillable.checked; });
     const add = button('Add time', 'primary', async () => {
       if (bulkMutation) return;
       bulkDraft = input.value; bulkOpen = true; bulkMutation = true; bulkFeedback = null; errorText = ''; renderUi();
       let added = null;
       try {
-        const result = await send({ type: 'BULK_ADD_TIMES', text: bulkDraft });
+        const result = await send({ type: 'BULK_ADD_TIMES', text: bulkDraft, billable: !bulkNonBillable });
         added = result.added;
-        bulkDraft = ''; bulkMutation = false;
+        bulkDraft = ''; bulkMutation = false; bulkNonBillable = false;
         // Accepted records are already durable in IndexedDB. Show them now,
         // without waiting for a GitHub history read or the 15-second flush.
         if (Array.isArray(result.entries)) {
@@ -2940,7 +2973,7 @@
       }
       renderUi();
     }); add.disabled = bulkMutation;
-    bulk.append(help, examples, input, add); body.append(bulk);
+    bulk.append(help, examples, input, nonBillableLabel, add); body.append(bulk);
     if (bulkFeedback) {
       const feedback = el('div', undefined, `bulk-time-feedback bulk-time-feedback-${bulkFeedback.kind}`);
       feedback.setAttribute('role', bulkFeedback.kind === 'error' ? 'alert' : 'status');
@@ -3060,6 +3093,7 @@
         fallbackIconUrl: !taskUrlOf(entry) ? extensionResourceUrl('src/assets/clockoli-inverse-circle.svg') : '',
         description: entry._active ? activeDescriptionValue(entry) : (timelineDescriptionDrafts.get(entry.id) ?? entry.description ?? ''),
         savedDescription: entry.description || '',
+        billable: entry._active ? activeBillableValue(entry) : entry.billable ?? (entry.metadata?.billable !== false),
         originalStartedAt: new Date(entry.startedAt).getTime(),
         originalEndedAt: entry._active ? null : new Date(entry.endedAt).getTime(),
         startedAt: Math.max(historyStart, weekWindow().start, new Date(entry.startedAt).getTime()),
@@ -3290,14 +3324,14 @@
       if (sameTask(task, pageState.active)) return;
       const switching = Boolean(pageState.active);
       if (switching && !confirmLongEntry()) return;
-      const previousDescription = activeDescriptionValue();
+      const previousDescription = activeDescriptionValue(), previousBillable = activeBillableValue();
       const hasDraft = Boolean(descriptionDraft && pageState.active
         && descriptionDraft.id === (pageState.active.id || pageState.active.startedAt)
         && descriptionDraft.taskUrl === taskUrlOf(pageState.active));
       startContext = acceptTimelineStartImmediately(task, { completePrevious: switching, identity: 'current-task', previousDescription });
       const result = await send(switching
         ? { type: 'SWITCH_TASK', taskUrl: task.taskUrl, taskTitle: task.taskTitle || '',
-          ...(preserveSavedDescription && !hasDraft ? {} : { description: previousDescription }) }
+          ...(preserveSavedDescription && !hasDraft ? {} : { description: previousDescription }), billable: previousBillable }
         : { type: 'START', taskUrl: task.taskUrl, taskTitle: task.taskTitle || '' });
       if (switching) rememberCompletedLocally(result?.stopped, result?.destinationId);
       const active = switching ? result?.active : result;
@@ -3345,8 +3379,10 @@
     recent = recent.map(item => {
       if (item.id !== entry.id || item._path !== entry._path) return item;
       const startedAt = edits.startedAt ?? item.startedAt, endedAt = edits.endedAt ?? item.endedAt;
+      const { billable, ...recordEdits } = edits;
       return {
-        ...item, ...edits, startedAt, endedAt,
+        ...item, ...recordEdits, startedAt, endedAt,
+        ...(billable === undefined ? {} : { metadata: { ...(item.metadata || {}), billable } }),
         entryDate: timestampParts(startedAt, item.timezone).date,
         durationSeconds: Math.max(0, Math.floor((new Date(endedAt) - new Date(startedAt)) / 1000)),
       };
@@ -3446,6 +3482,7 @@
         original: { id: entry.id, startedAt: entry.startedAt },
         ...(requestedEdits.startedAt !== undefined ? { startedAt: requestedEdits.startedAt } : {}),
         ...(requestedEdits.description !== undefined ? { description: requestedEdits.description } : {}),
+        ...(requestedEdits.billable !== undefined ? { billable: requestedEdits.billable } : {}),
       } });
       if (waitForAcceptance) {
         if (requestOrder < (timelineAcceptedEditOrders.get(entry.id) || 0)) return;
@@ -3470,9 +3507,10 @@
     return queueActiveEdit(entry, { startedAt: new Date(startedAt).toISOString() }, 'Adjust timer start');
   }
 
-  async function queueActiveDescriptionEdit(entry, description) {
-    await queueActiveEdit(entry, { description }, 'Edit running timer description');
+  async function queueActiveDescriptionEdit(entry, description, billable) {
+    await queueActiveEdit(entry, { description, ...(billable === undefined ? {} : { billable }) }, 'Edit running timer');
     retireActiveDescriptionDraft(entry, description);
+    if (billable !== undefined) retireActiveBillableDraft(entry, billable);
   }
 
   async function queueTimelineEntryDelete(entry) {
@@ -3515,7 +3553,9 @@
     if (!activeEntry || timelineStartInFlight || timelineDeleteInFlight || !beginTimelineStop()) return false;
     try {
       if (!confirmLongEntry(activeEntry)) return false;
-      const result = await send(preserveSavedDescription ? { type: 'STOP' } : { type: 'STOP', description: activeDescriptionValue(activeEntry) });
+      const result = await send({ type: 'STOP',
+        ...(preserveSavedDescription ? {} : { description: activeDescriptionValue(activeEntry) }),
+        billable: activeBillableValue(activeEntry) });
       if (!result?.entry?.id) throw new Error('The locally accepted Stop did not return its completed time entry.');
       if (timelineAcceptedActive && sameTask(timelineAcceptedActive, activeEntry)) timelineAcceptedActive = null;
       rememberCompletedLocally(result, result.destinationId);
@@ -3537,7 +3577,7 @@
     const previousDescription = activeDescriptionValue();
     const startContext = acceptTimelineStartImmediately(entry, { completePrevious: true, identity: entry.id, previousDescription });
     try {
-      const result = await send({ type: 'SWITCH_TASK', timelineTask: true, taskUrl: trackableTaskIdentityOf(entry), taskTitle: taskTitleOf(entry) || '', description: previousDescription,
+      const result = await send({ type: 'SWITCH_TASK', timelineTask: true, taskUrl: trackableTaskIdentityOf(entry), taskTitle: taskTitleOf(entry) || '', description: previousDescription, billable: activeBillableValue(),
         sourceEntry: { id: entry.id, destinationId: entry.destinationId, entryDate: entry.entryDate } });
       rememberCompletedLocally(result?.stopped, result?.destinationId);
       if (result?.active) {
@@ -3685,6 +3725,13 @@
           const entry = timelineEntriesById.get(item.id);
           if (!entry) return false;
           await openTimeEntryForm(entry, trigger);
+          return true;
+        },
+        onBillableCommit: async (item, billable) => {
+          const entry = timelineEntriesById.get(item.id);
+          if (!entry) return false;
+          if (entry._active) await queueActiveEdit(entry, { billable }, 'Edit running timer billability');
+          else await queueCalendarEntry(entry, { billable });
           return true;
         },
         onDescriptionInput: (item, value) => {
@@ -3902,10 +3949,13 @@
       const resizeDescription = () => fitDescriptionTextarea(description, { maxHeight: 180, more: descriptionMore });
       resizeDescription();
       const descriptionField = el('div', undefined, 'save-field strip-description-field');
+      const nonBillableLabel = el('label', 'Non-billable', 'strip-non-billable');
+      const nonBillable = el('input'); nonBillable.type = 'checkbox'; nonBillable.checked = !activeBillableValue(active);
+      nonBillableLabel.prepend(nonBillable);
       const savedIndicator = savedNotice('description-saved');
       savedIndicator.setAttribute('role', 'status');
       savedIndicator.hidden = true;
-      let savingDescription = null, saveAgain = false, submittedDescription = null, hideSavedTimer = null;
+      let savingDescription = null, saveAgain = false, submittedDescription = null, submittedBillable = null, hideSavedTimer = null;
       const showSaved = () => {
         clearTimeout(hideSavedTimer);
         savedIndicator.hidden = false;
@@ -3916,7 +3966,7 @@
         : (pageState.active?.startedAt === active.startedAt ? pageState.active : null);
       const saveActiveDescription = () => {
         if (savingDescription) {
-          if (normalizedDescription(description.value) !== submittedDescription) saveAgain = true;
+          if (normalizedDescription(description.value) !== submittedDescription || !nonBillable.checked !== submittedBillable) saveAgain = true;
           return savingDescription;
         }
         savingDescription = (async () => {
@@ -3924,24 +3974,25 @@
             saveAgain = false;
             const current = currentActive();
             if (!current) return; // The timer was stopped or switched while this field was focused.
-            const value = normalizedDescription(description.value);
-            submittedDescription = value;
-            if (value === normalizedDescription(savedActiveDescriptionValue(current))) {
+            const value = normalizedDescription(description.value), billable = !nonBillable.checked;
+            submittedDescription = value; submittedBillable = billable;
+            if (value === normalizedDescription(savedActiveDescriptionValue(current)) && billable === savedActiveBillableValue(current)) {
               if (value === normalizedDescription(current.description)) retireActiveDescriptionDraft(current, value);
             } else {
-              await queueActiveDescriptionEdit(current, value);
+              await queueActiveDescriptionEdit(current, value, billable);
             }
-            if (!saveAgain && normalizedDescription(description.value) === value) showSaved();
+            if (!saveAgain && normalizedDescription(description.value) === value && !nonBillable.checked === billable) showSaved();
           } while (saveAgain);
         })().finally(() => {
           savingDescription = null;
-          submittedDescription = null;
+          submittedDescription = null; submittedBillable = null;
           updateDescriptionSave();
         });
         return savingDescription;
       };
       const saveDescription = saveCheckButton('Save description', saveActiveDescription);
-      const updateDescriptionSave = () => { saveDescription.hidden = normalizedDescription(description.value) === normalizedDescription(savedActiveDescriptionValue(currentActive() ?? active)); };
+      const updateDescriptionSave = () => { saveDescription.hidden = normalizedDescription(description.value) === normalizedDescription(savedActiveDescriptionValue(currentActive() ?? active))
+        && !nonBillable.checked === savedActiveBillableValue(currentActive() ?? active); };
       updateDescriptionSave();
       description.addEventListener('input', () => {
         descriptionDraft = { id: active.id || active.startedAt, taskUrl: taskUrlOf(active), value: description.value };
@@ -3954,7 +4005,7 @@
           event.preventDefault();
           // Blur may trigger an immediate timeline render before focus reaches Stop.
           strip.setAttribute('data-moving-focus-to-stop', '');
-          try { stop.focus({ preventScroll: true }); }
+          try { nonBillable.focus({ preventScroll: true }); }
           finally { strip.removeAttribute('data-moving-focus-to-stop'); }
           return;
         }
@@ -3963,7 +4014,12 @@
         return saveActiveDescription().catch(setError);
       });
       description.addEventListener('blur', () => saveActiveDescription().catch(setError));
-      descriptionField.append(description, saveDescription, savedIndicator, descriptionMore);
+      nonBillable.addEventListener('change', () => {
+        billableDraft = { id: active.id || active.startedAt, taskUrl: taskUrlOf(active), value: !nonBillable.checked };
+        savedIndicator.hidden = true; updateDescriptionSave();
+        void saveActiveDescription().catch(setError);
+      });
+      descriptionField.append(description, saveDescription, savedIndicator, descriptionMore, nonBillableLabel);
       const elapsed = el('span', undefined, 'running-status-elapsed');
       elapsed.setAttribute('role', 'timer'); elapsed.setAttribute('aria-label', 'Elapsed time');
       elapsed.append(el('span', 'Duration', 'running-status-metric-label'),
@@ -4254,10 +4310,13 @@
         resizeDescription();
         const saved = savedNotice('description-saved dialog-description-saved'); saved.setAttribute('role', 'status'); saved.hidden = true;
         label.append(description, saved, descriptionMore); body.append(label);
-        let savingDescription = null, saveAgain = false, submittedDescription = null;
+        const nonBillableLabel = el('label', 'Non-billable', 'dialog-non-billable');
+        const nonBillable = el('input'); nonBillable.type = 'checkbox'; nonBillable.checked = !activeBillableValue(active);
+        nonBillableLabel.prepend(nonBillable); body.append(nonBillableLabel);
+        let savingDescription = null, saveAgain = false, submittedDescription = null, submittedBillable = null;
         const saveDescription = () => {
           if (savingDescription) {
-            if (normalizedDescription(description.value) !== submittedDescription) saveAgain = true;
+            if (normalizedDescription(description.value) !== submittedDescription || !nonBillable.checked !== submittedBillable) saveAgain = true;
             return savingDescription;
           }
           savingDescription = (async () => {
@@ -4265,16 +4324,16 @@
               saveAgain = false;
               const current = pageState.active;
               if (!current || (active.id ? current.id !== active.id : current.startedAt !== active.startedAt)) return;
-              const value = normalizedDescription(description.value);
-              submittedDescription = value;
-              if (value !== normalizedDescription(savedActiveDescriptionValue(current))) {
-                await queueActiveDescriptionEdit(current, value);
+              const value = normalizedDescription(description.value), billable = !nonBillable.checked;
+              submittedDescription = value; submittedBillable = billable;
+              if (value !== normalizedDescription(savedActiveDescriptionValue(current)) || billable !== savedActiveBillableValue(current)) {
+                await queueActiveDescriptionEdit(current, value, billable);
               } else if (value === normalizedDescription(current.description)) {
                 retireActiveDescriptionDraft(current, value);
               }
-              if (!saveAgain && normalizedDescription(description.value) === value) saved.hidden = false;
+              if (!saveAgain && normalizedDescription(description.value) === value && !nonBillable.checked === billable) saved.hidden = false;
             } while (saveAgain);
-          })().catch(setError).finally(() => { savingDescription = null; submittedDescription = null; });
+          })().catch(setError).finally(() => { savingDescription = null; submittedDescription = null; submittedBillable = null; });
           return savingDescription;
         };
         description.addEventListener('input', () => {
@@ -4287,6 +4346,11 @@
           event.preventDefault();
           void saveDescription();
         });
+        description.addEventListener('blur', () => { void saveDescription(); });
+        nonBillable.addEventListener('change', () => {
+          billableDraft = { id: active.id || active.startedAt, taskUrl: taskUrlOf(active), value: !nonBillable.checked };
+          saved.hidden = true; void saveDescription();
+        });
         const switchToCurrent = Boolean(!same && current);
         const makeStop = switchToCurrent => {
         const stop = button(switchToCurrent ? 'Save and switch to this task' : 'Stop and save', switchToCurrent ? 'primary wide' : 'danger wide', async (event, node) => {
@@ -4297,8 +4361,8 @@
             const actionRoute = popupMode ? null : `${location.protocol}//${location.hostname}${location.pathname}`;
             const recentWasFresh = !switchToCurrent && recentFresh;
             const result = await send(switchToCurrent
-              ? { type: 'SWITCH_TASK', taskUrl: current.taskUrl, taskTitle: current.taskTitle || '', description: description.value }
-              : { type: 'STOP', description: description.value });
+              ? { type: 'SWITCH_TASK', taskUrl: current.taskUrl, taskTitle: current.taskTitle || '', description: description.value, billable: !nonBillable.checked }
+              : { type: 'STOP', description: description.value, billable: !nonBillable.checked });
             if (timelineAcceptedActive && sameTask(timelineAcceptedActive, active)) timelineAcceptedActive = null;
             if (actionRoute && actionRoute !== `${location.protocol}//${location.hostname}${location.pathname}`) return;
             if (!switchToCurrent) {
@@ -4624,6 +4688,8 @@
       .description-overflow-hint[hidden] { display:none }
       .strip-description-field .description-saved { position:absolute; right:38px; top:50%; transform:translateY(-50%); padding:2px 4px; background:var(--bgColor-default,var(--ck-bg)); border-radius:3px}
       .dialog-description-saved { margin:4px 0 0 8px }
+      .strip-non-billable,.dialog-non-billable { display:flex;align-items:center;gap:7px;width:max-content;max-width:100%;margin-top:4px;color:var(--fgColor-muted,var(--ck-fg-muted));font-size:12px;cursor:pointer }
+      .strip-non-billable input,.dialog-non-billable input { box-sizing:border-box;width:16px;height:16px;min-height:16px;margin:0;padding:0;accent-color:var(--button-primary-bgColor-rest) }
       .entry-description-saved { margin:4px 0 0 24px }
       .save-check { position:absolute; z-index:1; top:50%; right:4px; display:inline-flex; align-items:center; justify-content:center; width:24px; min-height:0; height:24px; margin:0; padding:0; transform:translateY(-50%); border:0; border-radius:6px; background:transparent; color:var(--ck-success); cursor:pointer }
       .save-check:hover:not(:disabled) { border:0; background:color-mix(in srgb,var(--ck-success) 12%,transparent); color:var(--ck-success) } .save-check:disabled { border:0; background:transparent; color:color-mix(in srgb,var(--ck-success) 50%,transparent) } .save-check[hidden] { display:none } .reports-button,.icon-button,.link-button,.navigation-item { border:1px solid var(--button-invisible-borderColor-rest,var(--ck-button-invisible-border-rest)); background:var(--button-invisible-bgColor-rest,var(--ck-button-invisible-bg-rest)) } .reports-button,.icon-button { color:var(--button-invisible-iconColor-rest,var(--ck-button-invisible-icon-rest)) } .reports-button:hover,.icon-button:hover,.link-button:hover,.navigation-item:hover { border-color:var(--button-invisible-borderColor-hover,var(--ck-button-invisible-border-hover)); background:var(--button-invisible-bgColor-hover,var(--ck-button-invisible-bg-hover)) } .reports-button:hover,.icon-button:hover { color:var(--button-invisible-iconColor-hover,var(--ck-button-invisible-icon-hover)) } .reports-button:active:not(:disabled),.icon-button:active:not(:disabled),.link-button:active:not(:disabled),.navigation-item:active:not(:disabled) { background:var(--button-invisible-bgColor-active,var(--ck-button-invisible-bg-active)) } .reports-button:disabled,.icon-button:disabled,.link-button:disabled,.navigation-item:disabled { border-color:var(--button-invisible-borderColor-disabled,var(--ck-button-invisible-border-disabled)); background:var(--button-invisible-bgColor-disabled,var(--ck-button-invisible-bg-disabled)); color:var(--button-invisible-fgColor-disabled,var(--ck-button-invisible-fg-disabled)) } @media(prefers-reduced-motion: no-preference) { .icon-button.syncing svg { animation:clockoli-sync-spin .8s linear infinite; transform-origin:center } } @keyframes clockoli-sync-spin { to { transform:rotate(360deg) } } .today-total { margin-top:14px; padding:10px 12px; border:1px solid var(--borderColor-muted,var(--ck-border-muted)); border-radius:6px; background:var(--bgColor-muted,var(--ck-bg-muted)) }
@@ -4695,6 +4761,8 @@
       .entry-description-link { white-space:pre-wrap; overflow-wrap:anywhere }
       .activity-list .entry-description-link { min-height:0; margin:4px 0 0 24px; padding:0; border:0; border-radius:0; background:transparent; color:var(--fgColor-muted,var(--ck-fg-muted)); font-size:12px; font-weight:400; text-align:left }
       .activity-list .entry-description-link:hover { background:transparent; color:var(--fgColor-accent,var(--ck-accent)); text-decoration:underline }
+      .activity-list .inline-non-billable { display:flex;align-items:center;gap:7px;width:max-content;max-width:100%;font-size:12px;cursor:pointer }
+      .activity-list .inline-non-billable input { width:16px;height:16px;margin:0;accent-color:var(--button-primary-bgColor-rest) }
       .activity-list .entry-actions { position:absolute; top:8px; right:8px; gap:4px; opacity:0; transform:translateY(2px); transition:opacity .12s ease,transform .12s ease }
       .activity-list .entry-record:hover .entry-actions,.activity-list .entry-record:focus-within .entry-actions,.activity-list .entry-actions-visible { opacity:1; transform:translateY(0); pointer-events:auto }
       .activity-list .entry-actions .entry-edit,.activity-list .entry-actions .entry-delete,.activity-list .entry-actions .entry-track-control { display:inline-flex; align-items:center; justify-content:center; width:28px; min-height:28px; height:28px; padding:0; overflow:hidden; border:1px solid var(--borderColor-default,var(--ck-border)); border-radius:6px; background:var(--bgColor-default,var(--ck-bg)); color:var(--fgColor-muted,var(--ck-fg-muted)); font-size:0 }
@@ -4709,6 +4777,8 @@
       :host(.times-surface) .bulk-time summary { padding:10px 0; font-weight:600 }
       :host(.times-surface) .bulk-time-examples { margin:8px 0 12px; padding:10px 12px; border:1px solid var(--borderColor-muted,var(--ck-border-muted)); border-radius:6px; background:var(--bgColor-default,var(--ck-bg)) }
       :host(.times-surface) .bulk-time-examples strong { display:block; font-size:12px }
+      :host(.times-surface) .bulk-non-billable { display:flex;align-items:center;gap:8px;width:max-content;margin:8px 0;font-size:12px;cursor:pointer }
+      :host(.times-surface) .bulk-non-billable input { width:16px;height:16px;margin:0;accent-color:var(--button-primary-bgColor-rest) }
       :host(.times-surface) .bulk-time-examples pre { margin:4px 0 0; color:var(--fgColor-muted,var(--ck-fg-muted)); font:12px/1.6 var(--fontStack-monospace,ui-monospace,monospace); white-space:pre-wrap; overflow-wrap:anywhere }
       :host(.times-surface) .bulk-time-feedback { position:fixed; z-index:1000; right:24px; bottom:24px; display:flex; align-items:center; gap:12px; box-sizing:border-box; width:max-content; max-width:calc(100vw - 32px); padding:12px 14px; border:1px solid var(--borderColor-default,var(--ck-border)); border-left:4px solid var(--ck-success); border-radius:6px; background:var(--bgColor-default,var(--ck-bg)); color:var(--fgColor-default,var(--ck-fg)); box-shadow:var(--shadow-floating-small,var(--ck-shadow)); font-weight:600; overflow-wrap:anywhere }
       :host(.times-surface) .bulk-time-feedback-error { border-left-color:var(--ck-danger) }
@@ -4859,6 +4929,12 @@
       :host(.popup-surface) .times-search-pagination { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:16px 0; font-size:12px }
     `;
     if (timesMode || popupMode) style.textContent += `
+      /* Unbilled time stays in tracked totals; distinguish it in the List without hiding details. */
+      :host(.times-surface) .activity-list .entry-record.entry-non-billable:not(.entry-overlap),
+      :host(.popup-surface) .activity-list .entry-record.entry-non-billable:not(.entry-overlap) { background:color-mix(in srgb,var(--data-orange-color-emphasis,#eb670f) 7%,var(--bgColor-muted,var(--ck-bg-muted))); box-shadow:inset 4px 0 0 color-mix(in srgb,var(--data-orange-color-emphasis,#eb670f) 45%,var(--borderColor-muted,var(--ck-border-muted))) }
+      :host(.times-surface) .activity-list .entry-record.entry-non-billable:hover:not(.entry-overlap),
+      :host(.popup-surface) .activity-list .entry-record.entry-non-billable:hover:not(.entry-overlap) { background:color-mix(in srgb,var(--data-orange-color-emphasis,#eb670f) 11%,var(--bgColor-muted,var(--ck-bg-muted))) }
+      .activity-list .entry-non-billable-badge { box-sizing:border-box; display:inline-flex; align-items:center; min-height:20px; padding:0 8px; border:1px solid color-mix(in srgb,var(--data-orange-color-emphasis,#eb670f) 35%,var(--borderColor-muted,var(--ck-border-muted))); border-radius:6px; background:color-mix(in srgb,var(--data-orange-color-emphasis,#eb670f) 13%,var(--bgColor-muted,var(--ck-bg-muted))); color:color-mix(in srgb,var(--data-orange-color-emphasis,#eb670f) 55%,var(--fgColor-default,var(--ck-fg))); font:600 12px/18px var(--fontStack-sansSerif,sans-serif); white-space:nowrap }
       :host .timeline-shell.calendar-week-navigation > .week-navigation { display:flex; align-items:center; justify-content:center; gap:0; right:auto; width:62px }
       :host .timeline-shell.calendar-week-navigation > .week-navigation::before,:host .timeline-shell.calendar-week-navigation > .week-navigation::after { display:none }
       :host .timeline-shell.calendar-week-navigation > .week-navigation .week-navigation-button { min-width:28px; min-height:28px; width:28px; height:28px; border-radius:6px 0 0 6px }

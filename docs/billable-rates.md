@@ -25,11 +25,11 @@ In **Reports**, filter by Client if needed and choose **Calculate amounts using*
 - **Each project's client** applies the rate card of the client assigned to the entry's project.
 - A **specific client** applies that client's rates to all visible work, which can help when reporting on a team's work across projects.
 
-Unrated entries contribute no calculated amount. Different currencies are kept separate unless you select a conversion currency. Clockoli sends only currency codes and dates to Frankfurter when conversion is needed.
+Unrated entries contribute no calculated amount. Entries marked **Non-billable** also contribute zero, even with an applicable rate, while remaining in tracked-time totals. Different currencies are kept separate unless you select a conversion currency. Clockoli sends only currency codes and dates to Frankfurter when conversion is needed.
 
 ## Use rates on invoices
 
-When creating an invoice, choose its client. Clockoli always applies **that client's rates**. If you included a project belonging to another client, review the warning before issuing the invoice.
+When creating an invoice, choose its client. Clockoli applies **that client's rates** to entries not marked Non-billable. If you included a project belonging to another client, review the warning before issuing the invoice.
 
 ## Privacy and backups
 

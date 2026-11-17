@@ -4810,6 +4810,8 @@
     .clockoli-description-saved { position: absolute; top: 50%; right: 36px; transform: translateY(-50%); padding: 2px 4px; border-radius: 3px; background: var(--tt-panel); display: inline-flex; align-items: center; gap: 4px; color: #1f883d; font-size: 12px; font-weight: 500; white-space: nowrap; }
     .clockoli-description-saved[hidden] { display: none; }
     .clockoli-description-more { display: block; margin-top: 3px; color: var(--tt-muted); font-size: 12px; line-height: 1.3; }
+    .clockoli-non-billable { display:flex;align-items:center;gap:7px;flex:1 1 100%;margin-top:6px;color:var(--tt-muted);font-size:12px;cursor:pointer }
+    .clockoli-non-billable input { width:16px;height:16px;margin:0;accent-color:var(--tt-success,#1f883d) }
     .clockoli-description-more[hidden] { display: none; }
     .clockoli-timeline-action {
       flex: 0 0 auto; white-space: nowrap;
@@ -5626,6 +5628,8 @@
           const save = existing.querySelector('.clockoli-description-save');
           if (save) save.hidden = description.value.trim() === String(savedDescription).trim();
         }
+        const nonBillable = existing.querySelector('.clockoli-non-billable input');
+        if (nonBillable && !nonBillable.disabled) nonBillable.checked = item.billable === false;
         const deletion = existing.querySelector('.danger');
         const primary = existing.querySelector('.primary');
         const edit = existing.querySelector('.clockoli-entry-edit');
@@ -5707,7 +5711,24 @@
         });
         save.addEventListener('pointerdown', event => event.preventDefault());
         save.addEventListener('click', commit);
-        field.append(description, save, saved, more); actions.classList.add('has-description'); actions.append(field);
+        if (typeof props.onBillableCommit === 'function') {
+          const label = document.createElement('label'); label.className = 'clockoli-non-billable';
+          const checkbox = document.createElement('input'); checkbox.type = 'checkbox';
+          checkbox.checked = item.billable === false;
+          checkbox.setAttribute('aria-label', 'Non-billable');
+          label.append(checkbox, 'Non-billable');
+          checkbox.addEventListener('change', async () => {
+            const billable = !checkbox.checked;
+            checkbox.disabled = true;
+            try { await props.onBillableCommit(sourceItem(key), billable); }
+            catch (error) {
+              checkbox.checked = !billable;
+              props.onError?.(error, { action: 'billable', source: 'clockoli-details' });
+            } finally { checkbox.disabled = false; }
+          });
+          field.append(label);
+        }
+        field.prepend(description, save, saved, more); actions.classList.add('has-description'); actions.append(field);
         resizeDescription(description);
       }
       if (typeof props.onDelete === 'function') {

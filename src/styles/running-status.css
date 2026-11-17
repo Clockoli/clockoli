@@ -39,6 +39,7 @@
 .running-status-description-save:hover:not(:disabled){background:var(--bgColor-success-muted)}
 .running-status-description-saved{position:absolute;top:6px;right:32px;display:inline-flex;align-items:center;gap:4px;color:var(--fgColor-success);font-size:12px;font-weight:500;line-height:20px;white-space:nowrap}
 .running-status-description-more{display:block;margin-top:3px;color:var(--fgColor-muted);font-size:12px}
+.running-status-non-billable{display:flex;align-items:center;gap:6px;width:max-content;max-width:100%;margin-top:3px;color:var(--fgColor-muted);font-size:12px;cursor:pointer}.running-status-non-billable input{width:15px;height:15px;margin:0;accent-color:var(--button-primary-bgColor-rest,#1f883d)}
 .running-status-metrics{display:flex;align-items:center;gap:18px;flex:none}
 .running-status-elapsed,.running-status-today{white-space:nowrap;font-variant-numeric:tabular-nums}
 .running-status-elapsed{font-size:14px;font-weight:600;line-height:20px}
@@ -153,6 +154,8 @@
 .running-status .running-status-stop{min-height:32px;padding:5px 12px;border-radius:6px;font-size:14px}
 /* The page-top bar keeps every control on one 32px line, as GitHub toolbars do; Activity keeps its stacked card. */
 #running-status .running-status-stats{height:32px}
+/* The Non-billable checkbox makes the description field taller; keep the 32px controls aligned with its textarea. */
+#running-status .running-status-stats,#running-status .running-status-stop{align-self:flex-start}
 #running-status .running-status-start-field{padding:0 8px 0 12px}
 #running-status .running-status-start-label,#running-status .running-status-stats .running-status-elapsed,#running-status .running-status-stats .running-status-today{flex-direction:row;align-items:center;gap:6px}
 #running-status .running-status-stats .running-status-elapsed,#running-status .running-status-stats .running-status-today{padding:0 12px}

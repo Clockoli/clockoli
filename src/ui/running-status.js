@@ -50,7 +50,10 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
   saved.textContent = 'Saved'; saved.prepend(octicon(CHECK_PATH)); saved.setAttribute('role', 'status');
   const moreLines = make('small', 'running-status-description-more');
   moreLines.textContent = '↓ More lines — scroll'; moreLines.hidden = true;
-  descriptionField.append(description, saveDescription, saved, moreLines);
+  const nonBillableLabel = make('label', 'running-status-non-billable');
+  const nonBillable = make('input'); nonBillable.type = 'checkbox';
+  nonBillableLabel.append(nonBillable, 'Non-billable');
+  descriptionField.append(description, saveDescription, saved, moreLines, nonBillableLabel);
   const startField = make('div', 'running-status-start-field');
   const startLabel = make('label', 'running-status-start-label');
   const startCaption = make('span', 'running-status-start-caption'); startCaption.textContent = 'Started';
@@ -88,9 +91,9 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
   let state = null, readAt = 0, reportDate = '', requestId = 0, busy = false, destroyed = false, recentKey = '';
   let refreshFailure = null;
   let surfacedRateLimit = '';
-  let shownTimer = '', acceptedDescription = '', pendingAccepted = null;
+  let shownTimer = '', acceptedDescription = '', pendingAccepted = null, acceptedBillable = true, pendingAcceptedBillable = null;
   let focusDescriptionOnLoad = true;
-  let savingDescription = null, submittedDescription = null, saveAgain = false, hideSavedTimer = null;
+  let savingDescription = null, submittedDescription = null, submittedBillable = null, saveAgain = false, hideSavedTimer = null;
   let shownStartTimer = '', acceptedStartedAt = '', pendingAcceptedStart = null, savingStart = false, hideStartSavedTimer = null;
   const localDate = () => entryDateValue(localDateParts(new Date(Date.now())));
   const timerKey = active => active ? String(active.id || active.startedAt) : '';
@@ -135,7 +138,8 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
   }
 
   function updateDescriptionSave() {
-    saveDescription.hidden = normalizedDescription(description.value) === normalizedDescription(acceptedDescription);
+    saveDescription.hidden = normalizedDescription(description.value) === normalizedDescription(acceptedDescription)
+      && !nonBillable.checked === acceptedBillable;
   }
 
   function showSaved() {
@@ -149,19 +153,23 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
     if (key !== shownTimer) {
       shownTimer = key;
       acceptedDescription = active?.description || '';
-      pendingAccepted = null;
+      acceptedBillable = active?.metadata?.billable !== false;
+      pendingAccepted = null; pendingAcceptedBillable = null;
       savingDescription = null; submittedDescription = null; saveAgain = false;
       if (hideSavedTimer !== null) clearTimeout(hideSavedTimer);
       saved.hidden = true;
-      description.value = acceptedDescription;
+      description.value = acceptedDescription; nonBillable.checked = !acceptedBillable;
     } else if (active && !savingDescription && !saveDescription.hidden) {
       // Preserve an unsaved draft across the five-second state refresh.
     } else if (active && !savingDescription) {
       const latest = active.description || '';
-      if (pendingAccepted === null || latest === pendingAccepted) {
-        acceptedDescription = latest;
-        pendingAccepted = null;
+      const billable = active.metadata?.billable !== false;
+      if ((pendingAccepted === null || latest === pendingAccepted)
+          && (pendingAcceptedBillable === null || billable === pendingAcceptedBillable)) {
+        acceptedDescription = latest; acceptedBillable = billable;
+        pendingAccepted = null; pendingAcceptedBillable = null;
         if (description.value !== latest) description.value = latest;
+        nonBillable.checked = !billable;
       }
     }
     descriptionField.hidden = !active;
@@ -236,7 +244,7 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
   function commitDescription() {
     const key = shownTimer;
     if (savingDescription) {
-      if (normalizedDescription(description.value) !== submittedDescription) saveAgain = true;
+      if (normalizedDescription(description.value) !== submittedDescription || !nonBillable.checked !== submittedBillable) saveAgain = true;
       return savingDescription;
     }
     const work = (async () => {
@@ -244,24 +252,25 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
         saveAgain = false;
         const active = state?.active;
         if (!active || timerKey(active) !== key) return;
-        const value = normalizedDescription(description.value);
-        submittedDescription = value;
-        if (value !== normalizedDescription(acceptedDescription)) {
+        const value = normalizedDescription(description.value), billable = !nonBillable.checked;
+        submittedDescription = value; submittedBillable = billable;
+        if (value !== normalizedDescription(acceptedDescription) || billable !== acceptedBillable) {
           await send({ type: 'QUEUE_ACTIVE_START_EDIT', payload: {
-            original: { id: active.id, startedAt: active.startedAt }, description: value,
+            original: { id: active.id, startedAt: active.startedAt }, description: value, billable,
           } });
           if (shownTimer !== key) return;
-          acceptedDescription = value;
-          pendingAccepted = value;
+          acceptedDescription = value; acceptedBillable = billable;
+          pendingAccepted = value; pendingAcceptedBillable = billable;
+          state.active = { ...state.active, description: value, metadata: { ...(state.active.metadata || {}), billable } };
         }
-        if (!saveAgain && normalizedDescription(description.value) === value) showSaved();
+        if (!saveAgain && normalizedDescription(description.value) === value && !nonBillable.checked === billable) showSaved();
         updateDescriptionSave();
       } while (saveAgain);
     })();
     savingDescription = work.finally(() => {
       if (savingDescription === saving) {
         savingDescription = null;
-        submittedDescription = null;
+        submittedDescription = null; submittedBillable = null;
         updateDescriptionSave();
       }
     });
@@ -288,6 +297,10 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
     if (!busy && !saveDescription.hidden) void commitDescription().catch(showError);
   });
   saveDescription.addEventListener('click', () => void commitDescription().catch(showError));
+  nonBillable.addEventListener('change', () => {
+    saved.hidden = true; updateDescriptionSave();
+    void commitDescription().catch(showError);
+  });
 
   function recentTasks() {
     const candidates = [];
@@ -464,7 +477,7 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
       if (timerKey(state.active) !== stoppingTimer) throw new Error('The running timer changed. Retry Stop.');
       const hours = (Date.now() - new Date(state.active.startedAt).getTime()) / HOUR_MS;
       if (hours > LONG_ENTRY_HOURS && !confirm(`This entry is ${Math.floor(hours)} hours long. Save anyway?`)) return;
-      const completion = await send({ type: 'STOP', description: stopDescription });
+      const completion = await send({ type: 'STOP', description: stopDescription, billable: !nonBillable.checked });
       if (!destroyed) await onChange?.({ type: 'STOP', completion });
     } catch (cause) { failure = cause; }
     finally {
