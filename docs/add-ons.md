@@ -35,7 +35,7 @@ A person who is not yet a collaborator can be mapped, but repository access may 
 
 Clockoli does not invent GitHub URLs for imported tasks. Tasks without URLs receive a non-clickable `owner/project/task-slug` identity. To connect one to a real issue or page later, use [Settings → Merge tasks](settings.md#merge-tasks).
 
-If an imported interval overlaps existing time, Clockoli moves it forward to a free interval without shortening its duration. It also checks for prior imports to avoid duplicating the same work.
+If an imported interval overlaps existing time, Clockoli moves it forward to a free interval without shortening its duration. It also checks for prior imports to avoid duplicating the same work. Clockify entries imported as non-billable keep that status in Clockoli.
 
 ### Preview, progress, and privacy
 

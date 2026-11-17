@@ -1,6 +1,7 @@
 import { exchangeCurrencyCode, formatInvoiceNumber, invoicingSettings, parseRateFields, rateForUser } from './local-settings.js';
 import { validateDateRange } from './reporting.js';
 import { taskUrlOf } from './values.js';
+import { isBillable } from './records.js';
 
 function recordDate(record) { return String(record?.entryDate || record?.startedAt || '').slice(0, 10); }
 function currencyCode(currency, target) { return currency === target ? currency : exchangeCurrencyCode(currency); }
@@ -9,7 +10,7 @@ export function invoiceExchangeRequest(records, clientRates, clientId, targetCur
   const target = parseRateFields('0', targetCurrency).currency, sourceCurrencies = new Set(), dates = new Set();
   for (const record of records ?? []) {
     const date = recordDate(record), rate = rateForUser(record.user, clientRates?.[clientId] || {}, date);
-    if (!rate || rate.currency === target) continue;
+    if (!isBillable(record) || !rate || rate.currency === target) continue;
     const source = exchangeCurrencyCode(rate.currency);
     if (source === exchangeCurrencyCode(target)) continue;
     validateDateRange(date, date);
@@ -33,7 +34,7 @@ export function buildInvoice(records, {
   const selectedBankId = bankAccountId === undefined ? settings.defaultBankAccountId : bankAccountId;
   const bankAccount = selectedBankId ? settings.bankAccounts.find(item => item.id === selectedBankId) : null;
   if (selectedBankId && !bankAccount) throw new Error('Invoice bank account was not found');
-  const entries = (records ?? []).map(record => ({ record, rate: rateForUser(record.user, clientRates?.[client.id] || {}, recordDate(record)) }));
+  const entries = (records ?? []).filter(isBillable).map(record => ({ record, rate: rateForUser(record.user, clientRates?.[client.id] || {}, recordDate(record)) }));
   const currencies = [...new Set(entries.filter(entry => entry.rate).map(entry => entry.rate.currency))];
   const target = currency || client?.defaultCurrency || (currencies.length === 1 ? currencies[0] : '');
   if (!target) throw new Error('Choose a target currency for the invoice; the records do not have a single rate currency');

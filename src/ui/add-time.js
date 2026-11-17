@@ -174,6 +174,10 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
   description.addEventListener('input', resizeDescription);
   const descriptionFields = document.createElement('div'); descriptionFields.className = 'add-time-description-fields';
   descriptionFields.append(descriptionLabel, description, moreDescription);
+  const nonBillableLabel = document.createElement('label'); nonBillableLabel.className = 'add-time-non-billable';
+  const nonBillable = document.createElement('input'); nonBillable.type = 'checkbox'; nonBillable.id = 'add-time-non-billable';
+  nonBillableLabel.append(nonBillable, document.createTextNode('Non-billable'));
+  descriptionFields.append(nonBillableLabel);
   const preview = document.createElement('div'); preview.className = 'add-time-preview'; preview.setAttribute('aria-live', 'polite'); preview.hidden = true;
   const error = document.createElement('p'); error.className = 'add-time-error'; error.setAttribute('role', 'alert'); error.hidden = true;
   const duration = document.createElement('p'); duration.className = 'add-time-duration';
@@ -406,6 +410,8 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
     end.parentElement.children[0].textContent = boundary === 'end' ? 'End' : 'Time';
     end.setAttribute('aria-label', boundary === 'end' ? 'End' : 'End (optional)');
     descriptionLabel.hidden = runningEdit || Boolean(boundary); description.hidden = runningEdit || Boolean(boundary);
+    nonBillableLabel.hidden = runningEdit || Boolean(boundary);
+    nonBillable.checked = entry?.metadata?.billable === false;
     date.disabled = Boolean(boundary);
     start.disabled = boundary === 'end'; end.disabled = boundary === 'start';
     for (const input of [start, end]) {
@@ -487,7 +493,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
       busy = true; add.disabled = true; cancel.disabled = true; setError('');
       try {
         const result = await send({ type: 'ADD_DAY_RANGE', taskUrl: task.taskUrl, taskTitle: task.title || '',
-          description: description.value.trim(), dates, durationSeconds,
+          description: description.value.trim(), billable: !nonBillable.checked, dates, durationSeconds,
           ...(!/^https?:\/\//i.test(task.taskUrl) ? { destinationId: task.destinationId } : {}) });
         dialog.close(); saved.hidden = false;
         clearTimeout(savedTimer); savedTimer = setTimeout(() => { saved.hidden = true; }, 3000);
@@ -543,6 +549,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
       const value = runningEdit ? { startedAt }
         : { taskUrl: task.taskUrl, taskTitle: task.title || '', startedAt, endedAt,
           description: description.value.trim(),
+          billable: !nonBillable.checked,
           ...(!/^https?:\/\//i.test(task.taskUrl) ? { destinationId: task.destinationId } : {}) };
       const isEdit = Boolean(editing);
       const result = isEdit ? await editing.onEdit(value)

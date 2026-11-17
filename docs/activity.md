@@ -42,7 +42,7 @@ Hover over, focus, or tap an entry to see its details. Selecting a completed ent
 - **Track again:** start a new timer for the same task.
 - **Edit:** open the entry's time-editing form.
 - **Delete:** remove the entry after confirmation.
-- **Add description...:** edit its note directly, including when it was previously empty.
+- **Add description...:** edit its note directly, including when it was previously empty, and choose **Non-billable** for this entry.
 
 ![Details card with Edit, Delete, Track again, and a description](images/entry-details.png)
 
@@ -67,7 +67,9 @@ List groups the selected week's entries by date and offers direct time editing, 
 
 ![Activity List with dated time entries and search](images/activity-list.png)
 
-Edit an entry's Start or End directly, then select **Save time**. You can also edit its URL, title, and description or select **Delete**. Some changes to adjacent entries are linked; see [Correct times inline](editing-time.md#correct-times-inline).
+Entries marked **Non-billable** show a label beside their duration and a subtle highlight in List. Their hours still count toward tracked-time totals.
+
+Edit an entry's Start or End directly, then select **Save time**. You can also edit its URL, title, description, and Non-billable status or select **Delete**. Some changes to adjacent entries are linked; see [Correct times inline](editing-time.md#correct-times-inline).
 
 ### Search all history
 

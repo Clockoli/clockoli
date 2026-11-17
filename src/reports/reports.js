@@ -6,6 +6,7 @@ import {
 import { buildInvoice, invoiceExchangeRequest } from '../domain/invoicing.js';
 import { clientForProject, exchangeCurrencyCode, invoicingSettings, projectNameForUrl, rateForClient, rateForRecord, rateMajorToMinor } from '../domain/local-settings.js';
 import { taskUrlOf } from '../domain/values.js';
+import { isBillable } from '../domain/records.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const FACET_KEYS = ['people', 'projects', 'repositories', 'timeRepositories'];
@@ -302,7 +303,7 @@ function populateClientContextSelectors() {
 }
 
 function invoiceCompositionKey(filtered) {
-  const records = filtered.map(record => [record.id || record.taskUrl || record.issue?.url || record.url, record.user, recordDate(record), record.durationSeconds]);
+  const records = filtered.map(record => [record.id || record.taskUrl || record.issue?.url || record.url, record.user, recordDate(record), record.durationSeconds, isBillable(record)]);
   return JSON.stringify({ range: state.range, filters: selectedFilters(), records, clientRates: state.billing.clientRates, invoicing: state.billing.invoicing });
 }
 
@@ -322,7 +323,7 @@ function setInvoiceAvailable(filtered) {
   let reason = '';
   if (state.pendingCount) reason = 'Local changes are not included. Wait for GitHub sync before invoicing.';
   else if (!filtered.length) reason = 'No entries in this period to invoice';
-  else if (!filtered.some(record => state.billing.invoicing.clients.some(client => rateForClient(client.id, state.billing, record.user, recordDate(record))))) reason = 'No client rate covers these entries. Add rates in Settings.';
+  else if (!filtered.some(record => isBillable(record) && state.billing.invoicing.clients.some(client => rateForClient(client.id, state.billing, record.user, recordDate(record))))) reason = 'No billable entry with a client rate. Check entry status or add rates in Settings.';
   else if (state.loading || state.stale) reason = 'Report is refreshing; wait for current data before invoicing';
   control.classList.toggle('disabled', Boolean(reason)); control.setAttribute('aria-disabled', String(Boolean(reason)));
   if (reason) control.setAttribute('data-clockoli-tooltip', reason); else control.removeAttribute('data-clockoli-tooltip');
@@ -368,7 +369,7 @@ async function pendingSafeForAction() {
 }
 
 function invoiceCurrencies(filtered) {
-  return [...new Set(filtered.map(record => recordRate(record, $('invoice-client').value)?.currency).filter(Boolean))].sort();
+  return [...new Set(filtered.filter(isBillable).map(record => recordRate(record, $('invoice-client').value)?.currency).filter(Boolean))].sort();
 }
 
 function selectedInvoiceClient() {
@@ -651,6 +652,7 @@ function renderCurrencySelector(filtered) {
   const select = $('billable-currency'), selected = select.value;
   const byCurrency = new Map();
   for (const record of filtered) {
+    if (!isBillable(record)) continue;
     const rate = recordRate(record);
     if (!rate) continue;
     const item = byCurrency.get(rate.currency) || { currency: rate.currency, currencyPosition: rate.currencyPosition, amountMinor: 0 };
@@ -672,8 +674,9 @@ function renderSummary(filtered, totals) {
   const total = filtered.reduce((sum, record) => sum + (Number(record.durationSeconds) || 0), 0);
   $('summary-time').textContent = formatClockDuration(total);
   $('summary-billable').hidden = !Object.values(state.billing.clientRates).some(card => Object.keys(card).length);
-  const missingRates = [...new Set(filtered.filter(record => !recordRate(record)).map(record => record.user))];
-  $('summary-money').textContent = `${billableSummary(totals)}${missingRates.length ? ` · No rate for ${missingRates.join(', ')}` : ''}`;
+  const missingRates = [...new Set(filtered.filter(record => isBillable(record) && !recordRate(record)).map(record => record.user))];
+  const amount = filtered.some(isBillable) ? billableSummary(totals) : 'No billable entries';
+  $('summary-money').textContent = `${amount}${missingRates.length ? ` · No rate for ${missingRates.join(', ')}` : ''}`;
   const people = new Set(filtered.map(record => record.user)).size;
   const sources = new Set(filtered.map(record => taskSource(record))).size;
   $('summary-counts').textContent = `${filtered.length} ${filtered.length === 1 ? 'entry' : 'entries'} · ${people} ${people === 1 ? 'person' : 'people'} · ${sources} ${sources === 1 ? 'source' : 'sources'}`;
@@ -863,7 +866,7 @@ function renderPrintableTimesheet(filtered) {
 }
 
 function exchangeRequest(filtered, targetCurrency) {
-  const datedRates = filtered.map(record => ({
+  const datedRates = filtered.filter(isBillable).map(record => ({
     date: recordDate(record),
     rate: recordRate(record),
   })).filter(item => item.rate);

@@ -77,22 +77,28 @@ function draftDescription(active = state.active) {
   return descriptionDraft?.key === activeKey(active)
     ? normalizedDescription(descriptionDraft.value) : normalizedDescription(active?.description);
 }
+function draftBillable(active = state.active) {
+  return descriptionDraft?.key === activeKey(active)
+    ? descriptionDraft.billable : active?.metadata?.billable !== false;
+}
 function saveDescription() {
   if (descriptionSaving) return descriptionSaving;
   const active = state.active;
   const key = activeKey(active);
   if (!active || busy || !descriptionDraft || descriptionDraft.key !== key
-      || draftDescription(active) === normalizedDescription(active.description)) return Promise.resolve();
+      || (draftDescription(active) === normalizedDescription(active.description)
+        && draftBillable(active) === (active.metadata?.billable !== false))) return Promise.resolve();
   descriptionSaving = (async () => {
     // A later keystroke while saving must not be lost.
     while (state.active && activeKey(state.active) === key) {
-      const description = draftDescription();
-      if (description === normalizedDescription(state.active.description)) break;
+      const description = draftDescription(), billable = draftBillable();
+      if (description === normalizedDescription(state.active.description)
+          && billable === (state.active.metadata?.billable !== false)) break;
       await send({ type: 'QUEUE_ACTIVE_START_EDIT', payload: {
-        original: { id: state.active.id, startedAt: state.active.startedAt }, description,
+        original: { id: state.active.id, startedAt: state.active.startedAt }, description, billable,
       } });
       if (activeKey(state.active) !== key) break;
-      state.active = { ...state.active, description };
+      state.active = { ...state.active, description, metadata: { ...(state.active.metadata || {}), billable } };
     }
   })().catch(error => {
     message = error?.message || 'Could not save description.';
@@ -156,7 +162,7 @@ function render() {
 
       const key = activeKey(active);
       if (descriptionDraft?.key !== key) {
-        descriptionDraft = { key, value: active.description || '' };
+        descriptionDraft = { key, value: active.description || '', billable: active.metadata?.billable !== false };
       }
       const descriptionWrap = el('div', null, 'quick-description-wrap');
       const description = el('textarea', null, 'quick-description');
@@ -179,16 +185,26 @@ function render() {
         if (!rendering) void saveDescription();
       });
       descriptionWrap.append(description);
+      const billableLabel = el('label', 'Non-billable', 'quick-non-billable');
+      const nonBillable = el('input'); nonBillable.type = 'checkbox'; nonBillable.checked = !descriptionDraft.billable;
+      nonBillable.setAttribute('aria-label', 'Non-billable');
+      billableLabel.prepend(nonBillable);
+      nonBillable.addEventListener('change', () => {
+        if (descriptionDraft?.key !== key) return;
+        descriptionDraft.billable = !nonBillable.checked;
+        void saveDescription();
+      });
+      descriptionWrap.append(billableLabel);
       card.append(descriptionWrap);
       const stop = button(busy ? 'Saving…' : 'Stop and save', 'quick-button quick-button-primary quick-button-wide', async () => {
-        await mutate({ type: 'STOP', description: draftDescription() }, 'stop');
+        await mutate({ type: 'STOP', description: draftDescription(), billable: draftBillable() }, 'stop');
       });
       stop.disabled = blocked();
       card.append(stop);
       if (currentPage?.taskUrl && currentPage.taskUrl !== identity(active)) {
         const switchToPage = button('Switch to this page', 'quick-button quick-switch', async () => {
           const page = await readCurrentPage();
-          if (page) await mutate({ type: 'SWITCH_TASK', ...page, description: draftDescription() }, 'switch');
+          if (page) await mutate({ type: 'SWITCH_TASK', ...page, description: draftDescription(), billable: draftBillable() }, 'switch');
         });
         switchToPage.disabled = blocked();
         card.append(switchToPage);
@@ -221,7 +237,7 @@ function render() {
       const play = button('▶', 'quick-play', () => mutate({
         type: 'SWITCH_TASK', timelineTask: true,
         taskUrl: identity(entry), taskTitle: title(entry),
-        ...(state.active ? { description: draftDescription() } : {}),
+        ...(state.active ? { description: draftDescription(), billable: draftBillable() } : {}),
         ...(!identity(entry)?.startsWith('http') && entry.destinationId ? { destinationId: entry.destinationId } : {}),
         ...(entry.id && entry.destinationId && entry.entryDate
           ? { sourceEntry: { id: entry.id, destinationId: entry.destinationId, entryDate: entry.entryDate } } : {}),
@@ -294,7 +310,7 @@ async function mutate(request, kind) {
     // Finish any in-flight description edit before stopping or switching tasks.
     if (descriptionSaving) await descriptionSaving;
     if (state.active && ['STOP', 'SWITCH_TASK'].includes(request.type))
-      request = { ...request, description: draftDescription() };
+      request = { ...request, description: draftDescription(), billable: draftBillable() };
     const result = await send(request);
     if (kind === 'start') state.active = result;
     else if (kind === 'switch') state.active = result?.active || null;

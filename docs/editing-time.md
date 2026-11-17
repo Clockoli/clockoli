@@ -13,7 +13,7 @@ Select **Add time** in Activity or Top tasks.
 1. Find a tracked task by title or URL, or paste a new HTTP(S) URL.
 2. Choose the **Start** date and time.
 3. To add completed time, enter an **End** date and time. To start a timer instead, leave End time empty.
-4. Optionally enter a description, then select **Add time** or **Start timer**.
+4. Optionally enter a description and check **Non-billable** if you do not plan to charge for this work, then select **Add time** or **Start timer**. New entries are billable by default.
 
 The Start and End dates have separate calendars; you can select the End date before entering its time. If you enter an End time earlier than Start and have not chosen an End date explicitly, Clockoli assumes the next day.
 
@@ -26,7 +26,7 @@ If you leave End empty and have not changed the default Start, Clockoli starts a
 Select **Multiple days** to add the same amount of time on several dates.
 
 1. Choose the task and select days in the calendar, including nonconsecutive days.
-2. Enter **Hours per day** (0–24) and an optional description.
+2. Enter **Hours per day** (0–24) and an optional description. Check **Non-billable** to apply that status to every selected day.
 3. Select **Add**.
 
 ![Multiple days with selected dates and hours per day](images/add-time-days.png)
@@ -47,7 +47,7 @@ If GitHub cannot be reached or a repository cannot be read, search may show part
 
 ## Add many entries at once
 
-On **Activity**, expand **Bulk time adding**. Enter one dated task URL per line, with its duration and optional description. The examples above the editor show the accepted format.
+On **Activity**, expand **Bulk time adding**. Enter one dated task URL per line, with its duration and optional description. Check **Non-billable (all entries)** to mark the entire batch, or insert `!non-billable` immediately before the hours on a single line. The examples above the editor show the accepted format.
 
 ![Bulk time adding with example lines and an editor](images/bulk-time-adding.png)
 
@@ -61,7 +61,9 @@ Select **Edit** on a Timeline or Calendar entry, or edit its row in Activity Lis
 
 ![Editing a time entry](images/edit-entry.png)
 
-The form lets you change the task, Start, End, and description.
+The form lets you change the task, Start, End, description, and **Non-billable** checkbox. Check **Non-billable** when you want to record the work without charging for it. Clear it to make the entry billable again. Existing entries are billable unless explicitly marked otherwise.
+
+The checkbox is also available when adding time, in the running tracker beside its description, and when saving a timer. It is optional in every case. The chosen status is saved with the entry in the GitHub time repository. See [Invoicing](invoicing.md) for how this affects amounts.
 
 - Changing **Start** moves End by the same amount, preserving the duration.
 - Changing **End** keeps Start unchanged.
@@ -78,7 +80,7 @@ In Activity **List**, edit the Start or End hour and minute, then select **Save 
 
 If you move Start into the previous interval, Clockoli may move the previous entry's End to the same time. Moving End into the next interval may similarly move that entry's Start. These linked corrections are checked and saved together.
 
-You can expand a row to edit its task URL, optional title (up to 300 characters), or description (up to 2,000 characters). Only one inline draft is active at a time.
+You can expand a row to edit its task URL, optional title (up to 300 characters), description (up to 2,000 characters), and Non-billable status. Only one inline draft is active at a time.
 
 ## Delete an entry
 

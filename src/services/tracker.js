@@ -1,5 +1,5 @@
 import { activeRecordPath, assertUserMonthlyRecordsPath, localTimestamp, monthlyRecordsPath, normalizePlainTitle, parseActiveRecord, parseMonthlyRecords, serializeActiveRecord, serializeMonthlyRecords } from '../domain/work-records.js';
-import { applyActiveEdits, applyActiveStartEdit, applyEntryEdits, buildActiveTimer, buildEntry, localDateInTimezone, validateActiveTimer, validateEntry } from '../domain/records.js';
+import { applyActiveEdits, applyActiveStartEdit, applyEntryEdits, buildActiveTimer, buildEntry, isBillable, localDateInTimezone, validateActiveTimer, validateEntry } from '../domain/records.js';
 import { parseBulkTimeText } from '../domain/bulk-time.js';
 import { applyTaskIndexChanges, parseTaskIndex, serializeTaskIndex, TASK_INDEX_PATH } from '../domain/task-index.js';
 import { createUlid } from '../domain/ulid.js';
@@ -125,7 +125,8 @@ function queuedEntryEditsSatisfied(remote, edits) {
     const projected = applyEntryEdits(remote, edits, new Date(remote.updatedAt));
     return ['taskUrl', 'taskTitle', 'issueTitle', 'startedAt', 'endedAt',
       'entryDate', 'timezone', 'description', 'durationSeconds']
-      .every(key => sameValue(projected[key], remote[key]));
+      .every(key => sameValue(projected[key], remote[key]))
+      && (edits.billable === undefined || projected.metadata?.billable === remote.metadata?.billable);
   } catch { return false; }
 }
 
@@ -184,6 +185,7 @@ function compactSupersededQueue(pendingWrites, recentCache = []) {
       later.original = structuredClone(operation.original);
       if (later.startedAt === undefined && operation.startedAt !== undefined) later.startedAt = operation.startedAt;
       if (later.description === undefined && operation.description !== undefined) later.description = operation.description;
+      if (later.billable === undefined && operation.billable !== undefined) later.billable = operation.billable;
       removed.add(index);
       continue;
     }
@@ -610,14 +612,14 @@ export class TrackerService {
     return summaryProjection(await this.store.getState(), this.clock());
   }
 
-  async start(taskUrl, taskTitle = '', description = '', { background = false } = {}) {
-    if (background) return this.queueStart(taskUrl, taskTitle, description);
+  async start(taskUrl, taskTitle = '', description = '', { background = false, billable } = {}) {
+    if (background) return this.queueStart(taskUrl, taskTitle, description, { billable });
     const state = await this.store.getState();
     if ((state.pendingWrites ?? []).length) throw new Error('A stopped entry is still waiting to sync. Sync it before starting another timer.');
     const existing = await this.refreshActive();
     if (existing) throw new Error(`A timer is already tracking ${taskLabel(existing)}`);
     const now = this.clock(), id = this.idFactory(now.getTime());
-    const active = await this.enrichGitHubMetadata(this.buildActive({ id, taskUrl: normalizeStoredTaskIdentity(taskUrl), startedAt: now, description, taskTitle }));
+    const active = await this.enrichGitHubMetadata(this.buildActive({ id, taskUrl: normalizeStoredTaskIdentity(taskUrl), startedAt: now, description, taskTitle, billable }));
     const path = activeRecordPath(this.user);
     try {
       const result = await this.github.putText(path, serializeActiveRecord(active), `timer: start ${this.user}`);
@@ -630,10 +632,10 @@ export class TrackerService {
     }
   }
 
-  async queueStart(taskUrl, taskTitle = '', description = '', { startedAt = this.clock(), overlapGuards = null, overlapHeadSha = null, requireNoOverlap = false } = {}) {
+  async queueStart(taskUrl, taskTitle = '', description = '', { startedAt = this.clock(), overlapGuards = null, overlapHeadSha = null, requireNoOverlap = false, billable } = {}) {
     const state = await this.store.getState();
     if (state.activeCache) throw new Error(`A timer is already tracking ${taskLabel(state.activeCache)}`);
-    const { operation, pendingActive } = this.prepareQueuedStart(taskUrl, taskTitle, description, { startedAt, overlapGuards, overlapHeadSha, requireNoOverlap });
+    const { operation, pendingActive } = this.prepareQueuedStart(taskUrl, taskTitle, description, { startedAt, overlapGuards, overlapHeadSha, requireNoOverlap, billable });
     await this.mutateState(current => {
       if (current.activeCache) throw new Error(`A timer is already tracking ${taskLabel(current.activeCache)}`);
       if (requireNoOverlap) assertNoRunningCompletedOverlap(pendingActive, knownLocalIntervals(current));
@@ -642,9 +644,9 @@ export class TrackerService {
     return pendingActive;
   }
 
-  prepareQueuedStart(taskUrl, taskTitle = '', description = '', { startedAt = this.clock(), id = null, blockedBy = null, overlapGuards = null, overlapHeadSha = null, requireNoOverlap = false } = {}) {
+  prepareQueuedStart(taskUrl, taskTitle = '', description = '', { startedAt = this.clock(), id = null, blockedBy = null, overlapGuards = null, overlapHeadSha = null, requireNoOverlap = false, billable } = {}) {
     const start = new Date(startedAt), activeId = id || this.idFactory(start.getTime());
-    const active = this.buildActive({ id: activeId, taskUrl: normalizeStoredTaskIdentity(taskUrl), startedAt: start, description, taskTitle });
+    const active = this.buildActive({ id: activeId, taskUrl: normalizeStoredTaskIdentity(taskUrl), startedAt: start, description, taskTitle, billable });
     const operation = {
       operation: 'startTimer', id: activeId, status: 'pending', retryCount: 0,
       stage: blockedBy ? 'awaitSourceCompletion' : 'startNext',
@@ -660,25 +662,25 @@ export class TrackerService {
     };
   }
 
-  async switchTask(taskUrl, taskTitle = '', description, { background = false } = {}) {
+  async switchTask(taskUrl, taskTitle = '', description, { background = false, billable } = {}) {
     const targetUrl = normalizeStoredTaskIdentity(taskUrl);
-    if (background) return this.queueTaskSwitch(targetUrl, taskTitle, description);
+    if (background) return this.queueTaskSwitch(targetUrl, taskTitle, description, billable);
     const current = await this.refreshActive();
     if (!current) return { stopped: null, active: await this.queueStart(targetUrl, taskTitle, ''), pending: true };
     if (taskUrlOf(current) === targetUrl) return { stopped: null, active: current };
-    const stopped = await this.stop(description);
+    const stopped = await this.stop(description, { billable });
     if (stopped.pending) throw new Error('The previous timer was saved locally but must sync before another timer can start.');
     return { stopped, active: await this.start(targetUrl, taskTitle, '') };
   }
 
-  async queueTaskSwitch(targetUrl, taskTitle = '', description) {
+  async queueTaskSwitch(targetUrl, taskTitle = '', description, billable) {
     const state = await this.store.getState();
     const current = state.activeCache;
     if (!current) return { stopped: null, active: await this.queueStart(targetUrl, taskTitle, ''), pending: true };
     validateActiveTimer(current);
     if (taskUrlOf(current) === targetUrl) return { stopped: null, active: current, pending: false };
     const changedAt = this.clock(), id = current.id;
-    const entry = buildEntry({ active: current, endedAt: changedAt, now: changedAt, description });
+    const entry = buildEntry({ active: current, endedAt: changedAt, now: changedAt, description, billable });
     const generatedNextId = this.idFactory(changedAt.getTime());
     const nextId = generatedNextId === id ? createUlid(changedAt.getTime() + 1) : generatedNextId;
     const nextActive = this.buildActive({ id: nextId, taskUrl: targetUrl, taskTitle, startedAt: changedAt, description: '' });
@@ -699,17 +701,17 @@ export class TrackerService {
     return { stopped: { entry, localEntry: pendingEntry, pending: true }, active: pendingActive, pending: true };
   }
 
-  stop(description, { background = false } = {}) {
-    const result = this.stopTail.then(() => background ? this.queueStop(description) : this.stopInternal(description));
+  stop(description, { background = false, billable } = {}) {
+    const result = this.stopTail.then(() => background ? this.queueStop(description, billable) : this.stopInternal(description, billable));
     this.stopTail = result.catch(() => {});
     return result;
   }
 
-  async queueStop(description) {
+  async queueStop(description, billable) {
     const state = await this.store.getState();
     const active = state.activeCache;
     if (!active) throw new Error('No timer is running');
-    const { operation, pendingEntry, entry } = this.prepareQueuedStop(active, description);
+    const { operation, pendingEntry, entry } = this.prepareQueuedStop(active, description, { billable });
     await this.mutateState(latest => {
       if (!sameTimer(latest.activeCache, active)) throw new Error('The local timer changed before Stop was accepted. Retry the action.');
       return {
@@ -720,11 +722,11 @@ export class TrackerService {
     return { entry, localEntry: pendingEntry, pending: true };
   }
 
-  prepareQueuedStop(active, description, { endedAt = this.clock() } = {}) {
+  prepareQueuedStop(active, description, { endedAt = this.clock(), billable } = {}) {
     const persistedActive = stripInternal(active);
     validateActiveTimer(persistedActive);
     const end = new Date(endedAt), id = persistedActive.id;
-    const entry = buildEntry({ active: persistedActive, endedAt: end, now: end, description });
+    const entry = buildEntry({ active: persistedActive, endedAt: end, now: end, description, billable });
     const operation = {
       operation: 'completeTimer', id, status: 'pending', retryCount: 0, stage: 'verifyActive',
       monthlyPath: monthlyRecordsPath(this.user, active.entryDate), entry, activeSnapshot: stripInternal(active), activeSha: active._sha,
@@ -761,7 +763,7 @@ export class TrackerService {
     });
   }
 
-  async stopInternal(description) {
+  async stopInternal(description, billable) {
     const state = await this.store.getState();
     if ((state.pendingWrites ?? []).some(operation => operation.nextActive)) {
       throw new Error('The task switch is still syncing. Wait for it to finish before stopping.');
@@ -793,7 +795,7 @@ export class TrackerService {
     if (!active) throw new Error('No timer is running');
     const endedAt = this.clock();
     const id = active.id;
-    const entry = buildEntry({ active, endedAt, now: endedAt, description });
+    const entry = buildEntry({ active, endedAt, now: endedAt, description, billable });
     const operation = {
       operation: 'completeTimer', id, status: 'pending', retryCount: 0, stage: activeVerified ? 'appendMonthly' : 'verifyActive',
       monthlyPath: monthlyRecordsPath(this.user, active.entryDate), entry, activeSnapshot: stripInternal(active), activeSha: active._sha,
@@ -879,6 +881,7 @@ export class TrackerService {
           endedAt: localCompletion.endedAt,
           now: localCompletion.updatedAt,
           description: localCompletion.description,
+          billable: isBillable(localCompletion),
         });
         operation.monthlyPath = monthlyRecordsPath(this.user, remoteActive.entryDate);
         return 'matching';
@@ -892,6 +895,7 @@ export class TrackerService {
           endedAt,
           now: localCompletion.updatedAt,
           description: localCompletion.description,
+          billable: isBillable(localCompletion),
         });
         operation.preserveActive = true;
         operation.activeCleared = true;
@@ -1195,7 +1199,7 @@ export class TrackerService {
           try {
             saved = (await this.addTime({
               taskUrl: entry.taskUrl, taskTitle: entry.taskTitle, startedAt: entry.startedAt,
-              endedAt: entry.endedAt, description: entry.description,
+              endedAt: entry.endedAt, description: entry.description, billable: isBillable(entry),
             }, { fixedId: entry.id, acceptedEntry: entry, updateCache: false })).entry;
           } catch (error) {
             if (/Select an existing imported task/i.test(error.message || '')) {
@@ -1445,7 +1449,7 @@ export class TrackerService {
         }
         if (operation.operation === 'editActiveStart') {
           const saved = await this.editActiveStart(
-            { original: operation.original, startedAt: operation.startedAt, description: operation.description },
+            { original: operation.original, startedAt: operation.startedAt, description: operation.description, billable: operation.billable },
             { updateCache: false },
           );
           const index = queue.findIndex(item => item.id === operation.id);
@@ -1700,7 +1704,8 @@ export class TrackerService {
     if (active.entryDate !== start.nextActive.entryDate) {
       throw new TrackerConflictError('The selected start crosses the timer date. Review Activity.');
     }
-    const completion = buildEntry({ active, endedAt: stop.entry.endedAt, now: this.clock(), description: stop.entry.description });
+    const completion = buildEntry({ active, endedAt: stop.entry.endedAt, now: this.clock(),
+      description: stop.entry.description, billable: isBillable(stop.entry) });
     validateEntry(completion);
     // Commit the intent to local storage before any remote I/O. Strict queued
     // edits never rebase to an unrelated remote revision on later retries.
@@ -2411,14 +2416,14 @@ export class TrackerService {
     }).then(state => ({ operationId: state.pendingWrites.at(-1)?.operation === 'editEntries' ? state.pendingWrites.at(-1).id : null, pending: true }));
   }
 
-  async queueActiveStartEdit({ original, startedAt, description }) {
+  async queueActiveStartEdit({ original, startedAt, description, billable }) {
     const queuedAt = this.clock();
     const snapshot = await this.store.getState();
     const current = snapshot.activeCache;
     if (!current || current.id !== original?.id || current.startedAt !== original?.startedAt) {
       throw new TrackerConflictError('The active timer changed before its edit was queued. Reload before trying again.');
     }
-    const proposed = applyActiveEdits(current, { startedAt, description }, queuedAt);
+    const proposed = applyActiveEdits(current, { startedAt, description, billable }, queuedAt);
     const overlap = proposed.startedAt !== current.startedAt
       ? await this.readEditOverlapFiles([{ ...proposed, endedAt: queuedAt.toISOString() }]) : null;
     return this.mutateState(state => {
@@ -2427,6 +2432,7 @@ export class TrackerService {
       const edits = {
         ...(startedAt !== undefined ? { startedAt } : {}),
         ...(description !== undefined ? { description } : {}),
+        ...(billable !== undefined ? { billable } : {}),
       };
       const updated = applyActiveEdits(active, edits, queuedAt);
       const pendingWrites = [...(state.pendingWrites ?? [])];
@@ -2438,10 +2444,11 @@ export class TrackerService {
         && operation.original?.id === active.id);
       const operation = existing ?? {
         operation: 'editActiveStart', id: createUlid(queuedAt.getTime() + pendingWrites.length), status: 'pending', retryCount: 0,
-        stage: 'editActiveStart', original: { id: active.id, startedAt: active.startedAt }, startedAt: updated.startedAt, description: updated.description, queuedAt: queuedAt.toISOString(), lastError: '',
+        stage: 'editActiveStart', original: { id: active.id, startedAt: active.startedAt }, startedAt: updated.startedAt, description: updated.description, billable: isBillable(updated), queuedAt: queuedAt.toISOString(), lastError: '',
       };
       operation.startedAt = updated.startedAt;
       operation.description = updated.description;
+      operation.billable = isBillable(updated);
       operation.lastLocalEditAt = queuedAt.toISOString();
       if (!existing) pendingWrites.push(operation);
       return { pendingWrites, activeCache: { ...updated, _path: active._path, _sha: active._sha, _pending: true } };
@@ -2522,7 +2529,7 @@ export class TrackerService {
   }
 
 
-  async editActiveStart({ original, startedAt, description }, { updateCache = true } = {}) {
+  async editActiveStart({ original, startedAt, description, billable }, { updateCache = true } = {}) {
     const active = await this.readRemoteActive();
     if (!active) throw new TrackerConflictError('The running timer is no longer active. Reload before saving.');
     // GitHub may have accepted this exact change before the service worker
@@ -2530,7 +2537,8 @@ export class TrackerService {
     // Adopt it instead of repeatedly conflicting or writing a duplicate commit.
     if (matchesOriginal(active, original)
         && (startedAt === undefined || active.startedAt === startedAt)
-        && (description === undefined || active.description === description)) {
+        && (description === undefined || active.description === description)
+        && (billable === undefined || isBillable(active) === billable)) {
       if (updateCache) await this.store.patchState({ activeCache: active });
       return active;
     }
@@ -2538,7 +2546,7 @@ export class TrackerService {
       throw new TrackerConflictError('The running timer changed after the timeline loaded. Reload before saving.');
     }
     const now = this.clock();
-    const updated = applyActiveEdits(active, { startedAt, description }, now);
+    const updated = applyActiveEdits(active, { startedAt, description, billable }, now);
     const path = activeRecordPath(this.user);
     const overlap = updated.startedAt !== active.startedAt
       ? await this.readEditOverlapFiles([{ ...updated, endedAt: now.toISOString() }]) : null;
@@ -2734,7 +2742,7 @@ export class TrackerService {
     return { files: await Promise.all(paths.map(path => this.readMonthly(path))), headSha: snapshot?.headSha || null };
   }
 
-  async queueAddTime({ taskUrl, taskTitle = '', startedAt, endedAt = null, description = '' }) {
+  async queueAddTime({ taskUrl, taskTitle = '', startedAt, endedAt = null, description = '', billable }) {
     const canonical = normalizeStoredTaskIdentity(taskUrl);
     const now = this.clock(), start = startedAt == null ? now : new Date(startedAt);
     const end = endedAt == null ? null : new Date(endedAt);
@@ -2748,7 +2756,7 @@ export class TrackerService {
     if (!end) {
       const state = await this.store.getState();
       if (state.activeCache) throw new Error(`A timer is already tracking ${taskLabel(state.activeCache)}`);
-      const active = await this.queueStart(canonical, taskTitle, description, { startedAt: start, requireNoOverlap: true });
+      const active = await this.queueStart(canonical, taskTitle, description, { startedAt: start, requireNoOverlap: true, billable });
       return { active, pending: true };
     }
     let acceptedEntry;
@@ -2763,7 +2771,7 @@ export class TrackerService {
       }
       const usedIds = new Set(known.map(item => item.id));
       const record = this.buildActive({ id: this.uniqueRecordId(startMs, usedIds), taskUrl: canonical,
-        taskTitle, startedAt: start, description });
+        taskTitle, startedAt: start, description, billable });
       const entry = buildEntry({ active: record, endedAt: end, now, description });
       const path = monthlyRecordsPath(this.user, entry.entryDate);
       acceptedEntry = { ...entry, _path: path, _sha: null, _index: -1, _pending: true };
@@ -2781,10 +2789,10 @@ export class TrackerService {
     return { entry: acceptedEntry, pending: true };
   }
 
-  async addTime({ taskUrl, taskTitle = '', startedAt, endedAt = null, description = '' }, {
+  async addTime({ taskUrl, taskTitle = '', startedAt, endedAt = null, description = '', billable }, {
     background = false, fixedId = null, acceptedEntry = null, updateCache = true,
   } = {}) {
-    if (background) return this.queueAddTime({ taskUrl, taskTitle, startedAt, endedAt, description });
+    if (background) return this.queueAddTime({ taskUrl, taskTitle, startedAt, endedAt, description, billable });
     const canonical = normalizeStoredTaskIdentity(taskUrl);
     const now = this.clock(), start = startedAt == null ? now : new Date(startedAt);
     const startMs = start.getTime(), end = endedAt == null ? null : new Date(endedAt), endMs = end?.getTime();
@@ -2796,6 +2804,7 @@ export class TrackerService {
     if (accepted && (accepted.id !== fixedId || accepted.user !== this.user
         || accepted.taskUrl !== canonical || accepted.startedAt !== start.toISOString()
         || accepted.endedAt !== end?.toISOString() || accepted.description !== description
+        || (billable !== undefined && isBillable(accepted) !== billable)
         || accepted.entryDate !== localDateInTimezone(start, accepted.timezone))) {
       throw new Error('Queued Add time entry does not match its locally accepted record.');
     }
@@ -2818,13 +2827,13 @@ export class TrackerService {
       throw new Error('Added time would overlap existing time.');
     }
     if (!end) return { active: await this.queueStart(canonical, taskTitle, description, {
-      startedAt: start, overlapGuards: files.map(file => ({ path: file.path, sha: file.sha })),
+      startedAt: start, overlapGuards: files.map(file => ({ path: file.path, sha: file.sha })), billable,
       overlapHeadSha: headSha, requireNoOverlap: true,
     }) };
     const entry = accepted ?? buildEntry({
       active: this.buildActive({
         id: fixedId || this.uniqueRecordId(startMs, new Set(files.flatMap(file => file.entries.map(entry => entry.id)))),
-        taskUrl: canonical, taskTitle, startedAt: start, description,
+        taskUrl: canonical, taskTitle, startedAt: start, description, billable,
       }),
       endedAt: end, now, description,
     });
@@ -2833,7 +2842,8 @@ export class TrackerService {
     const previouslySaved = fixedId ? file.entries.find(item => item.id === fixedId) : null;
     if (previouslySaved) {
       if (previouslySaved.startedAt !== entry.startedAt || previouslySaved.endedAt !== entry.endedAt
-          || previouslySaved.taskUrl !== entry.taskUrl || previouslySaved.description !== entry.description) {
+          || previouslySaved.taskUrl !== entry.taskUrl || previouslySaved.description !== entry.description
+          || isBillable(previouslySaved) !== isBillable(entry)) {
         throw new TrackerConflictError('Previously saved Add time has changed on GitHub.', 'add_time_changed');
       }
       return { entry: previouslySaved, pending: false };
@@ -2944,7 +2954,7 @@ export class TrackerService {
       }
       usedIds.add(id);
       const active = this.buildActive({ id, taskUrl: item.taskUrl, taskTitle: item.taskTitle || '',
-        startedAt: localTimestamp(new Date(startedMs)), entryDate: item.date, description: item.description,
+        startedAt: localTimestamp(new Date(startedMs)), entryDate: item.date, description: item.description, billable: item.billable,
         ...(accepted ? { timezone: accepted.timezone } : {}) });
       const entry = buildEntry({ active, endedAt: localTimestamp(new Date(endedMs)),
         now: localTimestamp(new Date(endedMs)), description: item.description });
@@ -2957,7 +2967,7 @@ export class TrackerService {
     return added;
   }
 
-  async addDayRange({ taskUrl, taskTitle = '', description = '', dates, durationSeconds }) {
+  async addDayRange({ taskUrl, taskTitle = '', description = '', dates, durationSeconds, billable }) {
     const canonical = normalizeStoredTaskIdentity(taskUrl);
     const validDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
       && Number.isFinite(Date.parse(`${value}T00:00:00.000Z`))
@@ -2971,7 +2981,7 @@ export class TrackerService {
         || typeof description !== 'string' || description.length > 2000) throw new Error('Invalid selected days or hours per day.');
     const requested = dates.map((date, index) => ({
       line: index + 1, date,
-      taskUrl: canonical, taskTitle, description, durationSeconds, startTime: '09:00',
+      taskUrl: canonical, taskTitle, description, durationSeconds, startTime: '09:00', billable,
     }));
     return this.queueBulkAddTimes('', requested, { noFuture: true });
   }
@@ -3014,10 +3024,10 @@ export class TrackerService {
     return { added: requested.length, pending: true, entries: accepted };
   }
 
-  async bulkAddTimes(text, { background = false, requested = null, ids = null, acceptedEntries = null,
+  async bulkAddTimes(text, { background = false, requested = null, billable = true, ids = null, acceptedEntries = null,
     updateCache = true, includeEntries = false, onRelocated = null } = {}) {
-    if (background) return this.queueBulkAddTimes(text, requested ?? parseBulkTimeText(text));
-    requested ||= parseBulkTimeText(text);
+    if (background) return this.queueBulkAddTimes(text, requested ?? parseBulkTimeText(text, { billable }));
+    requested ||= parseBulkTimeText(text, { billable });
     if (ids && requested.some((item, index) => item.startTime === '09:00'
         && (acceptedEntries?.[index]?.id !== ids[index] || acceptedEntries[index].entryDate !== item.date
           || acceptedEntries[index].taskUrl !== item.taskUrl
@@ -3053,6 +3063,7 @@ export class TrackerService {
       if (found.every(Boolean)) {
         if (found.some((entry, index) => entry.taskUrl !== requested[index].taskUrl
             || entry.description !== requested[index].description || entry.durationSeconds !== requested[index].durationSeconds
+            || (requested[index].billable !== undefined && isBillable(entry) !== requested[index].billable)
             || (requested[index].taskTitle !== undefined && entry.taskTitle !== requested[index].taskTitle)
             || (requested[index].startTime === '09:00' && (entry.entryDate !== acceptedEntries[index].entryDate
               || entry.startedAt !== acceptedEntries[index].startedAt || entry.endedAt !== acceptedEntries[index].endedAt

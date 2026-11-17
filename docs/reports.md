@@ -28,7 +28,7 @@ Filter by **Client**, **People**, **Projects**, **Sources**, and **Time reposito
 
 A **Source** is where the tracked task lives: the GitHub `owner/repository` for an issue or pull request, or the hostname for another website. A **Time repository** is where its record is stored.
 
-The summary shows total tracked time, billable amount, entries, people, and sources.
+The summary shows total tracked time, billable amount, entries, people, and sources. **Non-billable** entries still count toward tracked time, but add nothing to billable amounts. You can mark completed entries non-billable in [Add and edit time](editing-time.md#edit-a-completed-entry).
 
 ## Explore charts
 
@@ -46,7 +46,7 @@ When amounts span several currencies, Reports lets you choose a chart currency a
 
 ## Export a timesheet
 
-- **CSV** or **JSON:** download individual time entries, including task, person, Start, End, duration, and description. Local rate and amount fields are included when available.
+- **CSV** or **JSON:** download individual time entries, including task, person, Start, End, duration, billable status, and description. Local rate and amount fields are included when available. A non-billable entry with an applicable rate has a billable amount of zero.
 - **PDF:** download a timesheet.
 - **Print:** open the browser's print dialog.
 

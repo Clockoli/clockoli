@@ -7,7 +7,7 @@ Clockoli tracks work against a task's URL. Start from any HTTP(S) page, or use t
 1. Open the page you want to track.
 2. Select the Clockoli toolbar icon. By default, it opens or focuses the **Activity** tab.
 3. In **From current page**, select **Track this task**. If another task is running, select **Switch to this task**.
-4. When you finish, optionally add a description and select **Stop and save**.
+4. When you finish, optionally add a description or check **Non-billable**, then select **Stop and save**.
 
 ![Activity showing From current page above the running timer](images/activity-from-current-page.png)
 
@@ -19,7 +19,7 @@ The toolbar button only passes the selected page's URL and title to Clockoli. It
 
 In **Settings → Toolbar button**, select **Open quick popup**. The toolbar icon and GitHub stopwatch then open a small tracker instead of Activity, where supported.
 
-The popup lets you start or switch to the current page, edit the running description, **Stop and save**, restart recent tasks, and **Open Activity in a new tab**. It does not include Timeline, Calendar, or List controls.
+The popup lets you start or switch to the current page, edit the running description and **Non-billable** checkbox, **Stop and save**, restart recent tasks, and **Open Activity in a new tab**. It does not include Timeline, Calendar, or List controls.
 
 Opening the popup from a GitHub page requires Chrome 127 or newer; other supported versions fall back to Activity. See [Settings](settings.md#toolbar-button).
 
@@ -35,7 +35,7 @@ Clockoli asks for confirmation before stopping a timer longer than **12 hours**,
 
 ## Descriptions
 
-Descriptions are optional and can contain multiple lines, up to 2,000 characters.
+Descriptions are optional and can contain multiple lines, up to 2,000 characters. Wherever a description can be entered or edited, Clockoli also offers a **Non-billable** checkbox. Leave it unchecked for ordinary billable work, or check it for hours you don't want charged on invoices.
 
 - **Enter** saves a description without stopping the timer.
 - **Shift+Enter** inserts a new line.

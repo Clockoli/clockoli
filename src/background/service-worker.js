@@ -39,7 +39,7 @@ import { OnboardingCoordinator } from '../services/onboarding-coordinator.js';
 import { RepositoryInvitationService } from '../services/repository-invitations.js';
 import { withRepositoryRecovery } from '../services/repository-operation-recovery.js';
 import { discoverUserStorageBranches } from '../services/user-storage-branch.js';
-import { addTimeForSender, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
+import { addTimeForSender, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
 import { activeDestinationId, requireConfiguredDestinationId, resolveStartDestinationId, selectReadDestinations, syncPendingAll } from './destination-runtime.js';
 import { emitClockifyMigrationProgress, isClockifyProgressRequestId, registerClockifyMigrationProgressPort } from './clockify-migration-progress.js';
 import { SerialExecutor } from './serial-executor.js';
@@ -1517,11 +1517,12 @@ async function handle(message, sender) {
       const destinationId = selectedDestinationId ? await requireConfiguredDestinationId(store, selectedDestinationId)
         : await resolveStartDestinationId(store, taskUrl);
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
-      const result = await tracker.start(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description || '', { background: true });
+      const result = await tracker.start(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description || '', { background: true, billable: optionalBillable(message.billable) });
       if (result._pending) requestPendingSync();
       return { ...result, destinationId };
     }
     case 'SWITCH_TASK': {
+      const billable = optionalBillable(message.billable);
       const timelineTask = message.timelineTask === true;
       const requestedTask = message.taskUrl ?? message.issue;
       let storedRecords = [];
@@ -1549,7 +1550,7 @@ async function handle(message, sender) {
       const sourceDestinationId = await activeDestinationId(store);
       if (!sourceDestinationId || sourceDestinationId === targetDestinationId) {
         const tracker = await trackerForDestination(targetDestinationId, { localOnly: true });
-        const result = await tracker.switchTask(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description, { background: true });
+        const result = await tracker.switchTask(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description, { background: true, billable });
         if (result.pending) requestPendingSync();
         return { ...result, destinationId: targetDestinationId };
       }
@@ -1560,7 +1561,7 @@ async function handle(message, sender) {
       if (!current) throw new Error('The active timer changed before this switch was accepted. Retry the action.');
       if (taskUrlOf(current) === taskUrl && !selectedDestinationId) return { stopped: null, active: { ...current, destinationId: sourceDestinationId }, pending: false, destinationId: sourceDestinationId };
       const changedAt = new Date();
-      const source = sourceTracker.prepareQueuedStop(current, message.description, { endedAt: changedAt });
+      const source = sourceTracker.prepareQueuedStop(current, message.description, { endedAt: changedAt, billable });
       let nextId = createUlid(changedAt.getTime());
       if (nextId === current.id) nextId = createUlid(changedAt.getTime() + 1);
       const target = targetTracker.prepareQueuedStart(taskUrl, message.taskTitle ?? message.issueTitle ?? '', '', {
@@ -1584,7 +1585,7 @@ async function handle(message, sender) {
     case 'STOP': {
       const destinationId = await activeDestinationId(store, { required: true });
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
-      const result = await tracker.stop(message.description, { background: true });
+      const result = await tracker.stop(message.description, { background: true, billable: optionalBillable(message.billable) });
       if (result.pending) requestPendingSync();
       return { ...result, destinationId };
     }
@@ -1638,9 +1639,10 @@ async function handle(message, sender) {
     }
     case 'BULK_ADD_TIMES': {
       const text = String(message.text || '');
+      const billable = optionalBillable(message.billable);
       if (new TextEncoder().encode(text).byteLength > 262_144) throw new Error('Bulk input is too large.');
       const { tracker, destinationId } = await context({ localOnly: true });
-      const result = await tracker.bulkAddTimes(text, { background: true });
+      const result = await tracker.bulkAddTimes(text, { background: true, billable });
       if (result.pending) requestPendingSync();
       return { ...result, destinationId };
     }

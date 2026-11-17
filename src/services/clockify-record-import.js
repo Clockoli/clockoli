@@ -383,7 +383,8 @@ function completedRecord({ entry, githubUser, id, now }) {
     entryDate,
     timezone: entry.timezone,
     description: String(entry.description ?? ''),
-    metadata: { [PROVENANCE_FIELD]: { [PROVENANCE_KEY]: entry.provenance } },
+    metadata: { [PROVENANCE_FIELD]: { [PROVENANCE_KEY]: entry.provenance },
+      ...(entry.billable === false ? { billable: false } : {}) },
     metrics: {},
   });
   const result = buildEntry({ active, endedAt: entry.endedAt, now: (typeof now === 'function' ? now() : now) ?? entry.endedAt });

@@ -35,6 +35,8 @@ Selecting a client narrows the invoice to that client's work and uses that clien
 
 A single invoice uses one currency. Clockoli converts records with other currencies using rates for their dates. Different effective hourly rates appear on separate lines. Unrated time remains visible but is not charged.
 
+Entries marked **Non-billable** are excluded from invoice charges, even when the client has an hourly rate for that person. Their hours remain visible in Reports and timesheet exports. Mark exceptions when [tracking or editing time](editing-time.md), or review them in Activity before preparing the invoice. Entries are billable by default.
+
 ![Invoice preview with line items and total](images/invoice-preview.png)
 
 ## Add charges or discounts

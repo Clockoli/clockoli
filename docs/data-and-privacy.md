@@ -186,6 +186,8 @@ The cache is an optimization, not the authoritative time store.
 
 Hourly rates and their currency signs or descriptions stay in extension-local IndexedDB. They are not written to GitHub and are not included in shared time records.
 
+An entry's **Non-billable** status is different from its hourly rate: Clockoli stores the optional `metadata.billable` Boolean in the shared GitHub time record, visible to anyone with read access to that repository. It contains no rate or money amount.
+
 Billable money uses integer minor units and tracked seconds. Clockoli aggregates before final rounding to avoid accumulating per-record rounding errors.
 
 The settings JSON backup can include rates, client details, and bank payment instructions, so protect that user-requested download as sensitive financial data.

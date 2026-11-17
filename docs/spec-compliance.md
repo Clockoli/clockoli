@@ -10,6 +10,7 @@ Source analyzed: Clockoli's GitHub onboarding requirements plus the delivered UR
 | Tasks | Any canonical HTTP(S) URL; title optional; GitHub issue/PR metadata retained as enrichment |
 | Work actors | Human and agent identities use the same work-record schema |
 | Descriptions | Optional, maximum 2,000 characters |
+| Billability | Entries are billable by default. Every description editor offers an optional Non-billable checkbox, including Add time, running/Stop, completed edits, and multi-entry forms; `metadata.billable: false` is preserved in GitHub records and excludes charges without changing tracked hours. |
 | Manual entries | Add one completed or running task with a selected local date on Activity or Top tasks, or select individual all-day calendar dates within a 500-day span with required 0–24 hours per day (enter 0 explicitly); Add time intervals are limited to 24 hours at creation; all-or-nothing bulk creation of completed dated URL tasks remains on Activity |
 | Offline behavior | Start is accepted durably in extension-local storage and reconciled to GitHub; Stop is queued and retried |
 | Recent entries | Seven browser-local calendar days by default, configurable from 1–31; one direct monthly JSONL read per represented month; globally sorted; maximum 50 returned |

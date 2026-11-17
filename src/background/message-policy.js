@@ -29,6 +29,11 @@ const COMPLETED_MUTATION_MESSAGES = new Set([
 ]);
 const DESTINATION_ID_RE = /^github:[1-9]\d*$/;
 
+export function optionalBillable(value) {
+  if (value !== undefined && typeof value !== 'boolean') throw new Error('Billable status must be true or false');
+  return value;
+}
+
 function senderContext(sender, extensionOrigin) {
   const value = sender?.url || sender?.tab?.url || '';
   if (value.startsWith(extensionOrigin)) return { kind: 'extension', taskUrl: null };
@@ -147,10 +152,12 @@ export function addTimeForSender(payload, sender, extensionOrigin) {
     throw new Error('Add time is not allowed from this page');
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)
-      || !['description,endedAt,startedAt,taskTitle,taskUrl', 'description,destinationId,endedAt,startedAt,taskTitle,taskUrl'].includes(Object.keys(payload).sort().join(','))) {
+      || !['description,endedAt,startedAt,taskTitle,taskUrl', 'billable,description,endedAt,startedAt,taskTitle,taskUrl',
+        'description,destinationId,endedAt,startedAt,taskTitle,taskUrl', 'billable,description,destinationId,endedAt,startedAt,taskTitle,taskUrl'].includes(Object.keys(payload).sort().join(','))) {
     throw new Error('Invalid Add time payload');
   }
   const { taskTitle, description, startedAt, endedAt } = payload;
+  const billable = optionalBillable(payload.billable);
   if (typeof taskTitle !== 'string' || taskTitle.length > 500 || typeof description !== 'string' || description.length > 2000) {
     throw new Error('Invalid or too long Add time text');
   }
@@ -162,9 +169,9 @@ export function addTimeForSender(payload, sender, extensionOrigin) {
     if (typeof payload.destinationId !== 'string' || !DESTINATION_ID_RE.test(payload.destinationId)) throw new Error('Invalid Add time destination');
     const taskUrl = normalizeStoredTaskIdentity(payload.taskUrl);
     if (/^https?:\/\//i.test(taskUrl)) throw new Error('Invalid Add time payload');
-    return { taskUrl, taskTitle, description, startedAt, endedAt, destinationId: payload.destinationId };
+    return { taskUrl, taskTitle, description, startedAt, endedAt, ...(billable === undefined ? {} : { billable }), destinationId: payload.destinationId };
   }
-  return { taskUrl: normalizeTaskUrl(payload.taskUrl), taskTitle, description, startedAt, endedAt };
+  return { taskUrl: normalizeTaskUrl(payload.taskUrl), taskTitle, description, startedAt, endedAt, ...(billable === undefined ? {} : { billable }) };
 }
 
 export function dayRangeForSender(payload, sender, extensionOrigin) {
@@ -173,10 +180,12 @@ export function dayRangeForSender(payload, sender, extensionOrigin) {
     throw new Error('Day range is not allowed from this page');
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)
-      || !['dates,description,durationSeconds,taskTitle,taskUrl',
-        'dates,description,destinationId,durationSeconds,taskTitle,taskUrl'].includes(Object.keys(payload).sort().join(','))) {
+      || !['dates,description,durationSeconds,taskTitle,taskUrl', 'billable,dates,description,durationSeconds,taskTitle,taskUrl',
+        'dates,description,destinationId,durationSeconds,taskTitle,taskUrl',
+        'billable,dates,description,destinationId,durationSeconds,taskTitle,taskUrl'].includes(Object.keys(payload).sort().join(','))) {
     throw new Error('Invalid day range payload');
   }
+  optionalBillable(payload.billable);
   if (typeof payload.taskTitle !== 'string' || payload.taskTitle.length > 500
       || typeof payload.description !== 'string' || payload.description.length > 2000
       || !Number.isSafeInteger(payload.durationSeconds) || payload.durationSeconds < 0 || payload.durationSeconds > 86400) {

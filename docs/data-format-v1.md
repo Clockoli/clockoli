@@ -327,7 +327,8 @@ Rules:
 - unknown metadata must be preserved;
 - reporting semantics for a metadata key must be documented before Clockoli aggregates it;
 - sensitive rates remain local/private configuration and are not duplicated into ordinary records;
-- `metadata.billable` may mark work as billable without storing a rate.
+- `metadata.billable` is an optional Boolean: `false` marks the individual completed entry as non-billable, while `true` or an absent field keeps the entry billable by default;
+- changing billability does not change tracked duration, and reports/invoices apply this status independently of client-local hourly rates.
 
 ### 10.1 GitHub work-item snapshot
 
