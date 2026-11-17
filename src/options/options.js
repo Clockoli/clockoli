@@ -2384,6 +2384,29 @@ function invoicingPayload() {
   });
 }
 
+function localStorageSnapshot() {
+  return Object.fromEntries(Array.from({ length: localStorage.length }, (_, index) => {
+    const key = localStorage.key(index);
+    return [key, localStorage.getItem(key)];
+  }));
+}
+
+function replaceLocalStorage(values) {
+  localStorage.clear();
+  for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value);
+}
+
+function fullBackupPassword() {
+  const password = $('full-backup-password').value;
+  if (password.length < 8) throw new Error('Enter a backup password of at least 8 characters.');
+  return password;
+}
+
+function reloadAfterLocalDataChange() {
+  stopRepositoryMonitoring();
+  chrome.runtime.reload();
+}
+
 function downloadText(text, filename) {
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click();
@@ -2469,6 +2492,14 @@ $('use-join-invitation').addEventListener('click', async () => {
 $('dismiss-join-invitation').addEventListener('click', async () => {
   try { await dismissJoinInvitation(); }
   catch (error) { message(error.message, 'error'); }
+});
+
+$('open-full-restore').addEventListener('click', () => {
+  showAdvancedSetup = true;
+  renderState();
+  $('more-settings').open = true;
+  $('advanced-settings').open = true;
+  $('full-local-backup-title').scrollIntoView({ block: 'start' });
 });
 
 $('use-pat-instead').addEventListener('click', () => {
@@ -2613,13 +2644,12 @@ $('disconnect').addEventListener('click', async () => {
 });
 
 $('clear-local').addEventListener('click', async () => {
-  if (!window.confirm('Clear all local Clockoli data? This removes local settings, credentials and unsynced local state from this browser. This does not delete repository data or revoke GitHub sign-in.')) return;
+  if (!window.confirm('Reset to defaults? This permanently deletes all local settings, GitHub credentials, cached data, running timers and unsynced work. You will need to sign in again with your real GitHub account. GitHub repository data is not deleted.')) return;
   $('clear-local').disabled = true;
   try {
-    await send({ type: 'CLEAR_LOCAL_CONFIGURATION' });
-    stopRepositoryMonitoring(); repositories = []; selectedRepository = null; discoveryStatus = 'idle'; setupCancelled = false; showOnboarding = true;
-    await refreshState();
-    message('All local Clockoli data cleared. Repository data and GitHub authorization were not deleted.', 'success');
+    await send({ type: 'RESET_FULL_LOCAL_DATA' });
+    localStorage.clear();
+    reloadAfterLocalDataChange();
   } catch (error) { message(error.message, 'error'); }
   finally { $('clear-local').disabled = false; }
 });
@@ -3116,6 +3146,35 @@ for (const [form, feedback] of [['display-form', 'display-feedback'], ['billing-
   $(form).addEventListener('input', () => formFeedback(feedback, ''));
 }
 for (const id of ['seller-address', 'invoice-notes']) wireAutoGrow($(id));
+$('export-full-local-backup').addEventListener('click', async () => {
+  const button = $('export-full-local-backup');
+  button.disabled = true;
+  try {
+    const result = await send({
+      type: 'EXPORT_FULL_LOCAL_BACKUP', password: fullBackupPassword(),
+      localStorage: localStorageSnapshot(),
+    });
+    downloadText(result.text, `clockoli-full-backup-${new Date().toISOString().slice(0, 10)}.json`);
+    message('Encrypted full local backup exported. Keep the file and password safe.', 'success');
+  } catch (error) { message(error.message || 'Could not export full backup.', 'error'); }
+  finally { $('full-backup-password').value = ''; button.disabled = false; }
+});
+
+$('import-full-local-backup-file').addEventListener('change', async () => {
+  const input = $('import-full-local-backup-file'), file = input.files?.[0];
+  if (!file) return;
+  input.disabled = true;
+  try {
+    const password = fullBackupPassword();
+    if (file.size > 64 * 1024 * 1024) throw new Error('Full backup file is too large.');
+    if (!window.confirm('Replace ALL current local Clockoli data and GitHub sign-in with this backup? Any local changes not in the file will be lost. GitHub repositories are not changed.')) return;
+    const restored = await send({ type: 'IMPORT_FULL_LOCAL_BACKUP', text: await file.text(), password });
+    try { replaceLocalStorage(restored.localStorage); }
+    finally { reloadAfterLocalDataChange(); }
+  } catch (error) { message(error.message || 'Could not restore full backup.', 'error'); }
+  finally { input.value = ''; input.disabled = false; $('full-backup-password').value = ''; }
+});
+
 $('export-settings').addEventListener('click', async () => {
   $('export-settings').disabled = true;
   try {

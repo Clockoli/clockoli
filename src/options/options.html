@@ -78,6 +78,7 @@
           <p class="lead">Keep your time records in a private GitHub repository you control.</p>
           <div id="authorize-panel" class="primary-action-block">
             <button id="authorize" type="button">Connect GitHub</button>
+            <p class="full-backup-restore-prompt">Already have a full backup? <button id="open-full-restore" type="button" class="link-button">Restore it</button>.</p>
             <p class="help">We'll show and copy a one-time code before opening GitHub. Paste it there with <kbd id="device-initial-paste-shortcut">Ctrl+V</kbd>.</p>
           </div>
           <div id="device-panel" class="notice device-activation-panel" hidden>
@@ -398,6 +399,21 @@
       <p id="diagnostics-feedback" class="form-feedback" role="status" aria-live="polite"></p>
     </section>
 
+    <section class="advanced-section" aria-labelledby="full-local-backup-title">
+      <h2 id="full-local-backup-title">Full local backup</h2>
+      <p class="help">Save everything stored locally by this extension, including the GitHub username, sign-in credentials, running timer, pending changes, cached records and settings. The file is encrypted with your password; keep both safe. No GitHub repository data is changed.</p>
+      <label class="full-backup-password">Backup password
+        <input id="full-backup-password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters">
+      </label>
+      <div class="actions">
+        <button id="export-full-local-backup" type="button" class="secondary">Export all local data</button>
+        <label class="file-action">Restore all local data
+          <input id="import-full-local-backup-file" type="file" aria-label="Restore full local backup" accept="application/json,.json">
+        </label>
+      </div>
+      <p class="help">Restoring replaces the entire local database and browser preferences, including your current GitHub sign-in. Back up this browser first if you want to keep its unsynced work. Restored pending changes can synchronize to GitHub after restart.</p>
+    </section>
+
     <section class="advanced-section" aria-labelledby="pat-title">
       <details id="advanced-pat" class="nested-details">
         <summary id="pat-title">Use a personal access token</summary>
@@ -422,8 +438,8 @@
       <div class="advanced-actions-grid">
 
         <div>
-          <button id="clear-local" type="button" class="danger">Clear all local Clockoli data</button>
-          <p class="help">Removes local settings, credentials and unsynced local state from this browser. Before clearing, stop any running timer and use Sync until no pending changes remain. Repository data is not deleted.</p>
+          <button id="clear-local" type="button" class="danger">Reset to defaults</button>
+          <p class="help">Clears the entire local database and browser preferences, including GitHub sign-in and unsynced work. Before resetting, stop any running timer and use Sync until no pending changes remain, or export a full backup. After resetting, reconnect GitHub to use your real account. Repository data is not deleted.</p>
         </div>
         <div id="revoke-action">
           <a id="revoke" class="button-link danger-link" href="https://github.com/settings/apps/authorizations" target="_blank" rel="noreferrer" aria-describedby="revoke-help">Revoke GitHub sign-in</a>
