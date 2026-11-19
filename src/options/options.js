@@ -1124,6 +1124,11 @@ function renderState() {
     $('recent-days').value = state.config.recentDays || 7;
   }
   $('connected-account').textContent = state.auth?.githubLogin ? `@${state.auth.githubLogin}` : 'Personal access token';
+  const savedLogins = [...new Set((state?.destinations ?? []).map(destination => destination.storageLogin).filter(Boolean))];
+  $('full-backup-account').textContent = state?.auth?.githubLogin ? `@${state.auth.githubLogin}`
+    : savedLogins.length === 1 ? `@${savedLogins[0]}${state?.auth ? ' (stored repository username)' : ' (signed out)'}`
+      : savedLogins.length > 1 ? `Multiple saved users: ${savedLogins.map(login => `@${login}`).join(', ')}`
+        : state?.auth?.mode === 'pat' ? 'Username unavailable (PAT)' : 'No GitHub user saved';
   $('save-display').disabled = destinations.length === 0;
   setLink('revoke', state.authorizationSettingsUrl);
   $('revoke-action').hidden = state.auth?.mode !== 'github_app';
@@ -2396,9 +2401,22 @@ function replaceLocalStorage(values) {
   for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value);
 }
 
-function fullBackupPassword() {
-  const password = $('full-backup-password').value;
-  if (password.length < 8) throw new Error('Enter a backup password of at least 8 characters.');
+function fullBackupPassword(confirmExport = false) {
+  const passwordInput = $('full-backup-password');
+  const confirmationInput = $('full-backup-password-confirm');
+  const password = passwordInput.value;
+  const invalid = !password || password.length < 8 ? passwordInput
+    : confirmExport && confirmationInput.value !== password ? confirmationInput : null;
+  if (invalid) {
+    const reason = !password ? 'Enter your backup password.'
+      : password.length < 8 ? 'Use a password of at least 8 characters.'
+        : !confirmationInput.value ? 'Confirm your backup password.' : 'Passwords do not match.';
+    invalid.setAttribute('aria-invalid', 'true');
+    invalid.focus();
+    formFeedback('full-backup-password-feedback', reason, 'error');
+    throw Object.assign(new Error(reason), { code: 'invalid_backup_password' });
+  }
+  formFeedback('full-backup-password-feedback', '');
   return password;
 }
 
@@ -3146,18 +3164,36 @@ for (const [form, feedback] of [['display-form', 'display-feedback'], ['billing-
   $(form).addEventListener('input', () => formFeedback(feedback, ''));
 }
 for (const id of ['seller-address', 'invoice-notes']) wireAutoGrow($(id));
+for (const id of ['full-backup-password', 'full-backup-password-confirm']) {
+  $(id).addEventListener('input', () => {
+    for (const field of ['full-backup-password', 'full-backup-password-confirm']) $(field).removeAttribute('aria-invalid');
+    formFeedback('full-backup-password-feedback', '');
+  });
+}
 $('export-full-local-backup').addEventListener('click', async () => {
   const button = $('export-full-local-backup');
   button.disabled = true;
   try {
     const result = await send({
-      type: 'EXPORT_FULL_LOCAL_BACKUP', password: fullBackupPassword(),
+      type: 'EXPORT_FULL_LOCAL_BACKUP', password: fullBackupPassword(true),
       localStorage: localStorageSnapshot(),
     });
     downloadText(result.text, `clockoli-full-backup-${new Date().toISOString().slice(0, 10)}.json`);
+    $('full-backup-password').value = '';
+    $('full-backup-password-confirm').value = '';
     message('Encrypted full local backup exported. Keep the file and password safe.', 'success');
-  } catch (error) { message(error.message || 'Could not export full backup.', 'error'); }
-  finally { $('full-backup-password').value = ''; button.disabled = false; }
+  } catch (error) {
+    if (error.code !== 'invalid_backup_password') message(error.message || 'Could not export full backup.', 'error');
+  } finally { button.disabled = false; }
+});
+
+$('restore-full-local-backup').addEventListener('click', () => {
+  try {
+    fullBackupPassword();
+    $('import-full-local-backup-file').click();
+  } catch (error) {
+    if (error.code !== 'invalid_backup_password') message(error.message || 'Could not select a full backup.', 'error');
+  }
 });
 
 $('import-full-local-backup-file').addEventListener('change', async () => {
@@ -3171,8 +3207,9 @@ $('import-full-local-backup-file').addEventListener('change', async () => {
     const restored = await send({ type: 'IMPORT_FULL_LOCAL_BACKUP', text: await file.text(), password });
     try { replaceLocalStorage(restored.localStorage); }
     finally { reloadAfterLocalDataChange(); }
-  } catch (error) { message(error.message || 'Could not restore full backup.', 'error'); }
-  finally { input.value = ''; input.disabled = false; $('full-backup-password').value = ''; }
+  } catch (error) {
+    if (error.code !== 'invalid_backup_password') message(error.message || 'Could not restore full backup.', 'error');
+  } finally { input.value = ''; input.disabled = false; $('full-backup-password').value = ''; }
 });
 
 $('export-settings').addEventListener('click', async () => {
