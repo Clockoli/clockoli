@@ -544,7 +544,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
     }
     // Only the short local IndexedDB acceptance is in flight. Never show a
     // GitHub saving status: the shared 15-second sync happens silently later.
-    busy = true; add.disabled = true; cancel.disabled = true; setError('');
+    busy = true; add.disabled = true; cancel.disabled = true; close.disabled = true; setError('');
     try {
       const value = runningEdit ? { startedAt }
         : { taskUrl: task.taskUrl, taskTitle: task.title || '', startedAt, endedAt,
@@ -564,11 +564,10 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
       }
     } catch (cause) {
       const message = cause?.message || 'Could not save time.';
-      setError(editing && /overlap/i.test(message) && !/running timer/i.test(message)
-        ? `${message} Go to List for the affected week and resolve the overlapping entries manually.` : message);
+      setError(message);
     }
     finally {
-      busy = false; add.disabled = false; cancel.disabled = false;
+      busy = false; add.disabled = false; cancel.disabled = false; close.disabled = false;
     }
   };
   add.addEventListener('click', submit);

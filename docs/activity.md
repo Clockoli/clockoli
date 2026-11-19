@@ -81,6 +81,4 @@ The first search may load older history. If a repository cannot be read, Activit
 
 Activity loads the selected week from GitHub while keeping locally accepted changes visible. An incomplete read can disable editing, and a failed read offers **Retry**.
 
-Overlapping entries may prevent Timeline or Calendar from displaying a week. Use **Go to List** to inspect and correct the affected entries; do not treat an empty-looking view as evidence that records were deleted.
-
-When synchronization needs attention, open **Review sync issues** in Activity. See [Troubleshooting](troubleshooting.md#synchronization-and-conflicts).
+If saved entries overlap, Timeline and Calendar switch to List for correction. For pending sync conflicts, open **Review sync issues** and keep browser data until the changes reach GitHub. See [Troubleshooting](troubleshooting.md#synchronization-and-conflicts).

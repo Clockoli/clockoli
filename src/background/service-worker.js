@@ -506,8 +506,13 @@ async function loadTimes(message, sender) {
         : projected.records;
     }, { signal: controller.signal });
     loadCoordinator.assertCurrent(loadEpoch);
-    const pendingWrites = [...recoveries.entries()].flatMap(([destinationId, recovery]) => (recovery.pendingWrites || [])
-      .map(operation => safePendingProjection(operation, destinationId, { includeDetails: true })));
+    // Recovery summaries omit operation payloads. Read complete local queue
+    // details for Activity; legacy test stores may only provide the summary.
+    const local = await store.getTrackingSnapshot?.();
+    loadCoordinator.assertCurrent(loadEpoch);
+    const pendingWrites = [...recoveries.entries()].flatMap(([destinationId, recovery]) =>
+      (local?.destinationStates?.entries?.[destinationId]?.pendingWrites ?? recovery.pendingWrites ?? [])
+        .map(operation => safePendingProjection(operation, destinationId, { includeDetails: true })));
     return {
       configured: true,
       recent: loaded.records.map(({ _record, ...record }) => record)
@@ -756,13 +761,13 @@ const DIRECT_DEVICE_FLOW_MESSAGES = new Set([
 
 const READ_RETRY_MESSAGES = new Set([
   'LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'LOAD_TASKS', 'LOAD_TIMES', 'LOAD_RECENT', 'SEARCH_TASKS',
-  'GET_STATE', 'GET_PAGE_STATE', 'GET_STOPPED_OVERLAP', 'GET_EXCHANGE_RATES', 'GET_ONBOARDING_STATE',
+  'GET_STATE', 'GET_PAGE_STATE', 'GET_STOPPED_OVERLAP', 'GET_ACTIVE_START_CONFLICT', 'GET_EXCHANGE_RATES', 'GET_ONBOARDING_STATE',
   'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES',
 ]);
 
 const RECOVERABLE_REPOSITORY_MESSAGES = new Set([
   'LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'LOAD_TASKS', 'LOAD_TIMES', 'SEARCH_TASKS', 'GET_STATE', 'GET_PAGE_STATE', 'START', 'SWITCH_TASK', 'STOP', 'DISCARD_ACTIVE', 'SYNC',
-  'LOAD_RECENT', 'BULK_ADD_TIMES', 'ADD_TIME', 'ADD_DAY_RANGE', 'EDIT_ENTRIES', 'EDIT_ACTIVE_START', 'QUEUE_ENTRY_EDIT', 'QUEUE_ENTRIES_EDIT', 'QUEUE_ACTIVE_START_EDIT', 'DELETE_ENTRY', 'RESOLVE_PENDING', 'RESOLVE_STOPPED_OVERLAP',
+  'LOAD_RECENT', 'BULK_ADD_TIMES', 'ADD_TIME', 'ADD_DAY_RANGE', 'EDIT_ENTRIES', 'EDIT_ACTIVE_START', 'QUEUE_ENTRY_EDIT', 'QUEUE_ENTRIES_EDIT', 'QUEUE_ACTIVE_START_EDIT', 'DELETE_ENTRY', 'RESOLVE_PENDING', 'RESOLVE_STOPPED_OVERLAP', 'EDIT_STOPPED_OVERLAP', 'RESOLVE_ACTIVE_START_CONFLICT', 'EDIT_ACTIVE_START_CONFLICT', 'DELETE_ACTIVE_START_CONFLICT',
 ]);
 
 async function withCurrentRepositoryRecovery(message, operation) {
@@ -819,9 +824,24 @@ function safeQueuedRecord(record) {
 }
 function queuedSubjects(operation) {
   const type = operation.operation ?? operation.stage;
-  if (['startTimer', 'completeTimerAndStart'].includes(type)) {
+  if (type === 'completeTimerAndStart') {
+    const original = safeQueuedRecord(operation.entry);
+    const proposed = safeQueuedRecord(operation.nextActive);
+    return original || proposed ? [{ ...(original ? { original } : {}),
+      ...(proposed ? { proposed } : {}) }] : [];
+  }
+  if (type === 'startTimer') {
     const proposed = safeQueuedRecord(operation.nextActive);
     return proposed ? [{ proposed }] : [];
+  }
+  if (type === 'discardActive') {
+    const original = safeQueuedRecord(operation.activeSnapshot);
+    return original ? [{ original }] : [];
+  }
+  if (type === 'editActiveStart') {
+    const original = safeQueuedRecord({ startedAt: operation.original?.startedAt });
+    const proposed = safeQueuedRecord({ startedAt: operation.startedAt });
+    return original || proposed ? [{ original, proposed }] : [];
   }
   const requests = ['editEntry', 'deleteEntry'].includes(type) ? [operation.request]
     : type === 'editEntries' ? operation.request?.entries : null;
@@ -851,6 +871,8 @@ function safePendingProjection(operation, destinationId, { includeDetails = fals
   return {
     id, destinationId, status, stage, operation: operation.operation, queuedAt,
     retryCount: Math.max(0, Number(retryCount) || 0),
+    ...(operation.operation === 'editActiveStart' && typeof operation.original?.id === 'string'
+      ? { timerId: operation.original.id } : {}),
     ...(conflictReason ? { conflictReason } : {}),
     ...(lastError ? { lastError: diagnosticError(lastError) } : {}),
     ...(diagnostics.length ? { diagnostics } : {}),
@@ -1030,6 +1052,18 @@ async function replaceFullLocalData(operation) {
     requestPendingSync();
     throw error;
   }
+}
+
+function validConflictEntryEdits(edits) {
+  const fields = Object.keys(edits && typeof edits === 'object' && !Array.isArray(edits) ? edits : {}).sort().join(',');
+  return fields === 'billable,description,endedAt,startedAt,taskTitle,taskUrl'
+    && typeof edits.taskUrl === 'string' && edits.taskUrl.length <= 500
+    && typeof edits.taskTitle === 'string' && edits.taskTitle.length <= 500
+    && typeof edits.description === 'string' && edits.description.length <= 2000
+    && typeof edits.billable === 'boolean'
+    && [edits.startedAt, edits.endedAt].every(value => typeof value === 'string'
+      && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+      && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value);
 }
 
 async function handle(message, sender) {
@@ -1751,20 +1785,107 @@ async function handle(message, sender) {
       requestPendingSync();
       return { ...result, destinationId: destinationIds[0] };
     }
+    case 'GET_PENDING_COMPLETION_CONFLICT':
+    case 'EDIT_PENDING_COMPLETION_CONFLICT':
+    case 'DELETE_PENDING_COMPLETION_CONFLICT': {
+      if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) {
+        throw new Error('Only Activity can resolve a stopped-time conflict.');
+      }
+      const keys = Object.keys(message).sort().join(',');
+      const expected = message.type === 'EDIT_PENDING_COMPLETION_CONFLICT'
+        ? 'destinationId,edits,id,type' : 'destinationId,id,type';
+      if (keys !== expected || typeof message.id !== 'string'
+          || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)
+          || (message.type === 'EDIT_PENDING_COMPLETION_CONFLICT' && !validConflictEntryEdits(message.edits))) {
+        throw new Error('Invalid stopped-time conflict request.');
+      }
+      const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+      const tracker = await trackerForDestination(destinationId,
+        message.type === 'GET_PENDING_COMPLETION_CONFLICT' ? { localOnly: true, persistUser: false } : {});
+      if (message.type === 'GET_PENDING_COMPLETION_CONFLICT') {
+        return tracker.getPendingCompletionConflictContext(message.id);
+      }
+      if (message.type === 'EDIT_PENDING_COMPLETION_CONFLICT') {
+        const result = await tracker.editPendingCompletionConflict(message.id, message.edits);
+        requestPendingSync();
+        return result;
+      }
+      const result = await tracker.deletePendingCompletionConflict(message.id);
+      requestPendingSync();
+      return result;
+    }
+    case 'GET_ACTIVE_START_CONFLICT':
+    case 'RESOLVE_ACTIVE_START_CONFLICT':
+    case 'EDIT_ACTIVE_START_CONFLICT':
+    case 'DELETE_ACTIVE_START_CONFLICT': {
+      if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) {
+        throw new Error('Only Activity can resolve a start-time conflict.');
+      }
+      const keys = Object.keys(message).sort().join(',');
+      const expected = message.type === 'GET_ACTIVE_START_CONFLICT' || message.type === 'DELETE_ACTIVE_START_CONFLICT'
+        ? 'destinationId,id,type'
+        : message.type === 'EDIT_ACTIVE_START_CONFLICT' ? 'destinationId,edits,id,type'
+          : ['manual', 'after'].includes(message.choice)
+            ? 'choice,destinationId,id,startedAt,type' : 'choice,destinationId,id,type';
+      if (keys !== expected || typeof message.id !== 'string'
+          || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)) {
+        throw new Error('Invalid start-time conflict request.');
+      }
+      if (message.type === 'EDIT_ACTIVE_START_CONFLICT' && !validConflictEntryEdits(message.edits)) {
+        throw new Error('Invalid edited timer details.');
+      }
+      const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+      const tracker = await trackerForDestination(destinationId,
+        message.type === 'GET_ACTIVE_START_CONFLICT' ? { localOnly: true, persistUser: false } : {});
+      if (message.type === 'GET_ACTIVE_START_CONFLICT') return tracker.getActiveStartConflictContext(message.id);
+      if (message.type === 'EDIT_ACTIVE_START_CONFLICT') {
+        const result = await tracker.editStoppedActiveConflict(message.id, message.edits);
+        requestPendingSync();
+        return result;
+      }
+      if (message.type === 'DELETE_ACTIVE_START_CONFLICT') {
+        const result = await tracker.deleteStoppedActiveConflict(message.id);
+        requestPendingSync();
+        return result;
+      }
+      if (!['undo', 'after', 'manual'].includes(message.choice)
+          || (['manual', 'after'].includes(message.choice) && (typeof message.startedAt !== 'string'
+            || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(message.startedAt)
+            || !Number.isFinite(Date.parse(message.startedAt))
+            || new Date(message.startedAt).toISOString() !== message.startedAt))) {
+        throw new Error('Invalid start-time conflict resolution.');
+      }
+      const result = await tracker.resolveActiveStartConflict(message.id,
+        { choice: message.choice, ...(['manual', 'after'].includes(message.choice) ? { startedAt: message.startedAt } : {}) });
+      requestPendingSync();
+      return result;
+    }
     case 'GET_STOPPED_OVERLAP':
     case 'RESOLVE_STOPPED_OVERLAP':
+    case 'EDIT_STOPPED_OVERLAP':
     case 'DELETE_STOPPED_OVERLAP': {
       if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) throw new Error('Only Activity can review this overlap.');
       const keys = Object.keys(message).sort().join(',');
       if (keys !== (message.type === 'GET_STOPPED_OVERLAP' ? 'destinationId,id,type'
-        : message.type === 'DELETE_STOPPED_OVERLAP' ? 'destinationId,id,side,type' : 'destinationId,endedAt,id,side,startedAt,type')
+        : message.type === 'DELETE_STOPPED_OVERLAP' ? 'destinationId,id,side,type'
+          : message.type === 'EDIT_STOPPED_OVERLAP' ? 'destinationId,edits,id,side,type'
+            : 'destinationId,endedAt,id,side,startedAt,type')
           || typeof message.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)) {
         throw new Error('Invalid overlap request.');
+      }
+      if (message.type === 'EDIT_STOPPED_OVERLAP'
+          && (!['previous', 'local'].includes(message.side) || !validConflictEntryEdits(message.edits))) {
+        throw new Error('Invalid edited overlap details.');
       }
       const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
       const tracker = await trackerForDestination(destinationId,
         message.type === 'GET_STOPPED_OVERLAP' ? { localOnly: true, persistUser: false } : {});
       if (message.type === 'GET_STOPPED_OVERLAP') return tracker.getStoppedOverlapContext(message.id);
+      if (message.type === 'EDIT_STOPPED_OVERLAP') {
+        const result = await tracker.editStoppedOverlap(message.id, { side: message.side, edits: message.edits });
+        requestPendingSync();
+        return result;
+      }
       if (message.type === 'DELETE_STOPPED_OVERLAP') {
         if (!['previous', 'local'].includes(message.side)) throw new Error('Invalid overlap delete.');
         const result = await tracker.deleteStoppedOverlap(message.id, { side: message.side });
@@ -1791,7 +1912,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'LOCAL_PREFERENCES_CHANGED' || message?.type === 'TOOLBAR_CONTEXT_UPDATED') return undefined;
   const reportReadOnly = ['LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
   const localStateRead = ['GET_STATE', 'GET_PAGE_STATE'].includes(message?.type) && !message?.refresh;
-  const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS'].includes(message?.type);
+  const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'GET_ACTIVE_START_CONFLICT', 'GET_PENDING_COMPLETION_CONFLICT', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS'].includes(message?.type);
   const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER'].includes(message?.type);
   let operation;
   if (changesConfiguration) {
