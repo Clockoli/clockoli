@@ -401,15 +401,21 @@
 
     <section class="advanced-section" aria-labelledby="full-local-backup-title">
       <h2 id="full-local-backup-title">Full local backup</h2>
+      <p>GitHub user in local data: <strong id="full-backup-account">No GitHub user saved</strong></p>
+      <p class="help">This is the username saved in this browser, possibly from a restored backup—not a live GitHub identity check.</p>
       <p class="help">Save everything stored locally by this extension, including the GitHub username, sign-in credentials, running timer, pending changes, cached records and settings. The file is encrypted with your password; keep both safe. No GitHub repository data is changed.</p>
+      <p class="help">Enter the password twice when exporting. To restore a backup, enter it only in the first field.</p>
       <label class="full-backup-password">Backup password
-        <input id="full-backup-password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters">
+        <input id="full-backup-password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" aria-describedby="full-backup-password-feedback">
       </label>
+      <label class="full-backup-password">Confirm password (for export)
+        <input id="full-backup-password-confirm" type="password" minlength="8" autocomplete="new-password" placeholder="Repeat password" aria-describedby="full-backup-password-feedback">
+      </label>
+      <p id="full-backup-password-feedback" class="form-feedback" role="status" aria-live="polite"></p>
       <div class="actions">
         <button id="export-full-local-backup" type="button" class="secondary">Export all local data</button>
-        <label class="file-action">Restore all local data
-          <input id="import-full-local-backup-file" type="file" aria-label="Restore full local backup" accept="application/json,.json">
-        </label>
+        <button id="restore-full-local-backup" type="button" class="secondary">Restore all local data</button>
+        <input id="import-full-local-backup-file" type="file" aria-label="Restore full local backup" accept="application/json,.json" hidden>
       </div>
       <p class="help">Restoring replaces the entire local database and browser preferences, including your current GitHub sign-in. Back up this browser first if you want to keep its unsynced work. Restored pending changes can synchronize to GitHub after restart.</p>
     </section>
