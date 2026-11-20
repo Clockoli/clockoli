@@ -44,7 +44,8 @@
 .running-status-elapsed,.running-status-today{white-space:nowrap;font-variant-numeric:tabular-nums}
 .running-status-elapsed{font-size:14px;font-weight:600;line-height:20px}
 .running-status-today{padding-left:18px;border-left:1px solid var(--borderColor-muted);font-size:12px}
-.running-status .running-status-stop{display:inline-flex;align-items:center;gap:6px;flex:none;margin:0;padding:5px 12px;border:1px solid var(--button-danger-borderColor-hover);border-radius:6px;background:var(--button-danger-bgColor-hover);color:var(--button-danger-fgColor-hover);font:500 14px/20px var(--fontStack-sansSerif);white-space:nowrap;cursor:pointer}
+.running-status .running-status-stop{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:none;margin:0;padding:5px 12px;border:1px solid var(--button-danger-borderColor-hover);border-radius:6px;background:var(--button-danger-bgColor-hover);color:var(--button-danger-fgColor-hover);font:500 14px/20px var(--fontStack-sansSerif);white-space:nowrap;cursor:pointer}
+.running-status .running-status-stop::after{content:"";width:16px;flex:none}
 .running-status .running-status-stop:hover:not(:disabled){border-color:var(--button-danger-borderColor-active);background:var(--button-danger-bgColor-active);color:var(--button-danger-fgColor-active)}
 .running-status .running-status-stop:disabled{border-color:var(--button-danger-borderColor-rest);background:var(--button-danger-bgColor-disabled);color:var(--button-danger-fgColor-disabled);cursor:default}
 .running-status-task:focus-visible,.running-status-description:focus-visible,.running-status-description-save:focus-visible,.running-status-stop:focus-visible,.running-status-recent-task:focus-visible{outline:2px solid var(--focus-outlineColor);outline-offset:2px}.running-status-description:focus-visible{outline-offset:-1px}
