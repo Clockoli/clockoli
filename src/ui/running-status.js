@@ -11,6 +11,7 @@ const RECENT_TASK_LIMIT = 3;
 
 const CHECK_PATH = 'M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z';
 const PLAY_PATH = 'M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm4.879-2.773 4.264 2.559a.25.25 0 0 1 0 .428l-4.264 2.559A.25.25 0 0 1 6 10.559V5.442a.25.25 0 0 1 .379-.215Z';
+const STOP_PATH = 'M3.5 3.5h9v9h-9z';
 const OCTICON_NS = 'http://www.w3.org/2000/svg';
 function octicon(path) {
   const svg = document.createElementNS(OCTICON_NS, 'svg');
@@ -38,7 +39,7 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
   const elapsedValue = make('span', 'running-status-metric-value'); elapsed.append(elapsedLabel, elapsedValue);
   const todayLabel = make('span', 'running-status-metric-label'); todayLabel.textContent = 'Today';
   const todayValue = make('span', 'running-status-metric-value'); today.append(todayLabel, todayValue);
-  const stop = make('button', 'running-status-stop'); stop.type = 'button'; stop.textContent = 'Stop and save';
+  const stop = make('button', 'running-status-stop'); stop.type = 'button'; stop.append(octicon(STOP_PATH), 'Stop and save');
   const descriptionField = make('div', 'running-status-description-field');
   const description = make('textarea', 'running-status-description');
   description.rows = 1; description.maxLength = 2000; description.placeholder = 'Description (optional)';
