@@ -39,7 +39,7 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
   const elapsedValue = make('span', 'running-status-metric-value'); elapsed.append(elapsedLabel, elapsedValue);
   const todayLabel = make('span', 'running-status-metric-label'); todayLabel.textContent = 'Today';
   const todayValue = make('span', 'running-status-metric-value'); today.append(todayLabel, todayValue);
-  const stop = make('button', 'running-status-stop'); stop.type = 'button'; stop.append(octicon(STOP_PATH), 'Stop and save');
+  const stop = make('button', 'running-status-stop'); stop.type = 'button'; stop.textContent = 'Stop and save'; stop.prepend(octicon(STOP_PATH));
   const descriptionField = make('div', 'running-status-description-field');
   const description = make('textarea', 'running-status-description');
   description.rows = 1; description.maxLength = 2000; description.placeholder = 'Description (optional)';
