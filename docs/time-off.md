@@ -12,14 +12,14 @@ Because this configuration reclassifies existing time entries, changing the list
 
 Open **Time off → My time off → Add time off**.
 
-1. Choose a **Time repository** and **Type** (one of its configured PTO tasks). When there is only one configured task, Clockoli selects it automatically.
-2. Pick days in the monthly calendar. Click individual dates, choose **Select range** and click the first and last days, or Shift-click to extend a range. **Select weekdays** marks the working days of the visible month; use the arrows or month picker to navigate.
-3. Selected days start at **8 hours**, with a **09:00** start time. Edit hours in any selected calendar cell, or change **Default hours per day** and select **Apply hours to selected**. Ranges skip weekends unless you enable **Include weekends in ranges**; you can also click an individual weekend day.
+1. Choose a **Time repository** and **Type** (one of its configured PTO tasks).
+2. Click dates in the monthly calendar, or Shift-click to select a range of weekdays. Navigate months with the arrows or month picker. To add a weekend day, click it directly.
+3. New days default to **8 hours**; adjust the hours inside any selected date. **Hours for new days** changes the default for subsequent selections.
 4. Optionally add a description, then select **Add time off**.
 
 One plan adds one ordinary entry per selected day and tags the entries with the same `metadata.clockoli.timeOffGroupId`. This makes the plan editable as one group; the repository's storage schema stays unchanged. You can select past and future dates across months, up to 50 days within a 500-day span per save.
 
-PTO is placed **at the exact selected hours**. Unlike the normal Multiple days free-slot planner, it is never silently moved into another time of day to avoid an overlap. If time off conflicts with work or another entry, edit the conflicting time first.
+Clockoli chooses the start time automatically, preferring **09:00** and otherwise the first free continuous interval later that day. It checks existing work and PTO (including GitHub records during synchronization). If the requested hours cannot fit in one interval, it reports an error rather than creating overlapping time.
 
 ## Review and change your PTO
 
