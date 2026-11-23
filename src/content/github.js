@@ -2297,7 +2297,8 @@
       if (!inline.save.hidden) actions.classList.add('dirty');
       const time = el('span', recentTimeText(entry), 'entry-time-range entry-time-display');
       timeRow.append(time, inline.node, inline.duration, actions);
-      if (nonBillable) actions.before(el('span', 'Non-billable', 'entry-non-billable-badge'));
+      if (entry.isTimeOff) actions.before(el('span', entry.isPlannedTimeOff ? 'Planned PTO' : 'PTO', 'entry-non-billable-badge'));
+      else if (nonBillable) actions.before(el('span', 'Non-billable', 'entry-non-billable-badge'));
       timeRow.append(inline.unsaved);
       if (draft?.metadataActive) {
         const metadata = el('div', undefined, 'inline-metadata-editor');
