@@ -89,7 +89,7 @@ html,body{min-width:320px;min-height:100%;margin:0;background:var(--bgColor-defa
 .time-off-day-toggle[aria-pressed="true"]{color:var(--fgColor-accent,#0969da)}
 .time-off-day-toggle:disabled{cursor:default}
 .time-off-calendar-hours{display:flex;align-items:center;justify-content:center;gap:2px;min-width:0;margin-top:auto}
-.time-off-calendar-hours input{width:45px;max-width:calc(100% - 10px);min-width:0;min-height:23px;padding:1px 2px;text-align:center;font-size:11px;appearance:textfield}
+#time-off-dialog .time-off-calendar-hours input{width:45px;max-width:calc(100% - 10px);min-width:0;min-height:23px;padding:1px 2px;text-align:center;font-size:11px;appearance:textfield}
 .time-off-calendar-hours span{font-size:11px}
 .time-off-calendar-taken{display:block;text-align:center;font-size:10px;color:var(--fgColor-muted)}
 .time-off-calendar-summary{display:flex;align-items:center;gap:8px;justify-content:space-between;flex-wrap:wrap;margin-top:8px}
