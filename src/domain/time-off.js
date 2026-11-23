@@ -43,7 +43,7 @@ export function classifyTimeOffRecords(records, configsByDestination, now = new 
   const instant = now.getTime();
   return (records ?? []).map(record => {
     const config = configsByDestination?.[record.destinationId];
-    const timeOff = Boolean(config?.taskUrls?.includes(taskUrlOf(record)));
+    const timeOff = Boolean(config?.taskUrls?.length && config.taskUrls.includes(taskUrlOf(record)));
     if (!timeOff) return record;
     return {
       ...record,
