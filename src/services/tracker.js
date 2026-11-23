@@ -2762,7 +2762,8 @@ export class TrackerService {
     }
     let acceptedEntry;
     await this.mutateState(state => {
-      if (state.activeCache && endMs > new Date(state.activeCache.startedAt).getTime()) {
+      if (state.activeCache && endMs > new Date(state.activeCache.startedAt).getTime()
+          && !(allowFuture && startMs > now.getTime())) {
         throw new Error('Added time would overlap the running timer.');
       }
       const known = knownLocalIntervals(state);
@@ -2819,7 +2820,8 @@ export class TrackerService {
     if (state.pendingWrites?.length && !fixedId) throw new Error('Pending time writes must sync before adding time.');
     const indexFile = /^https?:\/\//.test(canonical) ? null : await this.assertKnownImportedTask(canonical);
     const active = fixedId ? await this.readRemoteActive() : await this.refreshActive();
-    if (active && (!end || endMs > new Date(active.startedAt).getTime())) throw new Error('Added time would overlap the running timer.');
+    if (active && (!end || endMs > new Date(active.startedAt).getTime())
+        && !(end && startMs > now.getTime() && (allowFuture || fixedId))) throw new Error('Added time would overlap the running timer.');
     const { files, headSha } = await this.readAddTimeOverlapFiles(originalDay, now,
       localDateInTimezone(end ?? now, accepted?.timezone ?? this.timezone), end ?? now);
     if (files.some(file => file.entries.some(entry => entry.id !== fixedId
@@ -2894,7 +2896,10 @@ export class TrackerService {
       const occupied = existing.map(entry => ({
         start: new Date(entry.startedAt).getTime(), end: new Date(entry.endedAt).getTime(),
       }));
-      if (activeStartMs < limitMs) occupied.push({ start: activeStartMs, end: Infinity });
+      // A running timer has no known end, but must not block planning on a future day.
+      // A later work completion is still checked against stored PTO intervals.
+      const futureDay = item.date > localDateInTimezone(this.clock(), this.timezone);
+      if (!futureDay && activeStartMs < limitMs) occupied.push({ start: activeStartMs, end: Infinity });
       occupied.sort((a, b) => a.start - b.start);
       const overlaps = (start, end, interval) => durationMs > 0
         && interval.start < end && interval.end > start;
