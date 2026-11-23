@@ -210,7 +210,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
   const refreshPtoState = () => {
     const pto = ptoIsSelected();
     ptoHint.hidden = !pto;
-    ptoHint.textContent = pto ? 'Time off · Future dates are allowed. This time is always non-billable.' : '';
+    ptoHint.textContent = pto ? 'Time off · Use the Time off page to plan and edit absences. This time is always non-billable.' : '';
     if (pto) nonBillable.checked = true;
     nonBillable.disabled = pto;
     refreshDateMax();
