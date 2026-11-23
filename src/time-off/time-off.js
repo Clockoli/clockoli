@@ -398,12 +398,12 @@ $('edit-repository').addEventListener('change', fillTaskOptions);
 for (const id of ['edit-from', 'edit-to', 'include-weekends']) {
   $(id).addEventListener('change', renderDays);
 }
-$('edit-hours').addEventListener('change', () => {
+$('edit-hours').addEventListener('input', () => {
   const hours = Number($('edit-hours').value);
   for (const custom of dayState.values()) custom.hours = hours;
   renderDays();
 });
-$('edit-start-time').addEventListener('change', () => {
+$('edit-start-time').addEventListener('input', () => {
   const time = $('edit-start-time').value;
   for (const custom of dayState.values()) custom.startTime = time;
   renderDays();
