@@ -1,7 +1,7 @@
 import { activeRecordPath, assertUserMonthlyRecordsPath, localTimestamp, monthlyRecordsPath, normalizePlainTitle, parseActiveRecord, parseMonthlyRecords, serializeActiveRecord, serializeMonthlyRecords } from '../domain/work-records.js';
 import { applyActiveEdits, applyActiveStartEdit, applyEntryEdits, buildActiveTimer, buildEntry, isBillable, localDateInTimezone, validateActiveTimer, validateEntry } from '../domain/records.js';
 import { parseBulkTimeText } from '../domain/bulk-time.js';
-import { normalizeTimeOffChange, timeOffGroupId } from '../domain/time-off.js';
+import { normalizeTimeOffChange, timeOffGroupId, timeOffStartInstant, timeOffWallClock } from '../domain/time-off.js';
 import { applyTaskIndexChanges, parseTaskIndex, serializeTaskIndex, TASK_INDEX_PATH } from '../domain/task-index.js';
 import { createUlid } from '../domain/ulid.js';
 import { entryDateParts, entryDateValue, localDateParts, normalizeStoredTaskIdentity, normalizeTaskUrl, parseGitHubTaskUrl, taskUrlOf, validateEntryId, validatePathSegment } from '../domain/values.js';
@@ -2778,6 +2778,7 @@ export class TrackerService {
   // A group is persisted only as ordinary time entries with metadata.clockoli.timeOffGroupId.
   async queueTimeOffChange(raw) {
     const change = normalizeTimeOffChange(raw);
+    const timezone = change.timezone || this.timezone;
     const queuedAt = this.clock();
     let accepted = null, groupId = '';
     await this.mutateState(state => {
@@ -2786,18 +2787,16 @@ export class TrackerService {
       const known = knownLocalIntervals(state).filter(item => !priorIds.has(item.id));
       const usedIds = new Set([...known.map(item => item.id), ...change.previous.map(item => item.id)]);
       const entries = change.days.map(item => {
-        const [year, month, day] = item.date.split('-').map(Number);
-        const [hours, minutes] = item.startTime.split(':').map(Number);
-        const start = new Date(year, month - 1, day, hours, minutes, 0, 0);
-        if (start.getFullYear() !== year || start.getMonth() !== month - 1
-            || start.getDate() !== day || start.getHours() !== hours || start.getMinutes() !== minutes) {
-          throw new Error('This start time does not exist in your timezone.');
-        }
+        const unchanged = change.previous.find(previous => previous.date === item.date
+          && timeOffWallClock(previous.startedAt, timezone) === item.startTime
+          && Date.parse(previous.endedAt) - Date.parse(previous.startedAt) === item.durationSeconds * 1000);
+        const start = unchanged ? new Date(unchanged.startedAt)
+          : timeOffStartInstant(item.date, item.startTime, timezone);
         const end = new Date(start.getTime() + item.durationSeconds * 1000);
         const id = this.uniqueRecordId(start.getTime(), usedIds);
         const active = this.buildActive({
           id, taskUrl: change.taskUrl, taskTitle: change.taskTitle, description: change.description,
-          startedAt: start, entryDate: item.date, billable: false,
+          startedAt: start, entryDate: item.date, timezone, billable: false,
           metadata: { clockoli: { timeOffGroupId: groupId } },
         });
         const entry = buildEntry({ active, endedAt: end,
