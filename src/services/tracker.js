@@ -2844,7 +2844,7 @@ export class TrackerService {
 
   async commitTimeOffChange(operation) {
     const previous = operation.previous ?? [], proposed = operation.entries ?? [];
-    const anchor = proposed.length ? proposed : previous;
+    const anchor = proposed.length ? proposed : previous.map(item => ({ ...item, entryDate: item.date }));
     if (!anchor.length) throw new TrackerConflictError('Empty time off change.', 'time_off_invalid');
     const overlap = await this.readEditOverlapFiles(anchor);
     const files = new Map(overlap.files.map(file => [file.path, file]));
@@ -2900,7 +2900,7 @@ export class TrackerService {
     const active = await this.readRemoteActive();
     for (const entry of proposed) {
       const start = Date.parse(entry.startedAt), end = Date.parse(entry.endedAt);
-      if (active && start <= Date.parse(operation.queuedAt)
+      if (active && start <= this.clock().getTime()
           && end > Date.parse(active.startedAt)) {
         throw new TrackerConflictError('Time off overlaps a running timer on GitHub.', 'time_off_overlap');
       }
