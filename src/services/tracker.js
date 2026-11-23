@@ -2899,7 +2899,7 @@ export class TrackerService {
       }));
       // A running timer has no known end, but must not block planning on a future day.
       // A later work completion is still checked against stored PTO intervals.
-      const futureDay = item.date > localDateInTimezone(this.clock(), this.timezone);
+      const futureDay = item.allowFuture === true && item.date > localDateInTimezone(this.clock(), this.timezone);
       if (!futureDay && activeStartMs < limitMs) occupied.push({ start: activeStartMs, end: Infinity });
       occupied.sort((a, b) => a.start - b.start);
       const overlaps = (start, end, interval) => durationMs > 0
@@ -2989,7 +2989,7 @@ export class TrackerService {
         || typeof description !== 'string' || description.length > 2000) throw new Error('Invalid selected days or hours per day.');
     const requested = dates.map((date, index) => ({
       line: index + 1, date,
-      taskUrl: canonical, taskTitle, description, durationSeconds, startTime: '09:00', billable,
+      taskUrl: canonical, taskTitle, description, durationSeconds, startTime: '09:00', billable, ...(allowFuture ? { allowFuture: true } : {}),
     }));
     return this.queueBulkAddTimes('', requested, { noFuture: !allowFuture });
   }
