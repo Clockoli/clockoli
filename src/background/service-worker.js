@@ -5,7 +5,7 @@ import {
   GITHUB_AUTHORIZATIONS_URL, GITHUB_NEW_REPOSITORY_URL, GITHUB_NEW_ORGANIZATION_REPOSITORY_URL,
 } from '../config/github-app.js';
 import { activeRecordPath } from '../domain/work-records.js';
-import { classifyTimeOffRecords, isTimeOffTask, normalizeTimeOffConfig } from '../domain/time-off.js';
+import { classifyTimeOffRecords, isTimeOffTask, normalizeTimeOffConfig, normalizeTimeOffChange } from '../domain/time-off.js';
 import { parseBulkTimeText } from '../domain/bulk-time.js';
 import { createUlid } from '../domain/ulid.js';
 import { isUrlTaskIdentity, normalizeTaskUrl, parseGitHubProjectPaneIssueUrl, taskUrlOf } from '../domain/values.js';
@@ -456,9 +456,9 @@ async function loadReport(message) {
 }
 
 async function loadTeamTimeOff(message, sender, extensionOrigin) {
-  if (sender?.url !== `${extensionOrigin}src/reports/reports.html`
+  if (sender?.url !== `${extensionOrigin}src/time-off/time-off.html`
       || Object.keys(message).sort().join(',') !== 'endDate,startDate,type') {
-    throw new Error('Only Reports can load the team time off calendar.');
+    throw new Error('Only Time off can load the team calendar.');
   }
   const range = weekRangeForSender({ startDate: message.startDate, endDate: message.endDate }, sender, extensionOrigin);
   const snapshot = await configuredSnapshot({ localOnly: true });
@@ -480,6 +480,54 @@ async function loadTeamTimeOff(message, sender, extensionOrigin) {
   return {
     configured: true, partial: loaded.partial, readStatus: loaded.readStatus,
     entries: classifyTimeOffRecords(loaded.records.map(withoutInternalMetadata), configs)
+      .filter(entry => entry.isTimeOff),
+  };
+}
+
+
+function timeOffReadRange(startDate, endDate) {
+  const valid = day => typeof day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day)
+    && Number.isFinite(Date.parse(day + 'T00:00:00Z'))
+    && new Date(day + 'T00:00:00Z').toISOString().slice(0, 10) === day;
+  if (!valid(startDate) || !valid(endDate) || endDate < startDate
+      || (Date.parse(endDate + 'T00:00:00Z') - Date.parse(startDate + 'T00:00:00Z')) / 86400000 > 1100) {
+    throw new Error('Invalid time off period.');
+  }
+  return { startDate, endDate };
+}
+
+async function loadMyTimeOff(message, sender, extensionOrigin) {
+  if (sender?.url !== extensionOrigin + 'src/time-off/time-off.html'
+      || Object.keys(message).sort().join(',') !== 'endDate,startDate,type') {
+    throw new Error('Only Time off can load personal time off.');
+  }
+  const range = timeOffReadRange(message.startDate, message.endDate);
+  const snapshot = await configuredSnapshot({ localOnly: true });
+  const destinations = selectReadDestinations(snapshot);
+  if (!snapshot.auth || !destinations.length) return { configured: false, entries: [], repositories: [] };
+  const configs = {}, currentUsers = {};
+  const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
+    const user = await destinationUser(destination, snapshot.auth);
+    if (!user) throw new Error('Tracking identity is unavailable.');
+    currentUsers[destination.id] = user;
+    const reports = new ReportService({ github: githubForConfig(destination), cache: store });
+    const [records, settings] = await Promise.all([
+      reports.loadUserRange(range, user, {
+        includeStorageMetadata: true, signal,
+      }),
+      timeOffSettingsForDestination(destination.id, { fresh: true, signal }),
+    ]);
+    configs[destination.id] = settings.config;
+    const tracker = await trackerForDestination(destination.id, { localOnly: true });
+    return (await tracker.projectActivityRecords(records, range)).records;
+  });
+  return {
+    configured: true, partial: loaded.partial, readStatus: loaded.readStatus, currentUsers,
+    repositories: destinations.map(destination => ({
+      id: destination.id, label: destination.label || (destination.owner + '/' + destination.repo),
+      taskUrls: configs[destination.id]?.taskUrls ?? [],
+    })),
+    entries: classifyTimeOffRecords(loaded.records.map(({ _record, ...entry }) => entry), configs)
       .filter(entry => entry.isTimeOff),
   };
 }
@@ -1217,6 +1265,7 @@ async function handle(message, sender) {
     return { destinationId, isTimeOff: isTimeOffTask(taskUrl, settings.config) };
   }
   if (message.type === 'LOAD_TEAM_TIME_OFF') return loadTeamTimeOff(message, sender, extensionOrigin);
+  if (message.type === 'LOAD_MY_TIME_OFF') return loadMyTimeOff(message, sender, extensionOrigin);
   if (message.type === 'LOAD_REPOSITORY_COLLABORATORS') {
     if (Object.keys(message).length !== 2 || typeof message.destinationId !== 'string') throw new Error('Invalid collaborator request');
     const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
@@ -1638,6 +1687,21 @@ async function handle(message, sender) {
     }
   };
   switch (message.type) {
+    case 'SAVE_TIME_OFF': {
+      if (sender?.url !== chrome.runtime.getURL('src/time-off/time-off.html')
+          || Object.keys(message).sort().join(',') !== 'days,description,destinationId,groupId,previous,taskTitle,taskUrl,type') {
+        throw new Error('Invalid time off request.');
+      }
+      const input = normalizeTimeOffChange(message);
+      const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+      if (!(await timeOffTaskForDestination(destinationId, input.taskUrl))) {
+        throw new Error('Select a time off task configured for this repository in Settings.');
+      }
+      const tracker = await trackerForDestination(destinationId, { localOnly: true });
+      const result = await tracker.queueTimeOffChange(input);
+      if (result.pending) requestPendingSync();
+      return { ...result, destinationId };
+    }
     case 'ADD_DAY_RANGE': {
       const { type, ...fields } = message;
       const payload = dayRangeForSender(fields, sender, extensionOrigin);
@@ -1923,10 +1987,10 @@ async function handle(message, sender) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'LOCAL_PREFERENCES_CHANGED' || message?.type === 'TOOLBAR_CONTEXT_UPDATED') return undefined;
-  const reportReadOnly = ['LOAD_REPORT', 'LOAD_TEAM_TIME_OFF', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
+  const reportReadOnly = ['LOAD_REPORT', 'LOAD_MY_TIME_OFF', 'LOAD_TEAM_TIME_OFF', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
   const localStateRead = ['GET_STATE', 'GET_PAGE_STATE'].includes(message?.type) && !message?.refresh;
   const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS', 'GET_TIME_OFF_SETTINGS', 'CHECK_TIME_OFF_TASK'].includes(message?.type);
-  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER', 'SAVE_TIME_OFF_SETTINGS'].includes(message?.type);
+  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER', 'SAVE_TIME_OFF_SETTINGS', 'SAVE_TIME_OFF'].includes(message?.type);
   let operation;
   if (changesConfiguration) {
     try {
@@ -1938,7 +2002,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       || ['OPEN_OPTIONS', 'OPEN_REPORTS', 'OPEN_TASKS', 'OPEN_TIMES', 'OPEN_PREFERRED_SURFACE', 'CONSUME_TOOLBAR_TASK_CONTEXT'].includes(message?.type)
       || ['CLOCKIFY_ARM_CAPTURE', 'CLOCKIFY_ARM_CSV_CAPTURE', 'CLOCKIFY_IS_CAPTURE_ARMED', 'CLOCKIFY_DISARM_CAPTURE', 'CLOCKIFY_YEAR_OBSERVED', 'CLOCKIFY_CAPTURED_CSV', 'CLOCKIFY_CAPTURED_REPORT', 'CLOCKIFY_CSV_EMAIL_OFFER'].includes(message?.type);
     const acceptsLocally = [
-      'START', 'STOP', 'SWITCH_TASK', 'DISCARD_ACTIVE', 'ADD_TIME', 'ADD_DAY_RANGE', 'BULK_ADD_TIMES',
+      'START', 'STOP', 'SWITCH_TASK', 'DISCARD_ACTIVE', 'ADD_TIME', 'ADD_DAY_RANGE', 'BULK_ADD_TIMES', 'SAVE_TIME_OFF',
       'QUEUE_ENTRY_EDIT', 'QUEUE_ENTRY_DELETE', 'QUEUE_ENTRIES_EDIT', 'QUEUE_ACTIVE_START_EDIT',
     ].includes(message?.type);
     const taskMerge = message?.type === 'MERGE_TASKS';
