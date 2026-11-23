@@ -395,9 +395,19 @@ $('this-week').addEventListener('click', () => { state.week = monday(today()); v
 $('close-time-off').addEventListener('click', () => $('time-off-dialog').close());
 $('cancel-time-off-form').addEventListener('click', () => $('time-off-dialog').close());
 $('edit-repository').addEventListener('change', fillTaskOptions);
-for (const id of ['edit-from', 'edit-to', 'edit-hours', 'edit-start-time', 'include-weekends']) {
+for (const id of ['edit-from', 'edit-to', 'include-weekends']) {
   $(id).addEventListener('change', renderDays);
 }
+$('edit-hours').addEventListener('change', () => {
+  const hours = Number($('edit-hours').value);
+  for (const custom of dayState.values()) custom.hours = hours;
+  renderDays();
+});
+$('edit-start-time').addEventListener('change', () => {
+  const time = $('edit-start-time').value;
+  for (const custom of dayState.values()) custom.startTime = time;
+  renderDays();
+});
 form.addEventListener('submit', saveForm);
 $('keep-time-off').addEventListener('click', () => $('time-off-cancel-dialog').close());
 $('confirm-cancel-time-off').addEventListener('click', confirmCancel);
