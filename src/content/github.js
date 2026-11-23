@@ -915,7 +915,7 @@
     picker.tabIndex = -1;
     picker.setAttribute('aria-hidden', 'true');
     label.addEventListener('click', () => {
-      picker.max = isoWeekValue(Date.now());
+      picker.max = timesMode && activityViewMode === 'list' ? '' : isoWeekValue(Date.now());
       picker.value = isoWeekValue(weekWindow().start);
       picker.showPicker();
     });
@@ -924,7 +924,7 @@
       const { startDate, endDate } = timesRange();
       label.textContent = (timesMode && activityViewMode === 'list') || ((popupMode) && timelineViewMode === 'list')
         ? activityWeekRangeLabel({ startDate, endDate }) : `${startDate} – ${endDate}`;
-      nextControl.disabled = weekWindow().start >= weekWindow(Date.now()).start;
+      nextControl.disabled = weekWindow().start >= weekWindow(Date.now()).start && !(timesMode && activityViewMode === 'list');
     };
     picker.addEventListener('change', async () => {
       if (!picker.value) return;
@@ -951,7 +951,7 @@
       if (label) label.textContent = (timesMode && activityViewMode === 'list') || ((popupMode) && timelineViewMode === 'list')
         ? activityWeekRangeLabel({ startDate, endDate }) : `${startDate} – ${endDate}`;
       const next = navigation?.querySelector('[aria-label="Next week"]');
-      if (next) next.disabled = weekWindow().start >= weekWindow(Date.now()).start;
+      if (next) next.disabled = weekWindow().start >= weekWindow(Date.now()).start && !(timesMode && activityViewMode === 'list');
     }
   }
 
@@ -998,7 +998,7 @@
   }
 
   function selectWeek(current) {
-    if (current.getTime() > weekWindow(Date.now()).start) return;
+    if (current.getTime() > weekWindow(Date.now()).start && !(timesMode && activityViewMode === 'list')) return;
     const previousWeek = selectedWeekStart;
     const previousActivityView = activityTimelineView, previousTimelineView = timelineView;
     const previousInitialFocusPending = activityInitialFocusPending;
@@ -1052,7 +1052,7 @@
     const { start, end } = weekWindow();
     const now = Math.min(timelineNow(), end - 1);
     const { items } = popupTimelineItems(start, now);
-    const total = items.reduce((sum, item) => {
+    const total = items.filter(item => !item.isTimeOff || item.originalEndedAt <= Date.now()).reduce((sum, item) => {
       const stop = item.isRunning ? now : item.endedAt;
       return sum + Math.max(0, Math.min(stop, end, Date.now()) - Math.max(item.startedAt, start));
     }, 0);
@@ -1071,9 +1071,13 @@
     if (!sections.length) return;
     const range = timesRange();
     const week = weekWindow(), now = Math.min(timelineNow(), week.end - 1);
+    const items = popupTimelineItems(week.start, now).items
+      .filter(item => !item.isTimeOff || item.originalEndedAt <= Date.now());
     const summary = recentLoaded && !loadingRecent && (timesMode || (recentFresh && completeVisualWeekStart === week.start))
-      ? globalThis.ClockoliWeeklySummary?.summarize(popupTimelineItems(week.start, now).items, week.start, week.end, now)
+      ? globalThis.ClockoliWeeklySummary?.summarize(items, week.start, week.end, now)
       : null;
+    if (summary) summary.tasks = globalThis.ClockoliWeeklySummary?.summarize(
+      items.filter(item => !item.isTimeOff), week.start, week.end, now)?.tasks ?? summary.tasks;
     for (const section of sections) {
       const span = section.querySelector('.activity-weekly-range');
       if (span) {
@@ -3088,7 +3092,8 @@
         rowId: projectRowId(projectName),
         url: taskUrlOf(entry),
         taskIdentity: storedTaskIdentityOf(entry),
-        title: taskTitleOf(entry) || storedTaskIdentityOf(entry) || 'Untitled task',
+        title: `${entry.isTimeOff ? 'PTO · ' : ''}${taskTitleOf(entry) || storedTaskIdentityOf(entry) || 'Untitled task'}`, 
+        isTimeOff: entry.isTimeOff === true,
         faviconUrl: siteFaviconUrl(entry),
         githubFavicon: isGitHubTask(entry),
         fallbackIconUrl: !taskUrlOf(entry) ? extensionResourceUrl('src/assets/clockoli-inverse-circle.svg') : '',
