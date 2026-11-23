@@ -168,3 +168,73 @@ test('editing the second occurrence of a repeated DST hour does not shift its in
   }], { timezone: 'Europe/Amsterdam', previous: [prior] }));
   assert.equal(result.entries[0].startedAt, prior.startedAt);
 });
+
+function seedRemoteWork(github, startedAt, endedAt) {
+  const month = startedAt.slice(0, 7);
+  const path = `times/${month}/alice.jsonl`;
+  const active = buildActiveTimer({
+    user: 'alice', taskUrl: 'https://github.com/acme/work/issues/13',
+    id: createUlid(Date.parse(startedAt)), startedAt, timezone: 'UTC',
+  });
+  const entry = buildEntry({ active, endedAt });
+  github.files.set(path, { sha: 'work-1', text: serializeMonthlyRecords([entry]) });
+  github.files.set(TASK_INDEX_PATH, { sha: 'index-1',
+    text: serializeTaskIndex(applyTaskIndexChanges(emptyTaskIndex('alice'), { add: [entry] })) });
+  return entry;
+}
+
+test('automatic PTO uses locally known work intervals without network reads', async () => {
+  const { github, store, tracker } = setup();
+  const work = seedRemoteWork(github, '2026-12-07T09:00:00Z', '2026-12-07T12:00:00Z');
+  await tracker.rememberTimeOffOccupancy([work]);
+  const result = await tracker.queueTimeOffChange(payload([{
+    date: '2026-12-07', durationSeconds: 4 * 3600,
+  }]));
+  assert.equal(result.entries[0].startedAt, '2026-12-07T12:00:00.000Z');
+  assert.deepEqual(store.state.pendingWrites[0].autoDates, ['2026-12-07']);
+  assert.equal(github.writes.length, 0);
+  await tracker.syncPending();
+  assert.equal(github.writes.length, 1);
+  assert.deepEqual(savedRecords(github).map(entry => entry.startedAt), [
+    '2026-12-07T09:00:00.000Z', '2026-12-07T12:00:00.000Z',
+  ]);
+});
+
+test('automatic PTO refuses a day with no continuous free interval', async () => {
+  const { github, store, tracker } = setup();
+  const work = seedRemoteWork(github, '2026-12-07T09:00:00Z', '2026-12-07T23:00:00Z');
+  await tracker.rememberTimeOffOccupancy([work]);
+  await assert.rejects(tracker.queueTimeOffChange(payload([{
+    date: '2026-12-07', durationSeconds: 8 * 3600,
+  }])), /No free 8-hour interval on 2026-12-07/);
+  assert.equal(store.state.pendingWrites.length, 0);
+  assert.equal(github.writes.length, 0);
+});
+
+test('automatic PTO replans against previously unseen GitHub work before atomic sync', async () => {
+  const { github, store, tracker } = setup();
+  const added = await tracker.queueTimeOffChange(payload([{
+    date: '2026-12-07', durationSeconds: 4 * 3600,
+  }]));
+  assert.equal(added.entries[0].startedAt, '2026-12-07T09:00:00.000Z');
+  seedRemoteWork(github, '2026-12-07T09:00:00Z', '2026-12-07T12:00:00Z');
+  await tracker.syncPending();
+  assert.equal(store.state.pendingWrites.length, 0);
+  assert.equal(github.writes.length, 1);
+  assert.deepEqual(savedRecords(github).map(entry => entry.startedAt), [
+    '2026-12-07T09:00:00.000Z', '2026-12-07T12:00:00.000Z',
+  ]);
+});
+
+test('remote work that fills the day leaves an automatic PTO conflict for review', async () => {
+  const { github, store, tracker } = setup();
+  await tracker.queueTimeOffChange(payload([{
+    date: '2026-12-07', durationSeconds: 8 * 3600,
+  }]));
+  seedRemoteWork(github, '2026-12-07T09:00:00Z', '2026-12-07T23:00:00Z');
+  await tracker.syncPending();
+  assert.equal(store.state.pendingWrites.length, 1);
+  assert.equal(store.state.pendingWrites[0].status, 'conflict');
+  assert.match(store.state.pendingWrites[0].lastError, /No free 8-hour interval/);
+  assert.equal(github.writes.length, 0);
+});
