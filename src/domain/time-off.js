@@ -1,4 +1,5 @@
 import { normalizeTaskUrl, taskUrlOf } from './values.js';
+import { normalizeTimezone } from './records.js';
 
 export const TIME_OFF_CONFIG_PATH = '.clockoli/time-off.json';
 export const MAX_TIME_OFF_TASKS = 100;
@@ -95,9 +96,45 @@ export function normalizeTimeOffDays(days, { allowEmpty = false } = {}) {
   return selected;
 }
 
+// Convert wall-clock PTO time in its stored IANA zone, not the current device zone.
+function zonedParts(instant, formatter) {
+  const parts = Object.fromEntries(formatter.formatToParts(instant)
+    .filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+  return { date: `${parts.year.padStart(4, '0')}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`, second: parts.second };
+}
+function zonedFormatter(timezone) {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: normalizeTimezone(timezone), year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  });
+}
+export function timeOffWallClock(startedAt, timezone) {
+  return zonedParts(new Date(startedAt), zonedFormatter(timezone)).time;
+}
+export function timeOffStartInstant(date, startTime, timezone) {
+  if (!DATE_RE.test(date) || !TIME_RE.test(startTime)) throw new Error('Invalid time off start.');
+  const target = Date.parse(`${date}T${startTime}:00.000Z`);
+  if (!Number.isFinite(target)) throw new Error('Invalid time off start.');
+  const formatter = zonedFormatter(timezone);
+  // Sample both sides of a DST transition. Reject nonexistent local times and
+  // consistently choose the earlier instant when the local hour occurs twice.
+  const offsets = new Set([-36, -12, 0, 12, 36].map(hours => {
+    const probe = target + hours * 3_600_000;
+    const wall = zonedParts(new Date(probe), formatter);
+    return Date.parse(`${wall.date}T${wall.time}:${wall.second}.000Z`) - probe;
+  }));
+  const instants = [...offsets].map(offset => target - offset).filter(instant => {
+    const wall = zonedParts(new Date(instant), formatter);
+    return wall.date === date && wall.time === startTime;
+  });
+  if (!instants.length) throw new Error('This start time does not exist in the selected time zone.');
+  return new Date(Math.min(...instants));
+}
+
 export function normalizeTimeOffChange(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid time off change.');
-  const { taskUrl, taskTitle = '', description = '', groupId = null, previous = [], days } = value;
+  const { taskUrl, taskTitle = '', description = '', groupId = null, previous = [], days, timezone = null } = value;
   const url = normalizeTaskUrl(taskUrl);
   if (typeof taskTitle !== 'string' || taskTitle.length > 500
       || typeof description !== 'string' || description.length > 2000
@@ -114,7 +151,7 @@ export function normalizeTimeOffChange(value) {
   }
   if (new Set(previous.map(item => item.id)).size !== previous.length) throw new Error('Duplicate previous time off entry.');
   const normalizedDays = normalizeTimeOffDays(days, { allowEmpty: previous.length > 0 });
-  return { taskUrl: url, taskTitle, description, groupId, previous: previous.map(item => ({
+  return { taskUrl: url, taskTitle, description, groupId, timezone: timezone === null ? null : normalizeTimezone(timezone), previous: previous.map(item => ({
     id: item.id, date: item.date, startedAt: item.startedAt,
     endedAt: item.endedAt, updatedAt: item.updatedAt,
   })), days: normalizedDays };
