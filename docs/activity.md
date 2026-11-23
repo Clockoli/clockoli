@@ -12,7 +12,7 @@ When you open it from an HTTP(S) page, the **From current page** banner lets you
 
 ## Browse weeks
 
-Use the arrows to move between weeks. The next-week arrow is disabled when the current week is displayed.
+Use the arrows to move between weeks. In **List**, you can browse future weeks to inspect, edit, or delete planned PTO. The next-week arrow remains disabled at the current week in Timeline and Calendar.
 
 Clockoli remembers your selected view. Switching between Timeline, Calendar, and List returns to the current week; navigating within a view keeps the week you chose.
 
