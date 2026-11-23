@@ -1,4 +1,4 @@
-import { groupTimeOffRecords, normalizeTimeOffDays, timeOffWallClock } from '../domain/time-off.js';
+import { groupTimeOffRecords, normalizeTimeOffDays } from '../domain/time-off.js';
 
 const $ = id => document.getElementById(id);
 const DAY_MS = 86400000;
@@ -6,7 +6,7 @@ const state = { entries: [], repositories: [], currentUsers: {}, groups: [], tea
   view: 'my', week: '', loading: false, group: null, formBusy: false, cancelGroup: null };
 const form = $('time-off-form');
 const dayState = new Map(), takenDates = new Set();
-let calendarMonth = '', calendarAnchor = null, rangeStart = null, rangePicking = false;
+let calendarMonth = '', calendarAnchor = null;
 const send = request => new Promise((resolve, reject) => chrome.runtime.sendMessage(request, response => {
   if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
   if (!response?.ok) return reject(new Error(response?.error?.message || 'Clockoli request failed.'));
@@ -241,7 +241,7 @@ function validateCalendarDays() {
   if (!dayState.size) return { days: [], error: '' };
   try {
     return { days: normalizeTimeOffDays(selectedDays().map(day => ({
-      date: day.date, startTime: day.startTime, durationSeconds: day.hours * 3600,
+      date: day.date, durationSeconds: day.hours * 3600,
     }))), error: '' };
   } catch (error) { return { days: [], error: error.message }; }
 }
@@ -255,21 +255,13 @@ function updateCalendarSummary() {
     ? labelForRange(selected[0].date, selected.at(-1).date) : 'Select dates in the calendar';
   setCalendarError(validated.error);
   $('save-time-off').disabled = state.formBusy || !selected.length || Boolean(validated.error);
-  $('calendar-apply-hours').disabled = !selected.length || !validHours(defaultHours());
   $('calendar-clear-selection').disabled = !selected.length;
-}
-function updateRangeControls() {
-  $('calendar-select-range').setAttribute('aria-pressed', String(rangePicking));
-  $('calendar-select-range').textContent = rangePicking ? 'Stop selecting range' : 'Select range';
-  $('time-off-calendar-help').textContent = rangePicking
-    ? (rangeStart ? 'Choose the last date of the range.' : 'Choose the first date of the range.')
-    : 'Click dates to select them. Use Select range (two clicks) or Shift-click for a range. Change hours on individual days.';
 }
 function addCalendarDates(dates) {
   const added = new Map(dayState);
   for (const date of dates) {
     if (takenDates.has(date) || added.has(date)) continue;
-    added.set(date, { hours: defaultHours(), startTime: $('edit-start-time').value });
+    added.set(date, { hours: defaultHours() });
   }
   const sorted = [...added.keys()].sort();
   if (sorted.length > 50) {
@@ -289,21 +281,11 @@ function datesInRange(first, last) {
   const span = Math.round((dateAt(end) - dateAt(start)) / DAY_MS);
   if (span >= 500) { setCalendarError('Time off cannot span more than 500 days.'); return null; }
   return Array.from({ length: span + 1 }, (_, index) => addDays(start, index))
-    .filter(date => !takenDates.has(date) && ($('include-weekends').checked || !weekend(date)));
+    .filter(date => !takenDates.has(date) && !weekend(date));
 }
 function chooseCalendarDate(date, useShift = false) {
   if (takenDates.has(date)) return;
-  if (rangePicking) {
-    if (rangeStart === null) {
-      if (!addCalendarDates([date])) return;
-      rangeStart = date;
-    } else {
-      const dates = datesInRange(rangeStart, date);
-      if (!dates || !addCalendarDates(dates)) return;
-      rangePicking = false;
-      rangeStart = null;
-    }
-  } else if (useShift && calendarAnchor) {
+  if (useShift && calendarAnchor) {
     const dates = datesInRange(calendarAnchor, date);
     if (!dates || !addCalendarDates(dates)) return;
   } else if (dayState.has(date)) {
@@ -346,14 +328,13 @@ function renderCalendar(focusDate = null) {
         updateCalendarSummary();
       });
       label.append(hours, make('span', '', 'h'));
-      cell.append(label, make('span', 'time-off-calendar-start', selected.startTime));
+      cell.append(label);
     } else if (taken) {
       cell.append(make('span', 'time-off-calendar-taken', 'Taken'));
     }
     host.append(cell);
   }
   updateCalendarSummary();
-  updateRangeControls();
   if (focusDate) host.querySelector('button[data-date="' + focusDate + '"]')?.focus();
 }
 function previousFor(group) {
@@ -368,7 +349,7 @@ function openForm(group = null) {
   if (!availableRepositories().length) { notice('Configure your time off tasks in Settings first.', true); return; }
   state.group = group;
   dayState.clear(); takenDates.clear();
-  calendarAnchor = null; rangeStart = null; rangePicking = false;
+  calendarAnchor = null;
   setFormError('');
   $('time-off-dialog-title').textContent = group ? (group.planned.length ? 'Edit time off' : 'Correct past time off') : 'Add time off';
   $('save-time-off').textContent = group ? 'Save changes' : 'Add time off';
@@ -382,13 +363,10 @@ function openForm(group = null) {
   if (group) $('edit-task').value = group.taskUrl;
   $('edit-description').value = group?.description || '';
   const old = group ? (group.planned.length ? group.planned : group.entries) : [];
-  $('include-weekends').checked = false;
   const first = old[0];
-  $('edit-start-time').value = first ? timeOffWallClock(first.startedAt, first.timezone) : '09:00';
   $('edit-hours').value = String(first ? first.durationSeconds / 3600 : 8);
   for (const entry of old) {
-    dayState.set(entry.entryDate, { hours: entry.durationSeconds / 3600,
-      startTime: timeOffWallClock(entry.startedAt, entry.timezone) });
+    dayState.set(entry.entryDate, { hours: entry.durationSeconds / 3600 });
   }
   if (group?.planned.length && group.taken.length) {
     for (const entry of group.taken) takenDates.add(entry.entryDate);
@@ -400,7 +378,7 @@ function openForm(group = null) {
 }
 function plannedDaysToSave() {
   return normalizeTimeOffDays(selectedDays().map(day => ({
-    date: day.date, startTime: day.startTime, durationSeconds: day.hours * 3600,
+    date: day.date, durationSeconds: day.hours * 3600,
   })));
 }
 async function saveForm(event) {
@@ -490,31 +468,11 @@ $('calendar-month-picker').addEventListener('change', () => {
     calendarMonth = $('calendar-month-picker').value; renderCalendar();
   }
 });
-$('calendar-select-range').addEventListener('click', () => {
-  rangePicking = !rangePicking; rangeStart = null;
-  updateRangeControls();
-});
-$('calendar-select-weekdays').addEventListener('click', () => {
-  if (addCalendarDates(monthDates(calendarMonth).filter(date => !weekend(date) && !takenDates.has(date)))) {
-    renderCalendar();
-  }
-});
 $('calendar-clear-selection').addEventListener('click', () => {
-  dayState.clear(); calendarAnchor = null; rangeStart = null; rangePicking = false;
-  renderCalendar();
-});
-$('calendar-apply-hours').addEventListener('click', () => {
-  const hours = defaultHours();
-  if (!validHours(hours)) { setCalendarError('Enter valid default hours (0–24).'); return; }
-  for (const custom of dayState.values()) custom.hours = hours;
+  dayState.clear(); calendarAnchor = null;
   renderCalendar();
 });
 $('edit-hours').addEventListener('input', updateCalendarSummary);
-$('edit-start-time').addEventListener('input', () => {
-  const time = $('edit-start-time').value;
-  for (const custom of dayState.values()) custom.startTime = time;
-  renderCalendar();
-});
 form.addEventListener('submit', saveForm);
 $('keep-time-off').addEventListener('click', () => $('time-off-cancel-dialog').close());
 $('confirm-cancel-time-off').addEventListener('click', confirmCancel);
