@@ -94,7 +94,9 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
       if (normalized) input.value = normalized;
     });
   }
-  const refreshDateMax = () => { date.max = endDate.max = dateValue(new Date()); };
+  const refreshDateMax = () => {
+    date.max = endDate.max = ptoIsSelected() ? '' : dateValue(new Date());
+  };
   date.addEventListener('focus', refreshDateMax);
   endDate.addEventListener('focus', refreshDateMax);
   const hint = document.createElement('p'); hint.className = 'add-time-hint'; hint.textContent = 'Leave End time empty to start a timer. Max 24 hours.';
@@ -105,7 +107,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
   const renderCalendar = () => {
     const today = dateValue(new Date());
     monthTitle.textContent = calendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-    nextMonth.disabled = calendarMonth.getFullYear() === new Date().getFullYear()
+    nextMonth.disabled = !ptoIsSelected() && calendarMonth.getFullYear() === new Date().getFullYear()
       && calendarMonth.getMonth() === new Date().getMonth();
     days.replaceChildren();
     for (const name of ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']) {
@@ -121,7 +123,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
       const cell = document.createElement('button'); cell.type = 'button'; cell.textContent = String(day);
       cell.setAttribute('aria-label', current.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }));
       cell.setAttribute('aria-pressed', String(selectedDays.has(key)));
-      cell.disabled = key > today;
+      cell.disabled = !ptoIsSelected() && key > today;
       cell.addEventListener('click', () => {
         if (selectedDays.has(key)) selectedDays.delete(key);
         else {
@@ -178,6 +180,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
   const nonBillable = document.createElement('input'); nonBillable.type = 'checkbox'; nonBillable.id = 'add-time-non-billable';
   nonBillableLabel.append(nonBillable, document.createTextNode('Non-billable'));
   descriptionFields.append(nonBillableLabel);
+  const ptoHint = document.createElement('p'); ptoHint.className = 'add-time-hint'; ptoHint.hidden = true;
   const preview = document.createElement('div'); preview.className = 'add-time-preview'; preview.setAttribute('aria-live', 'polite'); preview.hidden = true;
   const error = document.createElement('p'); error.className = 'add-time-error'; error.setAttribute('role', 'alert'); error.hidden = true;
   const duration = document.createElement('p'); duration.className = 'add-time-duration';
@@ -187,7 +190,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
   const add = document.createElement('button'); add.type = 'button'; add.className = 'add-time-submit'; add.textContent = 'Add';
   actions.append(cancel, add);
   dialog.append(close, heading, intro, taskLabel, searchContainer, dayRangeLabel, times, rangeFields,
-    hint, duration, rangeHint, boundaryHint, descriptionFields, preview, error, actions);
+    hint, duration, rangeHint, boundaryHint, descriptionFields, ptoHint, preview, error, actions);
   container.append(dialog);
   const saved = document.createElement('span');
   saved.className = 'add-time-success'; saved.textContent = 'Saved'; saved.prepend(octicon(CHECK_PATH)); saved.setAttribute('role', 'status'); saved.hidden = true;
@@ -199,6 +202,17 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
   let lastSearch = '', searchIncomplete = false, catalogLoaded = false, editing = null, showRepository = false;
   let defaultStart = '', defaultDate = '', startEdited = false, dateEdited = false, endDateManuallyEdited = false;
   let editStartInstant = null, editEndInstant = null, endShifted = false;
+  let ptoLookupUrl = '', ptoStatus = null;
+  const ptoIsSelected = () => Boolean(ptoStatus?.isTimeOff && ptoStatus.taskUrl === taskIdentity()?.taskUrl);
+  const refreshPtoState = () => {
+    const pto = ptoIsSelected();
+    ptoHint.hidden = !pto;
+    ptoHint.textContent = pto ? 'Time off · Future dates are allowed. This time is always non-billable.' : '';
+    if (pto) nonBillable.checked = true;
+    nonBillable.disabled = pto;
+    refreshDateMax();
+    if (dayRange.checked) renderCalendar();
+  };
   const inferredEndDate = () => {
     const startTime = parseTime(start.value), endTime = parseTime(end.value);
     if (!startTime || !endTime || !localTimestamp(date.value, '12:00')) return null;
@@ -301,6 +315,26 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
     updateSearchPopup();
     preview.replaceChildren();
     const task = taskIdentity();
+    const lookup = task?.taskUrl || '';
+    if (ptoLookupUrl !== lookup) {
+      ptoLookupUrl = lookup; ptoStatus = null; refreshPtoState();
+      if (searchIsCompleteCatalog && /^https?:\/\//i.test(lookup)) {
+        const currentGeneration = generation;
+        void send({ type: 'CHECK_TIME_OFF_TASK', taskUrl: lookup }).then(result => {
+          if (currentGeneration !== generation || ptoLookupUrl !== lookup || !dialog.open) return;
+          ptoStatus = { taskUrl: lookup, isTimeOff: result.isTimeOff === true };
+          refreshPtoState();
+          if (ptoStatus.isTimeOff) {
+            const note = document.createElement('span'); note.textContent = ' · Time off';
+            preview.append(note);
+          }
+        }).catch(() => {
+          if (currentGeneration !== generation || ptoLookupUrl !== lookup) return;
+          // The backend will revalidate eligibility; never enable future dates on an unreadable config.
+          ptoHint.hidden = false; ptoHint.textContent = 'Could not check time off settings. Future dates are unavailable.';
+        });
+      }
+    }
     preview.hidden = !task || Boolean(editing?.running);
     if (task) {
       const title = document.createElement('strong'); title.textContent = task.title || 'New URL task';
@@ -378,6 +412,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
     returnTrigger = prefilledTask ? trigger : null; returnFallback = focusFallback;
     const now = new Date();
     tasks = []; selected = null; lastSearch = ''; searchIncomplete = false; catalogLoaded = false; searching = false; showRepository = false;
+    ptoLookupUrl = ''; ptoStatus = null; ptoHint.hidden = true; nonBillable.disabled = false;
     busy = false; search.value = ''; setSearchBusy(false);
     overlapProgress.hidden = true; overlapStatus.hidden = true;
     heading.textContent = runningEdit ? 'Edit timer start' : boundary ? 'Resolve time overlap' : entry ? 'Edit time' : 'Add new time';
@@ -488,8 +523,8 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
       const durationSeconds = Number(daily) * 3600;
       if (!dates.length) { setError('Select at least one day.'); return; }
       if (!daily) { setError('Enter hours per day (0–24). Use 0 for a day without tracked hours.'); hours.focus(); return; }
-      if (dates.at(-1) > date.max || !Number.isSafeInteger(durationSeconds)
-          || durationSeconds < 0 || durationSeconds > 86400) { setError('Choose past days and 0–24 hours per day.'); return; }
+      if ((!ptoIsSelected() && dates.at(-1) > dateValue(new Date())) || !Number.isSafeInteger(durationSeconds)
+          || durationSeconds < 0 || durationSeconds > 86400) { setError('Choose allowed days and 0–24 hours per day.'); return; }
       busy = true; add.disabled = true; cancel.disabled = true; setError('');
       try {
         const result = await send({ type: 'ADD_DAY_RANGE', taskUrl: task.taskUrl, taskTitle: task.title || '',
@@ -533,8 +568,9 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
     const endedAt = unchangedTimes || keepOriginalEnd && !endShifted ? editing.entry.endedAt
       : endShifted ? editEndInstant?.toISOString() : endInstant?.toISOString() ?? null;
     if (end.value && !endedAt) { setError('Enter a valid date and start/end time (HH:MM or 1000).'); return; }
-    if (new Date(startedAt) > now || (endedAt && new Date(endedAt) > now)) {
-      setError(runningEdit ? 'Start cannot be in the future.' : 'Start and End cannot be in the future.'); return;
+    if ((new Date(startedAt) > now || (endedAt && new Date(endedAt) > now))
+        && (!ptoIsSelected() || runningEdit || !endedAt)) {
+      setError(runningEdit ? 'Start cannot be in the future.' : 'Only completed time off entries may be scheduled in the future.'); return;
     }
     if (endedAt && (editing ? endedAt < startedAt : endedAt <= startedAt)) { setError('End time must be after start time.'); return; }
     if (editing && !runningEdit && !endedAt) { setError('An edited entry needs an end date and time.'); return; }
