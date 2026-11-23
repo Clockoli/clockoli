@@ -48,3 +48,49 @@ test('planned PTO stays editable before its future activity start', () => {
   assert.ok(Date.parse(edited.updatedAt) >= Date.parse(edited.createdAt));
   assert.ok(Date.parse(edited.updatedAt) >= Date.parse(planned.updatedAt));
 });
+
+
+import { normalizeTimeOffDays, normalizeTimeOffChange, groupTimeOffRecords, timeOffGroupId } from '../src/domain/time-off.js';
+
+test('exact PTO day schedule rejects duplicate dates, invalid hours, and overlong groups', () => {
+  const days = [
+    { date: '2026-12-07', startTime: '09:00', durationSeconds: 28800 },
+    { date: '2026-12-08', startTime: '09:00', durationSeconds: 14400 },
+  ];
+  assert.deepEqual(normalizeTimeOffDays(days), days);
+  assert.throws(() => normalizeTimeOffDays([...days, days[1]]), /unique/);
+  assert.throws(() => normalizeTimeOffDays([{ ...days[0], durationSeconds: 86400 }]), /same day/);
+  assert.throws(() => normalizeTimeOffDays([{ ...days[0], date: '2026-02-30' }]), /Invalid/);
+  assert.throws(() => normalizeTimeOffDays(Array.from({ length: 51 }, (_, n) => ({
+    date: '2026-12-' + String(n + 1).padStart(2, '0'), durationSeconds: 3600,
+  }))), /50/);
+  const edit = normalizeTimeOffChange({ taskUrl: 'https://github.com/acme/work/issues/7',
+    taskTitle: 'Vacation', description: '', groupId: null, previous: [], days });
+  assert.equal(edit.days.length, 2);
+  assert.throws(() => normalizeTimeOffChange({ ...edit, days: [] }), /between 1 and 50/);
+});
+
+test('one group ID yields one PTO card; legacy records stay separate', () => {
+  const id = '01K2ABCDEF0123456789ABCDEF';
+  const taskUrl = 'https://github.com/acme/work/issues/7';
+  const entries = [
+    { id: '01K2ABCDEA0123456789ABCDEF', destinationId: 'github:1', user: 'alice',
+      entryDate: '2026-12-07', startedAt: '2026-12-07T09:00:00Z', endedAt: '2026-12-07T17:00:00Z',
+      durationSeconds: 28800, isTimeOff: true, taskUrl, metadata: { clockoli: { timeOffGroupId: id } } },
+    { id: '01K2ABCDEX0123456789ABCDEF', destinationId: 'github:1', user: 'alice',
+      entryDate: '2026-12-08', startedAt: '2026-12-08T09:00:00Z', endedAt: '2026-12-08T17:00:00Z',
+      durationSeconds: 28800, isTimeOff: true, taskUrl, metadata: { clockoli: { timeOffGroupId: id } } },
+    { id: '01K2ABCDEFG0123456789ABCDEF', destinationId: 'github:1', user: 'alice',
+      entryDate: '2026-12-10', startedAt: '2026-12-10T09:00:00Z', endedAt: '2026-12-10T17:00:00Z',
+      durationSeconds: 28800, isTimeOff: true, taskUrl, metadata: {} },
+  ];
+  assert.equal(timeOffGroupId(entries[0]), id);
+  const grouped = groupTimeOffRecords(entries, new Date('2026-12-09T12:00:00Z'));
+  assert.equal(grouped.length, 2);
+  const group = grouped.find(item => item.groupId === id);
+  assert.equal(group.entries.length, 2);
+  assert.equal(group.taken.length, 2);
+  assert.equal(group.planned.length, 0);
+  assert.equal(group.totalSeconds, 57600);
+  assert.equal(grouped.find(item => item.groupId === null).entries.length, 1);
+});
