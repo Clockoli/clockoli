@@ -2805,7 +2805,7 @@ export class TrackerService {
         const start = unchanged ? new Date(unchanged.startedAt)
           : item.startTime !== undefined ? timeOffStartInstant(item.date, item.startTime, timezone)
             : findTimeOffStart(item.date, item.durationSeconds, timezone,
-              running ? [...known, running] : known);
+              running && item.date <= localDateInTimezone(queuedAt, timezone) ? [...known, running] : known);
         const end = new Date(start.getTime() + item.durationSeconds * 1000);
         if (!unchanged && item.startTime === undefined) autoDates.push(item.date);
         const id = this.uniqueRecordId(start.getTime(), usedIds);
@@ -2855,7 +2855,8 @@ export class TrackerService {
   }
 
   async commitTimeOffChange(operation) {
-    const previous = operation.previous ?? [], proposed = operation.entries ?? [];
+    const previous = operation.previous ?? [];
+    let proposed = operation.entries ?? [];
     const anchor = proposed.length ? proposed : previous.map(item => ({ ...item, entryDate: item.date }));
     if (!anchor.length) throw new TrackerConflictError('Empty time off change.', 'time_off_invalid');
     const overlap = await this.readEditOverlapFiles(anchor);
@@ -2910,6 +2911,49 @@ export class TrackerService {
       }
     }
     const active = await this.readRemoteActive();
+    // When work from another device was absent from our local cache, re-place
+    // only automatically scheduled days. Save the revised queue before the
+    // atomic GitHub commit so replay after a lost response is deterministic.
+    const autoDates = new Set(operation.autoDates ?? []);
+    if (autoDates.size) {
+      const occupied = [...files.values()].flatMap(file => file.entries)
+        .filter(entry => !alreadyIds.has(entry.id));
+      let changed = false;
+      const revised = proposed.map(entry => {
+        const activeForDay = active && entry.entryDate <= localDateInTimezone(this.clock(), entry.timezone)
+          ? { startedAt: active.startedAt, endedAt: new Date(8.64e15) } : null;
+        const blockers = activeForDay ? [...occupied, activeForDay] : occupied;
+        const overlaps = blockers.some(item => Date.parse(item.startedAt) < Date.parse(entry.endedAt)
+          && Date.parse(item.endedAt) > Date.parse(entry.startedAt));
+        if (!overlaps || !autoDates.has(entry.entryDate)) {
+          occupied.push(entry);
+          return entry;
+        }
+        let start;
+        try { start = findTimeOffStart(entry.entryDate, entry.durationSeconds, entry.timezone, blockers); }
+        catch (error) { throw new TrackerConflictError(error.message, 'time_off_overlap'); }
+        const startMs = start.getTime();
+        const moved = validateEntry({
+          ...entry, startedAt: start.toISOString(),
+          endedAt: new Date(startMs + entry.durationSeconds * 1000).toISOString(),
+          createdAt: start.toISOString(),
+          updatedAt: new Date(Math.max(startMs, Date.parse(operation.queuedAt))).toISOString(),
+        });
+        changed = true;
+        occupied.push(moved);
+        return moved;
+      });
+      if (changed) {
+        const updatedById = new Map(revised.map(entry => [entry.id, entry]));
+        operation.entries = revised.map(stripInternal);
+        await this.persistQueueOperation(operation, { patch: state => ({
+          recentCache: (state.recentCache ?? []).map(item =>
+            updatedById.has(item.id) ? { ...item, ...updatedById.get(item.id) } : item),
+          dayRangeIntervals: updateDayRangeIntervals(state.dayRangeIntervals, revised),
+        }) });
+        proposed = revised;
+      }
+    }
     for (const entry of proposed) {
       const start = Date.parse(entry.startedAt), end = Date.parse(entry.endedAt);
       if (active && start <= this.clock().getTime()
