@@ -4,7 +4,7 @@ Clockoli tracks time off using **ordinary task URLs and time entries**. No new w
 
 ## Configure a repository
 
-Under **Settings → Time repositories**, expand the relevant repository and open **Time off tasks**. A GitHub repository administrator can enter up to 100 canonical HTTP(S) task URLs, one per line. For example, a shared GitHub issue named *Time off*. Ordinary repository members can view the list.
+Under **Settings → Time repositories**, expand the relevant repository and open **Time off tasks**. Administrators can search tracked tasks by title or URL (as in Add time), select a suggestion, or paste a new task URL and select **Add task**. Each selected task appears in a removable list; select **Save time off tasks** to share up to 100 URLs with the team. Other repository members can view the list.
 
 Clockoli stores the shared list in `.clockoli/time-off.json` on that repository's default branch. The list is specific to the time repository: the same URL in another repository is not automatically PTO. Changing the list also changes how existing records are classified in reports. Each change checks the GitHub file revision to prevent silently overwriting another administrator's update.
 
