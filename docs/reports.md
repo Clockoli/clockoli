@@ -32,7 +32,7 @@ The summary shows total tracked time, Work, Time off, Planned time off, billable
 
 ## Team time off
 
-The weekly **Team time off** calendar shows planned and taken PTO hours for each member of the connected time repositories. Move to past or future weeks with the arrows. Hover over a marked day to read the entry description. The calendar is independent of the report date range and requires readable team branches; partial reads show a warning.
+The team calendar, PTO planning, and grouped editing now live in [Time off](time-off.md). Reports continues to display Work, Time off and Planned totals.
 
 ## Explore charts
 
