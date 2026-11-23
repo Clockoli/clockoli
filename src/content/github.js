@@ -4859,6 +4859,8 @@
       @media(max-width:700px){:host(.times-surface) .times-toolbar:not(.times-visual){grid-template-columns:minmax(0,1fr) auto;gap:10px}:host(.times-surface) .times-filter{grid-column:1/-1}:host(.times-surface) .times-toolbar:not(.times-visual) .week-navigation{grid-column:1;justify-self:start;gap:8px}:host(.times-surface) .times-refresh{grid-column:2}}
       @media(max-width:700px){:host(.times-surface) .popup-timeline-section{padding-top:16px}}
       @media(max-width:460px){:host(.times-surface) .activity-weekly-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+      :host(.times-surface) .times-toolbar:not(.times-visual) .week-navigation-label{display:inline-flex;align-items:center}
+      :host(.times-surface) .times-toolbar:not(.times-visual) .week-navigation{grid-template-columns:auto auto auto}
     `;
     if (popupMode) style.textContent += `
       :host(.popup-surface) .menu { max-height:min(720px,calc(100vh - 16px)); overflow-y:auto }
