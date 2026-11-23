@@ -53,3 +53,96 @@ export function classifyTimeOffRecords(records, configsByDestination, now = new 
     };
   });
 }
+
+
+const DAY_MS = 86_400_000;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const GROUP_RE = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+
+export function timeOffGroupId(record) {
+  const value = record?.metadata?.clockoli?.timeOffGroupId;
+  return typeof value === 'string' && GROUP_RE.test(value) ? value : null;
+}
+
+export function normalizeTimeOffDays(days, { allowEmpty = false } = {}) {
+  if (!Array.isArray(days) || days.length > 50 || (!allowEmpty && !days.length)) {
+    throw new Error('Choose between 1 and 50 time off days.');
+  }
+  const selected = days.map(item => {
+    const date = item?.date, startTime = item?.startTime ?? '09:00', seconds = item?.durationSeconds;
+    if (typeof date !== 'string' || !DATE_RE.test(date)
+        || !Number.isFinite(Date.parse(date + 'T00:00:00Z'))
+        || new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) !== date
+        || typeof startTime !== 'string' || !TIME_RE.test(startTime)
+        || !Number.isSafeInteger(seconds) || seconds < 0 || seconds > 86400) {
+      throw new Error('Invalid time off day, start time, or duration.');
+    }
+    // A day is an exact time interval, never an invitation to move PTO into free evening slots.
+    const minute = Number(startTime.slice(0, 2)) * 60 + Number(startTime.slice(3));
+    if (minute * 60 + seconds > 86400) {
+      throw new Error('Time off must end on the selected day.');
+    }
+    return { date, startTime, durationSeconds: seconds };
+  });
+  for (let i = 1; i < selected.length; i++) {
+    if (selected[i].date <= selected[i - 1].date) throw new Error('Time off days must be unique and in date order.');
+  }
+  if (selected.length && (Date.parse(selected.at(-1).date + 'T00:00:00Z')
+      - Date.parse(selected[0].date + 'T00:00:00Z')) / DAY_MS >= 500) {
+    throw new Error('Time off cannot span more than 500 days.');
+  }
+  return selected;
+}
+
+export function normalizeTimeOffChange(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid time off change.');
+  const { taskUrl, taskTitle = '', description = '', groupId = null, previous = [], days } = value;
+  const url = normalizeTaskUrl(taskUrl);
+  if (typeof taskTitle !== 'string' || taskTitle.length > 500
+      || typeof description !== 'string' || description.length > 2000
+      || (groupId !== null && (typeof groupId !== 'string' || !GROUP_RE.test(groupId)))) {
+    throw new Error('Invalid time off task or group.');
+  }
+  if (!Array.isArray(previous) || previous.length > 50
+      || previous.some(item => !item || typeof item.id !== 'string' || !GROUP_RE.test(item.id)
+        || typeof item.date !== 'string' || !DATE_RE.test(item.date)
+        || typeof item.startedAt !== 'string' || !Number.isFinite(Date.parse(item.startedAt))
+        || typeof item.endedAt !== 'string' || !Number.isFinite(Date.parse(item.endedAt))
+        || typeof item.updatedAt !== 'string' || !Number.isFinite(Date.parse(item.updatedAt)))) {
+    throw new Error('Invalid previous time off entries.');
+  }
+  if (new Set(previous.map(item => item.id)).size !== previous.length) throw new Error('Duplicate previous time off entry.');
+  const normalizedDays = normalizeTimeOffDays(days, { allowEmpty: previous.length > 0 });
+  return { taskUrl: url, taskTitle, description, groupId, previous: previous.map(item => ({
+    id: item.id, date: item.date, startedAt: item.startedAt,
+    endedAt: item.endedAt, updatedAt: item.updatedAt,
+  })), days: normalizedDays };
+}
+
+// Grouped PTO is one UI item even though GitHub persists one normal time entry per day.
+// Legacy PTO without a group ID is deliberately left as separate one-day items.
+export function groupTimeOffRecords(records, now = Date.now()) {
+  const byKey = new Map();
+  const instant = new Date(now).getTime();
+  for (const entry of records ?? []) {
+    if (entry?.isTimeOff !== true || !entry.id) continue;
+    const groupId = timeOffGroupId(entry);
+    const key = JSON.stringify([entry.destinationId, entry.user, groupId ?? 'legacy:' + entry.id]);
+    if (!byKey.has(key)) byKey.set(key, {
+      key, groupId, destinationId: entry.destinationId, repository: entry.timeRepository || '',
+      user: entry.user, taskUrl: entry.taskUrl, taskTitle: entry.taskTitle || '',
+      description: entry.description || '', entries: [],
+    });
+    byKey.get(key).entries.push(entry);
+  }
+  return [...byKey.values()].map(group => {
+    group.entries.sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.startedAt.localeCompare(b.startedAt));
+    group.startDate = group.entries[0].entryDate;
+    group.endDate = group.entries.at(-1).entryDate;
+    group.planned = group.entries.filter(item => new Date(item.endedAt).getTime() > instant);
+    group.taken = group.entries.filter(item => new Date(item.endedAt).getTime() <= instant);
+    group.totalSeconds = group.entries.reduce((sum, item) => sum + (Number(item.durationSeconds) || 0), 0);
+    return group;
+  }).sort((a, b) => b.startDate.localeCompare(a.startDate) || a.user.localeCompare(b.user));
+}
