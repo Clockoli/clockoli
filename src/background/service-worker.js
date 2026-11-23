@@ -5,6 +5,8 @@ import {
   GITHUB_AUTHORIZATIONS_URL, GITHUB_NEW_REPOSITORY_URL, GITHUB_NEW_ORGANIZATION_REPOSITORY_URL,
 } from '../config/github-app.js';
 import { activeRecordPath } from '../domain/work-records.js';
+import { classifyTimeOffRecords, isTimeOffTask, normalizeTimeOffConfig } from '../domain/time-off.js';
+import { parseBulkTimeText } from '../domain/bulk-time.js';
 import { createUlid } from '../domain/ulid.js';
 import { isUrlTaskIdentity, normalizeTaskUrl, parseGitHubProjectPaneIssueUrl, taskUrlOf } from '../domain/values.js';
 import { aggregateTaskParticipants, aggregateTrackedTasks } from '../domain/tasks.js';
@@ -31,6 +33,7 @@ import { independentCompletedWrite, TrackerService } from '../services/tracker.j
 import { ConfigurationService } from '../services/configuration.js';
 import { annotateDestinationRecord, loadDestinationRecords, mergeDestinationRecords, mergeDestinationTaskSummaries, ReportService, withoutInternalMetadata } from '../services/reports.js';
 import { ExchangeRateService } from '../services/exchange-rates.js';
+import { readTimeOffSettings, saveTimeOffSettings } from '../services/time-off-settings.js';
 import { TaskMetadataService } from '../services/task-metadata.js';
 import { mergeTaskCatalogIndexes, taskCandidates } from '../services/task-catalog.js';
 import { InstallationDiscoveryService, RepositoryInitializer } from '../services/github-app-onboarding.js';
@@ -59,6 +62,7 @@ const ACTION_CONTEXT_KEY = 'clockoli-toolbar-task-context';
 const TOOLBAR_POPUP_PATH = 'src/popup/quick.html';
 // Reuse Clockoli's privileged IndexedDB; do not expand extension permissions.
 const actionContextBackend = new IndexedDbBackend();
+const timeOffCacheBackend = new IndexedDbBackend();
 const currentCredentialProvider = new CredentialBroker({ clientId: GITHUB_APP_CLIENT_ID, store });
 const configuration = new ConfigurationService({
   store,
@@ -107,6 +111,36 @@ function githubForConfig(config, { measureMigration = false, rateLimitGate = nul
     rateLimitGate,
     ...(measureMigration ? { fetchImpl: clockifyGitHubRequests.wrapFetch(fetch) } : {}),
   });
+}
+
+// Only verified default-branch settings define PTO. The local projection is an
+// offline hint for routine tracking; future time and final reports use fresh GitHub reads.
+async function timeOffSettingsForDestination(destinationId, { fresh = false, signal } = {}) {
+  const registry = await store.getDestinationRegistry();
+  const configured = registry?.destinations?.[destinationId];
+  if (!configured) throw new Error('Time repository is no longer configured.');
+  const destination = { id: destinationId, ...configured };
+  const key = `time-off-config:${destinationId}`;
+  if (!fresh) {
+    const cached = (await timeOffCacheBackend.getMany([key]))[key];
+    if (cached?.repoId === destination.repoId && cached?.defaultBranch === destination.defaultBranch) {
+      try { return { config: normalizeTimeOffConfig(cached.config), sha: cached.sha ?? null }; }
+      catch { /* Stale or malformed local cache must not be trusted. */ }
+    }
+    return { config: normalizeTimeOffConfig(), sha: null };
+  }
+  const github = githubForConfig(destination).forBranch(destination.defaultBranch || destination.branch || 'main', 'default');
+  const result = await readTimeOffSettings(github, { signal });
+  await timeOffCacheBackend.setMany({ [key]: {
+    repoId: destination.repoId, defaultBranch: destination.defaultBranch,
+    config: result.config, sha: result.sha,
+  } });
+  return result;
+}
+
+async function timeOffTaskForDestination(destinationId, taskUrl, { fresh = false } = {}) {
+  const settings = await timeOffSettingsForDestination(destinationId, { fresh });
+  return isTimeOffTask(taskUrl, settings.config);
 }
 
 async function remoteActiveProbe({ config, auth, state, credentialProvider = currentCredentialProvider }) {
@@ -374,7 +408,7 @@ async function loadReport(message) {
   }
   const controller = new AbortController();
   const promise = (async () => {
-    const currentUsers = {};
+    const currentUsers = {}, timeOffConfigs = {};
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       loadCoordinator.assertCurrent(loadEpoch);
       currentUsers[destination.id] = await destinationUser(destination, auth);
@@ -383,9 +417,14 @@ async function loadReport(message) {
         github: githubForConfig(destination), cache: store,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
-      return reports.loadRepositoryRange(message.payload || {}, {
-        defaultBranch: destination.defaultBranch || branch, signal, includeStorageMetadata: true,
-      });
+      const [records, settings] = await Promise.all([
+        reports.loadRepositoryRange(message.payload || {}, {
+          defaultBranch: destination.defaultBranch || branch, signal, includeStorageMetadata: true,
+        }),
+        timeOffSettingsForDestination(destination.id, { fresh: true, signal }),
+      ]);
+      timeOffConfigs[destination.id] = settings.config;
+      return records;
     }, { signal: controller.signal });
     loadCoordinator.assertCurrent(loadEpoch);
     const users = [...new Set(Object.values(currentUsers).filter(Boolean))];
@@ -402,7 +441,7 @@ async function loadReport(message) {
       currentUsers, currentUser: users[0] || '',
       ...loaded,
       pendingWrites, pendingCount: pendingWrites.length, partial: loaded.partial || pendingWrites.length > 0,
-      records: loaded.records.map(withoutInternalMetadata),
+      records: classifyTimeOffRecords(loaded.records.map(withoutInternalMetadata), timeOffConfigs),
       billing: await store.getLocalPreferences(),
     };
   })();
@@ -414,6 +453,35 @@ async function loadReport(message) {
     return result;
   }
   finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
+}
+
+async function loadTeamTimeOff(message, sender, extensionOrigin) {
+  if (sender?.url !== `${extensionOrigin}src/reports/reports.html`
+      || Object.keys(message).sort().join(',') !== 'endDate,startDate,type') {
+    throw new Error('Only Reports can load the team time off calendar.');
+  }
+  const range = weekRangeForSender({ startDate: message.startDate, endDate: message.endDate }, sender, extensionOrigin);
+  const snapshot = await configuredSnapshot({ localOnly: true });
+  const destinations = selectReadDestinations(snapshot);
+  if (!snapshot.auth || !destinations.length) return { configured: false, entries: [] };
+  const configs = {};
+  const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
+    const reports = new ReportService({ github: githubForConfig(destination), cache: store });
+    const [records, settings] = await Promise.all([
+      reports.loadRepositoryRange(range, {
+        defaultBranch: destination.defaultBranch || destination.branch || 'main',
+        includeStorageMetadata: true, signal,
+      }),
+      timeOffSettingsForDestination(destination.id, { fresh: true, signal }),
+    ]);
+    configs[destination.id] = settings.config;
+    return records;
+  });
+  return {
+    configured: true, partial: loaded.partial, readStatus: loaded.readStatus,
+    entries: classifyTimeOffRecords(loaded.records.map(withoutInternalMetadata), configs)
+      .filter(entry => entry.isTimeOff),
+  };
 }
 
 async function loadTaskParticipants(message, sender, extensionOrigin) {
@@ -484,7 +552,7 @@ async function loadTimes(message, sender) {
   }
   const controller = new AbortController();
   const promise = (async () => {
-    const recoveries = new Map(), currentUsers = {};
+    const recoveries = new Map(), currentUsers = {}, timeOffConfigs = {};
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
       const user = await destinationUser(destination, auth);
@@ -497,6 +565,8 @@ async function loadTimes(message, sender) {
       const recent = await reports.loadUserRange(readRange, user, { includeStorageMetadata: true, signal }, {
         maxFiles: weekly ? 240 : 120, maxBytes: 100 * 1024 * 1024, maxRecords: 500000,
       });
+      const settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
+      timeOffConfigs[destination.id] = settings.config;
       const tracker = await trackerForDestination(destination.id, { localOnly: true });
       // Apply pending edits before filtering: they may move intervals into or out of the week.
       const projected = await tracker.projectActivityRecords(recent, weekly ? {} : requestedRange);
@@ -510,7 +580,7 @@ async function loadTimes(message, sender) {
       .map(operation => safePendingProjection(operation, destinationId, { includeDetails: true })));
     return {
       configured: true,
-      recent: loaded.records.map(({ _record, ...record }) => record)
+      recent: classifyTimeOffRecords(loaded.records.map(({ _record, ...record }) => record), timeOffConfigs)
         .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)),
       pendingWrites, pendingCount: pendingWrites.length,
       remoteWriteConfirmed: !loaded.partial && !(loaded.conflicts?.length)
@@ -1108,6 +1178,37 @@ async function handle(message, sender) {
     return { ...result, onboardingState: await onboardingState() };
   }
   if (message.type === 'CHECK_REPOSITORY_ACCESS') return checkCurrentRepositoryAccess(message.destinationId || message.payload?.destinationId || null);
+  if (message.type === 'GET_TIME_OFF_SETTINGS' || message.type === 'SAVE_TIME_OFF_SETTINGS') {
+    if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) throw new Error('Time off settings require Settings.');
+    if (!message.destinationId || typeof message.destinationId !== 'string') throw new Error('Select a time repository.');
+    const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+    const snapshot = await configuredSnapshot({ destinationId, localOnly: true });
+    if (!snapshot.config || !snapshot.auth) throw new Error('Time repository is unavailable.');
+    if (message.type === 'GET_TIME_OFF_SETTINGS') {
+      if (Object.keys(message).sort().join(',') !== 'destinationId,type') throw new Error('Invalid time off settings request.');
+      const current = await timeOffSettingsForDestination(destinationId, { fresh: true });
+      const github = githubForConfig(snapshot.config);
+      const repo = await github.validateRepository();
+      return { ...current, canEdit: repo.permissions?.admin === true };
+    }
+    if (Object.keys(message).sort().join(',') !== 'destinationId,expectedSha,taskUrls,type') throw new Error('Invalid time off settings update.');
+    const github = githubForConfig(snapshot.config).forBranch(snapshot.config.defaultBranch || snapshot.config.branch || 'main', 'default');
+    const saved = await saveTimeOffSettings(github, { taskUrls: message.taskUrls, expectedSha: message.expectedSha });
+    const key = `time-off-config:${destinationId}`;
+    await timeOffCacheBackend.setMany({ [key]: {
+      repoId: snapshot.config.repoId, defaultBranch: snapshot.config.defaultBranch,
+      config: saved.config, sha: saved.sha,
+    } });
+    return saved;
+  }
+  if (message.type === 'CHECK_TIME_OFF_TASK') {
+    if (!['src/times/times.html', 'src/tasks/tasks.html'].some(path => sender?.url === chrome.runtime.getURL(path))
+        || Object.keys(message).sort().join(',') !== 'taskUrl,type') throw new Error('Invalid time off task check.');
+    const taskUrl = normalizeTaskUrl(message.taskUrl);
+    const destinationId = await resolveStartDestinationId(store, taskUrl);
+    return { destinationId, isTimeOff: await timeOffTaskForDestination(destinationId, taskUrl, { fresh: true }) };
+  }
+  if (message.type === 'LOAD_TEAM_TIME_OFF') return loadTeamTimeOff(message, sender, extensionOrigin);
   if (message.type === 'LOAD_REPOSITORY_COLLABORATORS') {
     if (Object.keys(message).length !== 2 || typeof message.destinationId !== 'string') throw new Error('Invalid collaborator request');
     const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
@@ -1531,9 +1632,11 @@ async function handle(message, sender) {
       if (currentDestinationId && currentDestinationId !== destinationId) {
         throw new Error('A timer is running in another time repository. Stop it before adding time.');
       }
+      const futureSelected = payload.dates.at(-1) >= new Date().toISOString().slice(0, 10);
+      const isTimeOff = await timeOffTaskForDestination(destinationId, payload.taskUrl, { fresh: futureSelected });
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
       const { destinationId: _requestedDestination, ...range } = payload;
-      const result = await tracker.addDayRange(range);
+      const result = await tracker.addDayRange({ ...range, billable: isTimeOff ? false : range.billable, allowFuture: isTimeOff });
       if (result.pending) requestPendingSync();
       return { ...result, destinationId };
     }
@@ -1547,9 +1650,12 @@ async function handle(message, sender) {
       if (currentDestinationId && currentDestinationId !== destinationId) {
         throw new Error('A timer is running in another time repository. Stop it before adding time.');
       }
+      const future = Date.parse(payload.startedAt) > Date.now() || (payload.endedAt && Date.parse(payload.endedAt) > Date.now());
+      const isTimeOff = await timeOffTaskForDestination(destinationId, payload.taskUrl, { fresh: Boolean(future) });
+      if (future && !isTimeOff) throw new Error('Only time off tasks may be scheduled in the future.');
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
       const { destinationId: _requestedDestination, ...entry } = payload;
-      const result = await tracker.addTime(entry, { background: true });
+      const result = await tracker.addTime({ ...entry, billable: isTimeOff ? false : entry.billable }, { background: true, allowFuture: isTimeOff });
       if (result.pending || result.active?._pending) requestPendingSync();
       return { ...result, destinationId };
     }
@@ -1559,12 +1665,13 @@ async function handle(message, sender) {
       const destinationId = selectedDestinationId ? await requireConfiguredDestinationId(store, selectedDestinationId)
         : await resolveStartDestinationId(store, taskUrl);
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
-      const result = await tracker.start(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description || '', { background: true, billable: optionalBillable(message.billable) });
+      const isTimeOff = await timeOffTaskForDestination(destinationId, taskUrl);
+      const result = await tracker.start(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description || '', { background: true, billable: isTimeOff ? false : optionalBillable(message.billable) });
       if (result._pending) requestPendingSync();
       return { ...result, destinationId };
     }
     case 'SWITCH_TASK': {
-      const billable = optionalBillable(message.billable);
+      let billable = optionalBillable(message.billable);
       const timelineTask = message.timelineTask === true;
       const requestedTask = message.taskUrl ?? message.issue;
       let storedRecords = [];
@@ -1589,6 +1696,7 @@ async function handle(message, sender) {
       const selectedDestinationId = requestedStartDestinationId(taskUrl, message.destinationId, sender, extensionOrigin, 'SWITCH_TASK');
       const targetDestinationId = selectedDestinationId ? await requireConfiguredDestinationId(store, selectedDestinationId)
         : await resolveStartDestinationId(store, taskUrl);
+      if (await timeOffTaskForDestination(targetDestinationId, taskUrl)) billable = false;
       const sourceDestinationId = await activeDestinationId(store);
       if (!sourceDestinationId || sourceDestinationId === targetDestinationId) {
         const tracker = await trackerForDestination(targetDestinationId, { localOnly: true });
@@ -1627,7 +1735,9 @@ async function handle(message, sender) {
     case 'STOP': {
       const destinationId = await activeDestinationId(store, { required: true });
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
-      const result = await tracker.stop(message.description, { background: true, billable: optionalBillable(message.billable) });
+      const active = (await tracker.getState()).active;
+      const isTimeOff = active ? await timeOffTaskForDestination(destinationId, taskUrlOf(active)) : false;
+      const result = await tracker.stop(message.description, { background: true, billable: isTimeOff ? false : optionalBillable(message.billable) });
       if (result.pending) requestPendingSync();
       return { ...result, destinationId };
     }
@@ -1684,7 +1794,17 @@ async function handle(message, sender) {
       const billable = optionalBillable(message.billable);
       if (new TextEncoder().encode(text).byteLength > 262_144) throw new Error('Bulk input is too large.');
       const { tracker, destinationId } = await context({ localOnly: true });
-      const result = await tracker.bulkAddTimes(text, { background: true, billable });
+      const requested = parseBulkTimeText(text, { billable });
+      const future = requested.some(entry => entry.date >= new Date().toISOString().slice(0, 10));
+      const settings = await timeOffSettingsForDestination(destinationId, { fresh: future });
+      const rows = requested.map(entry => ({
+        ...entry, billable: isTimeOffTask(entry.taskUrl, settings.config) ? false : entry.billable,
+      }));
+      if (rows.some(entry => entry.date > new Date().toISOString().slice(0, 10)
+          && !isTimeOffTask(entry.taskUrl, settings.config))) {
+        throw new Error('Only time off tasks may be scheduled in the future.');
+      }
+      const result = await tracker.bulkAddTimes('', { background: true, requested: rows });
       if (result.pending) requestPendingSync();
       return { ...result, destinationId };
     }
@@ -1789,10 +1909,10 @@ async function handle(message, sender) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'LOCAL_PREFERENCES_CHANGED' || message?.type === 'TOOLBAR_CONTEXT_UPDATED') return undefined;
-  const reportReadOnly = ['LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
+  const reportReadOnly = ['LOAD_REPORT', 'LOAD_TEAM_TIME_OFF', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
   const localStateRead = ['GET_STATE', 'GET_PAGE_STATE'].includes(message?.type) && !message?.refresh;
-  const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS'].includes(message?.type);
-  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER'].includes(message?.type);
+  const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS', 'GET_TIME_OFF_SETTINGS', 'CHECK_TIME_OFF_TASK'].includes(message?.type);
+  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER', 'SAVE_TIME_OFF_SETTINGS'].includes(message?.type);
   let operation;
   if (changesConfiguration) {
     try {
