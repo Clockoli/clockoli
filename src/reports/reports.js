@@ -1252,80 +1252,6 @@ colorScheme.addEventListener('change', () => {
   if (state.range && !state.loading && !$('report-content').hidden) render();
 });
 
-let teamTimeOffWeekStart = (() => {
-  const now = new Date(), monday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
-  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
-  return localDateValue(monday);
-})();
-let teamTimeOffRequest = 0;
-function addTeamDays(day, amount) {
-  const date = new Date(day + 'T12:00:00Z');
-  date.setUTCDate(date.getUTCDate() + amount);
-  return date.toISOString().slice(0, 10);
-}
-function teamDayHeading(date) {
-  return new Date(date + 'T12:00:00Z').toLocaleDateString('en-US', {
-    weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC',
-  });
-}
-function buildTeamTimeOffCalendar(entries, startDate) {
-  const table = $('team-time-off-table'); table.replaceChildren();
-  const header = document.createElement('thead'), heading = document.createElement('tr');
-  for (const caption of ['Person', ...Array.from({ length: 7 }, (_, day) => teamDayHeading(addTeamDays(startDate, day)))]) {
-    const th = document.createElement('th'); th.scope = 'col'; th.textContent = caption; heading.append(th);
-  }
-  header.append(heading); table.append(header);
-  const members = new Map();
-  for (const entry of entries) {
-    const key = JSON.stringify([entry.destinationId, entry.user]);
-    if (!members.has(key)) members.set(key, { user: entry.user, repo: entry.timeRepository || '', entries: [] });
-    members.get(key).entries.push(entry);
-  }
-  const body = document.createElement('tbody');
-  for (const member of [...members.values()].sort((a, b) => a.user.localeCompare(b.user) || a.repo.localeCompare(b.repo))) {
-    const tr = document.createElement('tr'), who = document.createElement('th'); who.scope = 'row';
-    who.textContent = member.repo ? `${member.user} · ${member.repo}` : member.user; tr.append(who);
-    for (let day = 0; day < 7; day += 1) {
-      const date = addTeamDays(startDate, day), cell = document.createElement('td');
-      for (const entry of member.entries.filter(item => item.entryDate === date)) {
-        const item = document.createElement('span');
-        item.className = entry.isPlannedTimeOff ? 'team-time-off-day planned' : 'team-time-off-day taken';
-        item.textContent = formatClockDuration(entry.durationSeconds);
-        const detail = [entry.isPlannedTimeOff ? 'Planned time off' : 'Time off', entry.description, entry.taskTitle, entry.taskUrl].filter(Boolean).join(' · ');
-        item.title = detail; item.setAttribute('aria-label', detail + ' · ' + formatClockDuration(entry.durationSeconds));
-        cell.append(item);
-      }
-      tr.append(cell);
-    }
-    body.append(tr);
-  }
-  table.append(body);
-}
-async function loadTeamTimeOff() {
-  const request = ++teamTimeOffRequest;
-  const startDate = teamTimeOffWeekStart, endDate = addTeamDays(startDate, 6);
-  $('team-time-off-range').textContent = `${teamDayHeading(startDate)} – ${teamDayHeading(endDate)}`;
-  $('team-time-off-status').textContent = 'Loading team time off…';
-  try {
-    const result = await send({ type: 'LOAD_TEAM_TIME_OFF', startDate, endDate });
-    if (request !== teamTimeOffRequest) return;
-    if (!result.configured) { $('team-time-off-status').textContent = 'Connect a time repository first.'; return; }
-    const entries = Array.isArray(result.entries) ? result.entries : [];
-    buildTeamTimeOffCalendar(entries, startDate);
-    $('team-time-off-status').textContent = result.partial
-      ? 'Some time repositories could not be read. The calendar may be incomplete.'
-      : entries.length ? '' : 'No time off recorded for this week.';
-  } catch (error) {
-    if (request === teamTimeOffRequest) $('team-time-off-status').textContent = error.message || 'Could not load team time off.';
-  }
-}
-for (const [id, delta] of [['team-time-off-prev', -7], ['team-time-off-next', 7]]) {
-  $(id).addEventListener('click', () => {
-    teamTimeOffWeekStart = addTeamDays(teamTimeOffWeekStart, delta);
-    void loadTeamTimeOff();
-  });
-}
-
 async function initializePeriod() {
   try {
     const preferences = await send({ type: 'GET_LOCAL_PREFERENCES' });
@@ -1348,7 +1274,6 @@ async function initializePeriod() {
       }
     } catch { /* a missing or unreadable snapshot must not block the live read */ }
     await loadRange(range);
-    void loadTeamTimeOff();
   } catch (error) { setError(error); hideProgress(); }
 }
 void initializePeriod();
