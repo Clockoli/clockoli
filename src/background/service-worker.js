@@ -1633,7 +1633,7 @@ async function handle(message, sender) {
         throw new Error('A timer is running in another time repository. Stop it before adding time.');
       }
       const futureSelected = payload.dates.at(-1) >= new Date().toISOString().slice(0, 10);
-      const isTimeOff = await timeOffTaskForDestination(destinationId, payload.taskUrl, { fresh: futureSelected });
+      const isTimeOff = await timeOffTaskForDestination(destinationId, payload.taskUrl);
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
       const { destinationId: _requestedDestination, ...range } = payload;
       const result = await tracker.addDayRange({ ...range, billable: isTimeOff ? false : range.billable, allowFuture: isTimeOff });
@@ -1651,7 +1651,7 @@ async function handle(message, sender) {
         throw new Error('A timer is running in another time repository. Stop it before adding time.');
       }
       const future = Date.parse(payload.startedAt) > Date.now() || (payload.endedAt && Date.parse(payload.endedAt) > Date.now());
-      const isTimeOff = await timeOffTaskForDestination(destinationId, payload.taskUrl, { fresh: Boolean(future) });
+      const isTimeOff = await timeOffTaskForDestination(destinationId, payload.taskUrl);
       if (future && !isTimeOff) throw new Error('Only time off tasks may be scheduled in the future.');
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
       const { destinationId: _requestedDestination, ...entry } = payload;
@@ -1796,7 +1796,7 @@ async function handle(message, sender) {
       const { tracker, destinationId } = await context({ localOnly: true });
       const requested = parseBulkTimeText(text, { billable });
       const future = requested.some(entry => entry.date >= new Date().toISOString().slice(0, 10));
-      const settings = await timeOffSettingsForDestination(destinationId, { fresh: future });
+      const settings = await timeOffSettingsForDestination(destinationId);
       const rows = requested.map(entry => ({
         ...entry, billable: isTimeOffTask(entry.taskUrl, settings.config) ? false : entry.billable,
       }));
