@@ -26,7 +26,7 @@ See [Time repositories](time-data-repository.md) and [Work as a team](teams.md).
 
 ## Interface width
 
-Choose a centered layout or use the available screen width for Activity, Reports, and Top tasks. This preference stays in the current browser and is not included in settings backups.
+Choose a centered layout or use the available screen width for Activity, Reports, Top tasks, and Time off. This preference stays in the current browser and is not included in settings backups.
 
 ![Interface width and toolbar behavior settings](images/interface-settings.png)
 
