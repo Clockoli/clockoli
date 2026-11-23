@@ -602,7 +602,9 @@ function renderTimeOffTaskSettings(destination) {
   searchRow.append(search, add);
   const searchStatus = document.createElement('p'); searchStatus.className = 'help';
   searchStatus.setAttribute('role', 'status');
-  picker.append(label, searchRow, suggestions, searchStatus);
+  const searchWrap = document.createElement('div'); searchWrap.className = 'repository-time-off-search-wrap';
+  searchWrap.append(searchRow, suggestions);
+  picker.append(label, searchWrap, searchStatus);
   const count = document.createElement('p'); count.className = 'help repository-time-off-count';
   const selected = document.createElement('div'); selected.className = 'repository-time-off-selected';
   const feedback = document.createElement('p'); feedback.className = 'form-feedback';
