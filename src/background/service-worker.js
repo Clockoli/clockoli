@@ -660,7 +660,7 @@ async function loadTasks(message, sender) {
   }
   const controller = new AbortController();
   const promise = (async () => {
-    const timerStates = new Map(), metadata = new Map(), currentUsers = {};
+    const timerStates = new Map(), metadata = new Map(), currentUsers = {}, timeOffConfigs = {};
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       loadCoordinator.assertCurrent(loadEpoch);
       const { tracker } = await contextForDestination(destination.id, { localOnly: true });
@@ -673,9 +673,13 @@ async function loadTasks(message, sender) {
         github: githubForConfig(destination), cache: store,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
-      const records = message.payload?.includeAllUsers
-        ? await reports.loadRepositoryRange(message.payload || {}, { defaultBranch: destination.branch || 'main', signal, includeStorageMetadata: true })
-        : await reports.loadUserRange(message.payload || {}, user, { signal, includeStorageMetadata: true });
+      const [records, settings] = await Promise.all([
+        message.payload?.includeAllUsers
+          ? reports.loadRepositoryRange(message.payload || {}, { defaultBranch: destination.branch || 'main', signal, includeStorageMetadata: true })
+          : reports.loadUserRange(message.payload || {}, user, { signal, includeStorageMetadata: true }),
+        timeOffSettingsForDestination(destination.id, { fresh: true, signal }),
+      ]);
+      timeOffConfigs[destination.id] = settings.config;
       const state = await tracker.getState();
       timerStates.set(destination.id, state);
       const issueValues = records.flatMap(record => record.issue ? [record.issue] : []);
@@ -707,10 +711,21 @@ async function loadTasks(message, sender) {
       sourceRepositories: destinations.map(destination => destination.label),
       currentUsers,
       availableUsers,
-      tasks: aggregateTrackedTasks(loaded.records.map(withoutInternalMetadata), {
-        currentUsers: selectedUsers, metadata, active, pendingWrites,
-        startDate: message.payload?.startDate, endDate: message.payload?.endDate,
-      }),
+      tasks: aggregateTrackedTasks(
+        loaded.records.filter(record => !isTimeOffTask(record.taskUrl, timeOffConfigs[record.destinationId]))
+          .map(withoutInternalMetadata), {
+          currentUsers: selectedUsers, metadata,
+          active: active && !isTimeOffTask(active.taskUrl, timeOffConfigs[active.destinationId]) ? active : null,
+          pendingWrites: pendingWrites.map(operation => {
+            const config = timeOffConfigs[operation.destinationId];
+            if (operation.operation === 'bulkAddTimes') return {
+              ...operation, entries: (operation.entries ?? []).filter(entry => !isTimeOffTask(entry.taskUrl, config)),
+            };
+            if (operation.entry && isTimeOffTask(operation.entry.taskUrl, config)) return { ...operation, entry: null };
+            return operation;
+          }),
+          startDate: message.payload?.startDate, endDate: message.payload?.endDate,
+        }),
       active, pendingWrites,
       readStatus: loaded.readStatus, partial: loaded.partial, conflicts: loaded.conflicts,
     };
