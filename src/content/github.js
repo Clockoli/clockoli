@@ -2041,6 +2041,10 @@
   function beginRecordEdit(entry) { beginMetadataEdit(entry, { focusTime: true }); }
 
   async function openTimeEntryForm(entry, trigger) {
+    if (entry?.isTimeOff && (timesMode || popupMode)) {
+      await send({ type: 'OPEN_TIME_OFF' });
+      return;
+    }
     let form = globalThis.ClockoliTimeEntryForm;
     if (!form?.openEdit && !extensionPageMode) {
       timeEntryFormLoad ||= (async () => {
