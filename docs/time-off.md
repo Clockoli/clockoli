@@ -1,29 +1,45 @@
-# Team time off
+# Time off
 
-Clockoli tracks time off using **ordinary task URLs and time entries**. No new work-record format or approval system is needed.
+Clockoli uses ordinary time entries linked to configured PTO task URLs. The **Time off** page is the place to plan, view, correct, and cancel absences. It does not require a second record format, leave balances, or an approval workflow.
 
-## Configure a repository
+## Configure your team
 
-Under **Settings → Time repositories**, expand the relevant repository and open **Time off tasks**. Administrators can search tracked tasks by title or URL (as in Add time), select a suggestion, or paste a new task URL and select **Add task**. Each selected task appears in a removable list; select **Save time off tasks** to share up to 100 URLs with the team. Other repository members can view the list.
+Under **Settings → Time repositories**, open a repository's **Time off tasks** section. A repository administrator can search for tracked tasks by title/URL, select an existing task or paste its URL, and save up to 100 PTO task URLs. Other repository members can view the list. Each repository's list is shared via `.clockoli/time-off.json` on its default branch.
 
-Clockoli stores the shared list in `.clockoli/time-off.json` on that repository's default branch. The list is specific to the time repository: the same URL in another repository is not automatically PTO. Changing the list also changes how existing records are classified in reports. Each change checks the GitHub file revision to prevent silently overwriting another administrator's update.
+Because this configuration reclassifies existing time entries, changing the list also changes historical PTO reporting. Task URLs and descriptions are visible to anyone with read access to the time repository. Avoid sensitive medical or personal information.
 
-All repository readers can see stored task URLs, descriptions, and Git history. Avoid recording sensitive medical or personal details.
+## Plan or record PTO
 
-## Record or plan time off
+Open **Time off → My time off → Add time off**.
 
-Select **Add time**, choose or paste a configured PTO URL, and enter a description such as `Vacation`, `Sick leave`, or `Public holiday`. The description is free text; it does not control time-off classification.
+1. Choose a **Time repository** and **Type** (one of its configured PTO tasks). When there is only one configured task, Clockoli selects it automatically.
+2. Enter **From** and **To**. Both past and future dates are supported.
+3. Set **Hours per day** (8 by default) and **Start time** (09:00 by default). Weekend days are excluded by default; enable **Include weekends** if needed.
+4. Review the **Days included** list. Uncheck individual dates or adjust a day's hours.
+5. Optionally add a description, then select **Add time off**.
 
-Use **Multiple days** to select individual dates (including nonconsecutive days) and the hours per day. For time-off tasks, Clockoli also accepts future dates. Individual completed entries can be scheduled ahead, but a running timer cannot start in the future. Regular work entries remain restricted to past/current times.
+One plan adds one ordinary entry per selected day and tags the entries with the same `metadata.clockoli.timeOffGroupId`. This makes the plan editable as one group; the repository's storage schema stays unchanged. Clockoli supports up to 50 selected days per save and a date-range picker of up to 121 calendar days.
 
-PTO uses the same free-slot placement and overlap prevention as other time entries. If the planned PTO overlaps an existing work session, review the day and correct the entries. All time off is non-billable in reports and invoices.
+PTO is placed **at the exact selected hours**. Unlike the normal Multiple days free-slot planner, it is never silently moved into another time of day to avoid an overlap. If time off conflicts with work or another entry, edit the conflicting time first.
 
-## Team calendar and reports
+## Review and change your PTO
 
-Open **Reports → Team time off** to see each person's time off by week, including future weeks. It reads teammates' personal branches in the connected time repositories. The calendar shows a warning if it cannot read all available branches.
+**My time off** groups a new PTO plan into one card with dates, days, hours and status. Select **Edit** to change its dates, included days, daily hours or description. Select **Cancel** to remove the planned days. Each edit or cancellation is one locally queued group operation and one guarded GitHub commit when synchronized.
 
-A time-off entry whose end is in the future is **Planned PTO**. Only after its end time does Clockoli count the entry as **Time off taken**. Taken PTO contributes to **Total tracked** and the separate **Time off** total, but not **Work** or billable amount. Planned PTO appears in the separate Planned total and team calendar, not in Total tracked.
+For an absence in progress, **Edit remaining** and **Cancel remaining** leave completed days intact. To correct already taken time off, select **Correct** deliberately. Older PTO records without a group ID remain individual cards; Clockoli does not guess which neighboring records belong to a single absence.
 
-Reports provides a **Time type** filter and a **Time type** chart grouping. Exported CSV and JSON timesheets include the classified time type. The underlying entry remains an ordinary Clockoli work record, so existing per-user branches and standard time-entry editing continue to apply.
+Local changes are accepted immediately and synchronized in the background. Changes appear to teammates after the GitHub sync succeeds. GitHub conflicts are kept for review rather than overwriting another change.
 
-Clockoli does not yet manage PTO balances, requests, or approvals.
+## Team calendar
+
+Open **Time off → Team calendar** to browse weeks and see PTO recorded by people in your connected time repositories. Switch repositories or navigate to past/future weeks. Select a marked day to see its task, hours and description. Teammates can view each other's absences but can edit only their own time.
+
+If the remote read is incomplete, Clockoli warns that the calendar may be missing entries.
+
+## Reporting and billing
+
+A future PTO entry is **Planned** until its end timestamp. After that point, it becomes **Taken** automatically. Only taken PTO contributes to Total tracked and the Time off total; it never contributes to Work or billable amounts.
+
+Reports retains Work / Time off / Planned totals and the Time type chart filter. CSV and JSON exports include the time type. PTO tasks are excluded from Top tasks working-time rankings, although their time entries remain visible in Activity.
+
+Clockoli does not manage leave allowances, requests, holiday policies or approvals.
