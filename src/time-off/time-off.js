@@ -354,7 +354,7 @@ function openCancel(group) {
   const affected = group.planned.length ? group.planned : group.entries;
   $('time-off-cancel-message').textContent = 'Remove ' + affected.length
     + (affected.length === 1 ? ' day' : ' days') + ' (' + duration(sum(affected))
-    + ') from ' + (group.taskTitle || taskName(group.taskUrl)) + '?'
+    + ') for ' + (group.taskTitle || taskName(group.taskUrl)) + '?'
     + (group.taken.length && group.planned.length ? ' Completed days will be preserved.' : '');
   $('time-off-cancel-error').hidden = true;
   $('time-off-cancel-dialog').showModal();
