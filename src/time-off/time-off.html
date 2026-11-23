@@ -71,17 +71,33 @@
       <div class="time-off-form-grid">
         <label>Time repository<select id="edit-repository" required></select></label>
         <label>Type<select id="edit-task" required></select></label>
-        <label>From<input id="edit-from" type="date" required></label>
-        <label>To<input id="edit-to" type="date" required></label>
-        <label>Hours per day<input id="edit-hours" type="number" min="0" max="24" step="0.25" value="8" required></label>
+        <label>Default hours per day<input id="edit-hours" type="number" min="0" max="24" step="0.25" value="8" required></label>
         <label>Start time<input id="edit-start-time" type="time" value="09:00" required></label>
       </div>
-      <label class="time-off-inline-check"><input id="include-weekends" type="checkbox"> Include weekends</label>
+      <section class="time-off-calendar-editor" aria-label="Choose time off dates">
+        <div class="time-off-calendar-toolbar">
+          <div class="time-off-calendar-month-nav">
+            <button id="calendar-previous-month" type="button" class="time-off-secondary" aria-label="Previous month">‹</button>
+            <label for="calendar-month-picker">Month <input id="calendar-month-picker" type="month" required></label>
+            <button id="calendar-next-month" type="button" class="time-off-secondary" aria-label="Next month">›</button>
+          </div>
+          <div class="time-off-calendar-quick-actions">
+            <button id="calendar-select-weekdays" type="button" class="time-off-secondary">Select weekdays</button>
+            <button id="calendar-apply-hours" type="button" class="time-off-secondary">Apply hours to selected</button>
+            <button id="calendar-clear-selection" type="button" class="time-off-secondary">Clear</button>
+          </div>
+        </div>
+        <p class="time-off-calendar-help">Click dates to select them. Shift-click to select a range. Change the hours directly on any selected day.</p>
+        <label class="time-off-inline-check"><input id="include-weekends" type="checkbox"> Include weekends in ranges</label>
+        <div class="time-off-calendar-scroll" role="region" aria-label="Time off calendar" tabindex="0">
+          <div class="time-off-calendar-weekdays" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
+          <div id="time-off-day-grid" class="time-off-day-grid" role="group" aria-label="Choose time off dates"></div>
+        </div>
+        <div class="time-off-calendar-summary"><strong id="day-preview-total">0 days · 0m</strong><span id="time-off-selected-range"></span></div>
+        <p id="edit-taken-note" class="time-off-hint" hidden>Days already taken are shown but cannot be changed. Only the remaining planned days will be updated.</p>
+        <p id="day-preview-error" class="time-off-hint" role="alert" hidden></p>
+      </section>
       <label class="time-off-description">Description (optional)<textarea id="edit-description" rows="2" maxlength="2000" placeholder="Vacation"></textarea></label>
-      <div class="time-off-day-heading"><strong>Days included</strong><span id="day-preview-total"></span></div>
-      <p id="edit-taken-note" class="time-off-hint" hidden>Days already taken are preserved. This edit affects only the remaining planned days.</p>
-      <p id="day-preview-error" class="time-off-hint" role="alert" hidden></p>
-      <div id="day-preview" class="time-off-day-list"></div>
       <p id="time-off-form-error" role="alert" hidden></p>
       <footer class="time-off-dialog-actions">
         <button id="cancel-time-off-form" class="time-off-secondary" type="button">Cancel</button>
