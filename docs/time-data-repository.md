@@ -69,6 +69,7 @@ The default branch contains the shared repository marker:
 
 ```text
 .clockoli/config.json
+.clockoli/time-off.json  (optional team time off task URLs)
 ```
 
 Each person writes to a personal branch named from their **stable numeric GitHub user ID**:
@@ -91,7 +92,7 @@ times/{YYYY-MM}/{storage-login}.jsonl
 - `times/` stores completed records in monthly JSON Lines files.
 - `.clockoli/tasks.json` is the task index used for efficient task lookup and totals.
 
-Routine time writes stay on personal branches rather than the default branch. This reduces conflicts between teammates.
+Routine time writes stay on personal branches rather than the default branch. This reduces conflicts between teammates. The optional shared `.clockoli/time-off.json` on the default branch lists up to 100 canonical PTO task URLs and is editable by repository administrators only. See [Time off](time-off.md).
 
 ## Data format v1
 
