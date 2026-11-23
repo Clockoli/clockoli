@@ -13,12 +13,11 @@ Because this configuration reclassifies existing time entries, changing the list
 Open **Time off → My time off → Add time off**.
 
 1. Choose a **Time repository** and **Type** (one of its configured PTO tasks). When there is only one configured task, Clockoli selects it automatically.
-2. Enter **From** and **To**. Both past and future dates are supported.
-3. Set **Hours per day** (8 by default) and **Start time** (09:00 by default). Weekend days are excluded by default; enable **Include weekends** if needed.
-4. Review the **Days included** list. Uncheck individual dates or adjust a day's hours.
-5. Optionally add a description, then select **Add time off**.
+2. Pick days in the monthly calendar. Click individual dates, choose **Select range** and click the first and last days, or Shift-click to extend a range. **Select weekdays** marks the working days of the visible month; use the arrows or month picker to navigate.
+3. Selected days start at **8 hours**, with a **09:00** start time. Edit hours in any selected calendar cell, or change **Default hours per day** and select **Apply hours to selected**. Ranges skip weekends unless you enable **Include weekends in ranges**; you can also click an individual weekend day.
+4. Optionally add a description, then select **Add time off**.
 
-One plan adds one ordinary entry per selected day and tags the entries with the same `metadata.clockoli.timeOffGroupId`. This makes the plan editable as one group; the repository's storage schema stays unchanged. Clockoli supports up to 50 selected days per save and a date-range picker of up to 121 calendar days.
+One plan adds one ordinary entry per selected day and tags the entries with the same `metadata.clockoli.timeOffGroupId`. This makes the plan editable as one group; the repository's storage schema stays unchanged. You can select past and future dates across months, up to 50 days within a 500-day span per save.
 
 PTO is placed **at the exact selected hours**. Unlike the normal Multiple days free-slot planner, it is never silently moved into another time of day to avoid an overlap. If time off conflicts with work or another entry, edit the conflicting time first.
 
