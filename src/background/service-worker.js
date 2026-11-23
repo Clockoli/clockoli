@@ -509,6 +509,9 @@ async function loadMyTimeOff(message, sender, extensionOrigin) {
       includeStorageMetadata: true, signal,
     }, { maxFiles: 240, maxBytes: 100 * 1024 * 1024, maxRecords: 500_000 });
     const tracker = await trackerForDestination(destination.id, { localOnly: true });
+    // The personal PTO view has already loaded work and PTO records; reuse
+    // them as local occupancy hints for automatic start-time placement.
+    await tracker.rememberTimeOffOccupancy?.(records);
     return (await tracker.projectActivityRecords(records, range)).records;
   });
   return {
