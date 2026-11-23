@@ -71,20 +71,23 @@ export function normalizeTimeOffDays(days, { allowEmpty = false } = {}) {
     throw new Error('Choose between 1 and 50 time off days.');
   }
   const selected = days.map(item => {
-    const date = item?.date, startTime = item?.startTime ?? '09:00', seconds = item?.durationSeconds;
+    const date = item?.date, startTime = item?.startTime, seconds = item?.durationSeconds;
     if (typeof date !== 'string' || !DATE_RE.test(date)
         || !Number.isFinite(Date.parse(date + 'T00:00:00Z'))
         || new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) !== date
-        || typeof startTime !== 'string' || !TIME_RE.test(startTime)
+        || (startTime !== undefined && (typeof startTime !== 'string' || !TIME_RE.test(startTime)))
         || !Number.isSafeInteger(seconds) || seconds < 0 || seconds > 86400) {
       throw new Error('Invalid time off day, start time, or duration.');
     }
-    // A day is an exact time interval, never an invitation to move PTO into free evening slots.
-    const minute = Number(startTime.slice(0, 2)) * 60 + Number(startTime.slice(3));
-    if (minute * 60 + seconds > 86400) {
-      throw new Error('Time off must end on the selected day.');
+    // Explicit starts from older queued operations remain fixed. New PTO
+    // chooses its start automatically from available intervals on the day.
+    if (startTime !== undefined) {
+      const minute = Number(startTime.slice(0, 2)) * 60 + Number(startTime.slice(3));
+      if (minute * 60 + seconds > 86400) {
+        throw new Error('Time off must end on the selected day.');
+      }
     }
-    return { date, startTime, durationSeconds: seconds };
+    return { date, ...(startTime === undefined ? {} : { startTime }), durationSeconds: seconds };
   });
   for (let i = 1; i < selected.length; i++) {
     if (selected[i].date <= selected[i - 1].date) throw new Error('Time off days must be unique and in date order.');
@@ -130,6 +133,35 @@ export function timeOffStartInstant(date, startTime, timezone) {
   });
   if (!instants.length) throw new Error('This start time does not exist in the selected time zone.');
   return new Date(Math.min(...instants));
+}
+
+// Prefer the normal 09:00 workday start; if occupied, use the first
+// contiguous slot after it. Never silently place a normal PTO day overnight.
+export function findTimeOffStart(date, durationSeconds, timezone, occupied = []) {
+  const day = new Date(date + 'T00:00:00Z');
+  if (!Number.isFinite(day.getTime()) || day.toISOString().slice(0, 10) !== date) {
+    throw new Error('Invalid time off date.');
+  }
+  day.setUTCDate(day.getUTCDate() + 1);
+  const end = timeOffStartInstant(day.toISOString().slice(0, 10), '00:00', timezone).getTime();
+  const midnight = timeOffStartInstant(date, '00:00', timezone).getTime();
+  const normalStart = timeOffStartInstant(date, '09:00', timezone).getTime();
+  const durationMs = durationSeconds * 1000;
+  const earliest = durationMs <= end - normalStart ? normalStart : midnight;
+  const intervals = occupied.map(entry => ({
+    start: new Date(entry.startedAt).getTime(), end: new Date(entry.endedAt).getTime(),
+  })).filter(item => Number.isFinite(item.start) && item.end > earliest && item.start < end)
+    .sort((a, b) => a.start - b.start);
+  let cursor = earliest;
+  for (const interval of intervals) {
+    if (cursor + durationMs <= interval.start) break;
+    cursor = Math.max(cursor, interval.end);
+    if (cursor + durationMs > end) break;
+  }
+  if (cursor + durationMs > end) {
+    throw new Error(`No free ${durationSeconds / 3600}-hour interval on ${date}. Change the hours or edit existing time.`);
+  }
+  return new Date(cursor);
 }
 
 export function normalizeTimeOffChange(value) {
