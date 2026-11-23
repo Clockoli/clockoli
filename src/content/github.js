@@ -3109,7 +3109,7 @@
         rowId: projectRowId(projectName),
         url: taskUrlOf(entry),
         taskIdentity: storedTaskIdentityOf(entry),
-        title: `${entry.isTimeOff ? 'PTO · ' : ''}${taskTitleOf(entry) || storedTaskIdentityOf(entry) || 'Untitled task'}`, 
+        title: `${entry.isTimeOff ? 'PTO · ' : ''}${taskTitleOf(entry) || storedTaskIdentityOf(entry) || 'Untitled task'}`,
         isTimeOff: entry.isTimeOff === true,
         faviconUrl: siteFaviconUrl(entry),
         githubFavicon: isGitHubTask(entry),
