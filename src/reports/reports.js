@@ -899,14 +899,14 @@ async function loadBillableAnalytics(filtered, request, key) {
 
 function render() {
   if (!state.range) return;
-  const facets = buildFacets(state.records, selectedFilters());
+  const facets = buildFacets([...state.records, ...state.plannedRecords], selectedFilters());
   for (const key of FACET_KEYS) {
     renderFacet($(`${key}-facet`), facets[key], state[key], state[`${key}Search`], () => updateSelectionIntent(key));
   }
-  const allPeople = [...new Set(state.records.map(record => record.user))];
+  const allPeople = [...new Set([...state.records, ...state.plannedRecords].map(record => record.user))];
   const allProjects = facets.projects.map(project => project.value);
-  const allRepositories = [...new Set(state.records.map(record => taskSource(record)))];
-  const allTimeRepositories = [...new Set(state.records.map(record => timeRepository(record)))];
+  const allRepositories = [...new Set([...state.records, ...state.plannedRecords].map(record => taskSource(record)))];
+  const allTimeRepositories = [...new Set([...state.records, ...state.plannedRecords].map(record => timeRepository(record)))];
   $('people-all').textContent = allPeople.length && allPeople.every(value => state.people.has(value)) ? 'Unselect all' : 'Select all';
   $('projects-all').textContent = allProjects.length && allProjects.every(value => state.projects.has(value)) ? 'Unselect all' : 'Select all';
   $('repositories-all').textContent = allRepositories.length && allRepositories.every(value => state.repositories.has(value)) ? 'Unselect all' : 'Select all';
@@ -967,7 +967,7 @@ function applyReportResult(result, range, reportingUtc, { cached = false } = {})
     state.projectDefinitions = result.billing?.projects || [];
     state.otherProjectName = result.billing?.otherProjectName || 'Other';
     state.otherProjectClient = result.billing?.otherProjectClient || '';
-    const available = buildFacets(state.records, { projectDefinitions: state.projectDefinitions, otherProjectName: state.otherProjectName });
+    const available = buildFacets([...state.records, ...state.plannedRecords], { projectDefinitions: state.projectDefinitions, otherProjectName: state.otherProjectName });
     if (firstLoad) {
       state.allSelected = { people: false, projects: true, repositories: true, timeRepositories: true };
       const currentUsers = result.currentUsers ? Object.values(result.currentUsers) : (result.currentUser ? [result.currentUser] : []);
@@ -1348,9 +1348,9 @@ async function initializePeriod() {
       }
     } catch { /* a missing or unreadable snapshot must not block the live read */ }
     await loadRange(range);
+    void loadTeamTimeOff();
   } catch (error) { setError(error); hideProgress(); }
 }
 void initializePeriod();
-void loadTeamTimeOff();
 
 mountRunningStatus($('running-status'), { send });
