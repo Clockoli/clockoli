@@ -71,8 +71,7 @@
       <div class="time-off-form-grid">
         <label>Time repository<select id="edit-repository" required></select></label>
         <label>Type<select id="edit-task" required></select></label>
-        <label>Default hours per day<input id="edit-hours" type="number" min="0" max="24" step="0.25" value="8" required></label>
-        <label>Start time<input id="edit-start-time" type="time" value="09:00" required></label>
+        <label>Hours for new days<input id="edit-hours" type="number" min="0" max="24" step="0.25" value="8" required></label>
       </div>
       <section class="time-off-calendar-editor" aria-label="Choose time off dates">
         <div class="time-off-calendar-toolbar">
@@ -82,14 +81,10 @@
             <button id="calendar-next-month" type="button" class="time-off-secondary" aria-label="Next month">›</button>
           </div>
           <div class="time-off-calendar-quick-actions">
-            <button id="calendar-select-range" type="button" class="time-off-secondary" aria-pressed="false">Select range</button>
-            <button id="calendar-select-weekdays" type="button" class="time-off-secondary">Select weekdays</button>
-            <button id="calendar-apply-hours" type="button" class="time-off-secondary">Apply hours to selected</button>
             <button id="calendar-clear-selection" type="button" class="time-off-secondary">Clear</button>
           </div>
         </div>
-        <p id="time-off-calendar-help" class="time-off-calendar-help">Click dates to select them. Shift-click to select a range. Change the hours directly on any selected day.</p>
-        <label class="time-off-inline-check"><input id="include-weekends" type="checkbox"> Include weekends in ranges</label>
+        <p id="time-off-calendar-help" class="time-off-calendar-help">Click a day or Shift-click a range (weekends skipped). Set hours directly in each selected day.</p>
         <div class="time-off-calendar-scroll" role="region" aria-label="Time off calendar" tabindex="0">
           <div class="time-off-calendar-weekdays" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
           <div id="time-off-day-grid" class="time-off-day-grid" role="group" aria-label="Choose time off dates"></div>
