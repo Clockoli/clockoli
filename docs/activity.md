@@ -12,7 +12,7 @@ When you open it from an HTTP(S) page, the **From current page** banner lets you
 
 ## Browse weeks
 
-Use the arrows to move between weeks. In **List**, you can browse future weeks to inspect, edit, or delete planned PTO. The next-week arrow remains disabled at the current week in Timeline and Calendar.
+Use the arrows to move between weeks. In **List**, you can browse future weeks to inspect planned PTO; choose **Edit** on a PTO entry to open [Time off](time-off.md) for changes. The next-week arrow remains disabled at the current week in Timeline and Calendar.
 
 Clockoli remembers your selected view. Switching between Timeline, Calendar, and List returns to the current week; navigating within a view keeps the week you chose.
 
@@ -67,7 +67,7 @@ List groups the selected week's entries by date and offers direct time editing, 
 
 ![Activity List with dated time entries and search](images/activity-list.png)
 
-Entries marked **Non-billable** show a label beside their duration and a subtle highlight in List. Entries on configured time off tasks show a **PTO** badge (or **Planned PTO** until their end time) and are always non-billable in reports. You can still edit or delete the underlying ordinary time entry. Their hours still count toward tracked-time totals.
+Entries marked **Non-billable** show a label beside their duration and a subtle highlight in List. Entries on configured time off tasks show a **PTO** badge (or **Planned PTO** until their end time) and are always non-billable in reports. Use [Time off](time-off.md) to edit or cancel planned PTO as a group. Their hours still count toward tracked-time totals.
 
 Edit an entry's Start or End directly, then select **Save time**. You can also edit its URL, title, description, and Non-billable status or select **Delete**. Some changes to adjacent entries are linked; see [Correct times inline](editing-time.md#correct-times-inline).
 
