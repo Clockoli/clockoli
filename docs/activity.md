@@ -67,7 +67,7 @@ List groups the selected week's entries by date and offers direct time editing, 
 
 ![Activity List with dated time entries and search](images/activity-list.png)
 
-Entries marked **Non-billable** show a label beside their duration and a subtle highlight in List. Their hours still count toward tracked-time totals.
+Entries marked **Non-billable** show a label beside their duration and a subtle highlight in List. Entries on configured time off tasks show a **PTO** badge (or **Planned PTO** until their end time) and are always non-billable in reports. You can still edit or delete the underlying ordinary time entry. Their hours still count toward tracked-time totals.
 
 Edit an entry's Start or End directly, then select **Save time**. You can also edit its URL, title, description, and Non-billable status or select **Delete**. Some changes to adjacent entries are linked; see [Correct times inline](editing-time.md#correct-times-inline).
 
