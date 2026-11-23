@@ -1,6 +1,6 @@
 # Time off
 
-Plan, review, and change your team's absences on the **Time off** page. Clockoli stores PTO as ordinary time entries without adding leave balances or approval workflows.
+Plan, review, and edit time off on a dedicated page, and see your team's absences in a shared calendar. Time off uses ordinary Clockoli entries.
 
 ## Configure your team
 
