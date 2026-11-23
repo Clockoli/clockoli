@@ -203,7 +203,10 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
   let defaultStart = '', defaultDate = '', startEdited = false, dateEdited = false, endDateManuallyEdited = false;
   let editStartInstant = null, editEndInstant = null, endShifted = false;
   let ptoLookupUrl = '', ptoStatus = null;
-  const ptoIsSelected = () => Boolean(ptoStatus?.isTimeOff && ptoStatus.taskUrl === taskIdentity()?.taskUrl);
+  const ptoIsSelected = () => Boolean(
+    (ptoStatus?.isTimeOff && ptoStatus.taskUrl === taskIdentity()?.taskUrl)
+    || (editing?.entry?.isTimeOff === true && editing.entry.taskUrl === taskIdentity()?.taskUrl)
+  );
   const refreshPtoState = () => {
     const pto = ptoIsSelected();
     ptoHint.hidden = !pto;
