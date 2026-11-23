@@ -485,23 +485,14 @@ async function loadTeamTimeOff(message, sender, extensionOrigin) {
 }
 
 
-function timeOffReadRange(startDate, endDate) {
-  const valid = day => typeof day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day)
-    && Number.isFinite(Date.parse(day + 'T00:00:00Z'))
-    && new Date(day + 'T00:00:00Z').toISOString().slice(0, 10) === day;
-  if (!valid(startDate) || !valid(endDate) || endDate < startDate
-      || (Date.parse(endDate + 'T00:00:00Z') - Date.parse(startDate + 'T00:00:00Z')) / 86400000 > 1100) {
-    throw new Error('Invalid time off period.');
-  }
-  return { startDate, endDate };
-}
-
 async function loadMyTimeOff(message, sender, extensionOrigin) {
   if (sender?.url !== extensionOrigin + 'src/time-off/time-off.html'
-      || Object.keys(message).sort().join(',') !== 'endDate,startDate,type') {
+      || Object.keys(message).sort().join(',') !== 'type') {
     throw new Error('Only Time off can load personal time off.');
   }
-  const range = timeOffReadRange(message.startDate, message.endDate);
+  // My time off must include complete groups, including dates years in the
+  // past or future. Bound the file scan instead of silently clipping by date.
+  const range = { startDate: '0001-01-01', endDate: '9999-12-31' };
   const snapshot = await configuredSnapshot({ localOnly: true });
   const destinations = selectReadDestinations(snapshot);
   if (!snapshot.auth || !destinations.length) return { configured: false, entries: [], repositories: [] };
@@ -511,13 +502,12 @@ async function loadMyTimeOff(message, sender, extensionOrigin) {
     if (!user) throw new Error('Tracking identity is unavailable.');
     currentUsers[destination.id] = user;
     const reports = new ReportService({ github: githubForConfig(destination), cache: store });
-    const [records, settings] = await Promise.all([
-      reports.loadUserRange(range, user, {
-        includeStorageMetadata: true, signal,
-      }),
-      timeOffSettingsForDestination(destination.id, { fresh: true, signal }),
-    ]);
+    const settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
     configs[destination.id] = settings.config;
+    if (!settings.config.taskUrls.length) return [];
+    const records = await reports.loadUserRange(range, user, {
+      includeStorageMetadata: true, signal,
+    }, { maxFiles: 240, maxBytes: 100 * 1024 * 1024, maxRecords: 500_000 });
     const tracker = await trackerForDestination(destination.id, { localOnly: true });
     return (await tracker.projectActivityRecords(records, range)).records;
   });
@@ -1707,7 +1697,7 @@ async function handle(message, sender) {
   switch (message.type) {
     case 'SAVE_TIME_OFF': {
       if (sender?.url !== chrome.runtime.getURL('src/time-off/time-off.html')
-          || Object.keys(message).sort().join(',') !== 'days,description,destinationId,groupId,previous,taskTitle,taskUrl,type') {
+          || Object.keys(message).sort().join(',') !== 'days,description,destinationId,groupId,previous,taskTitle,taskUrl,timezone,type') {
         throw new Error('Invalid time off request.');
       }
       const input = normalizeTimeOffChange(message);
