@@ -6,7 +6,7 @@ const MANIFEST = 'manifest.json';
 const LEGAL_FILES = Object.freeze(JSON.parse(readFileSync(new URL('./legal-files.json', import.meta.url), 'utf8')));
 const LEGAL_FILE_SET = new Set(LEGAL_FILES);
 const VIRTUAL_RESOURCES = new Set(['_favicon/*']);
-const RUNTIME_PAGE_ENTRIES = ['src/clockify-migration/preview.html', 'src/reports/reports.html', 'src/tasks/tasks.html', 'src/times/times.html'];
+const RUNTIME_PAGE_ENTRIES = ['src/clockify-migration/preview.html', 'src/reports/reports.html', 'src/tasks/tasks.html', 'src/time-off/time-off.html', 'src/times/times.html'];
 const EXCLUDED_SEGMENTS = new Set(['test', 'tests', 'docs', 'scripts', 'node_modules', '.git']);
 const SECRET_PATTERNS = [
   { label: 'GitHub token', pattern: /\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,})\b/ },
