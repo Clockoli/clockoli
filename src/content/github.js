@@ -1088,6 +1088,17 @@
       for (const element of section.querySelectorAll('[data-stat]')) {
         element.textContent = summary ? String(summary[element.getAttribute('data-stat')]) : '—';
       }
+      const breakdown = section.querySelector('.activity-weekly-breakdown');
+      if (breakdown) {
+        if (!summary) breakdown.textContent = '';
+        else {
+          const work = globalThis.ClockoliWeeklySummary.summarize(
+            items.filter(item => !item.isTimeOff), week.start, week.end, now);
+          const pto = globalThis.ClockoliWeeklySummary.summarize(
+            items.filter(item => item.isTimeOff), week.start, week.end, now);
+          breakdown.textContent = `Work ${work.total} · PTO ${pto.total}`;
+        }
+      }
     }
   }
 
@@ -2785,6 +2796,7 @@
       const value = el('strong', key === 'todayTrackedMs' ? trackedTotalText(key) : '—', 'activity-weekly-value');
       value.setAttribute(key === 'todayTrackedMs' ? 'data-tracked-total' : 'data-stat', key);
       copy.append(value, el('span', label, 'activity-weekly-name'));
+      if (key === 'total') copy.append(el('small', '', 'activity-weekly-breakdown'));
       card.append(badge, copy); cards.append(card);
     }
     weeklySummary.append(cards);
@@ -4859,6 +4871,7 @@
       @media(max-width:700px){:host(.times-surface) .times-toolbar:not(.times-visual){grid-template-columns:minmax(0,1fr) auto;gap:10px}:host(.times-surface) .times-filter{grid-column:1/-1}:host(.times-surface) .times-toolbar:not(.times-visual) .week-navigation{grid-column:1;justify-self:start;gap:8px}:host(.times-surface) .times-refresh{grid-column:2}}
       @media(max-width:700px){:host(.times-surface) .popup-timeline-section{padding-top:16px}}
       @media(max-width:460px){:host(.times-surface) .activity-weekly-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+      :host(.times-surface) .activity-weekly-breakdown{display:block;color:var(--fgColor-muted,var(--ck-fg-muted));font-size:11px}
       :host(.times-surface) .times-toolbar:not(.times-visual) .week-navigation-label{display:inline-flex;align-items:center}
       :host(.times-surface) .times-toolbar:not(.times-visual) .week-navigation{grid-template-columns:auto auto auto}
     `;
