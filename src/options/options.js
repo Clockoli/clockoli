@@ -610,7 +610,7 @@ function renderTimeOffTaskSettings(destination) {
   const feedback = document.createElement('p'); feedback.className = 'form-feedback';
   feedback.setAttribute('role', 'status');
   const save = document.createElement('button'); save.type = 'button';
-  save.className = 'secondary'; save.textContent = 'Save time off tasks'; save.disabled = true;
+  save.className = 'secondary repository-time-off-save'; save.textContent = 'Save time off tasks'; save.disabled = true;
   section.append(heading, help, picker, count, selected, feedback, save);
 
   let urls = [], savedUrls = [], sha = null, loaded = false, canEdit = false, saving = false;
