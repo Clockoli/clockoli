@@ -50,7 +50,7 @@ test('planned PTO stays editable before its future activity start', () => {
 });
 
 
-import { normalizeTimeOffDays, normalizeTimeOffChange, groupTimeOffRecords, timeOffGroupId, timeOffWallClock, timeOffStartInstant } from '../src/domain/time-off.js';
+import { findTimeOffStart, normalizeTimeOffDays, normalizeTimeOffChange, groupTimeOffRecords, timeOffGroupId, timeOffWallClock, timeOffStartInstant } from '../src/domain/time-off.js';
 
 test('exact PTO day schedule rejects duplicate dates, invalid hours, and overlong groups', () => {
   const days = [
@@ -109,4 +109,20 @@ test('PTO uses its saved time zone across DST transitions and rejects nonexisten
     taskUrl: 'https://example.com/pto', days: [{ date: '2027-03-29', startTime: '09:00', durationSeconds: 3600 }],
     timezone: 'Not/A_Real_Zone',
   }), /Invalid IANA timezone/);
+});
+
+test('PTO without a manual start chooses a free same-day interval', () => {
+  const day = { date: '2026-12-07', durationSeconds: 4 * 3600 };
+  assert.deepEqual(normalizeTimeOffDays([day]), [day], 'omitted start stays automatic');
+  assert.equal(findTimeOffStart(day.date, day.durationSeconds, 'UTC', []).toISOString(),
+    '2026-12-07T09:00:00.000Z');
+  assert.equal(findTimeOffStart(day.date, day.durationSeconds, 'UTC', [{
+    startedAt: '2026-12-07T09:00:00.000Z', endedAt: '2026-12-07T13:00:00.000Z',
+  }]).toISOString(), '2026-12-07T13:00:00.000Z');
+  assert.equal(findTimeOffStart(day.date, day.durationSeconds, 'UTC', [{
+    startedAt: '2026-12-07T11:00:00.000Z', endedAt: '2026-12-07T15:00:00.000Z',
+  }]).toISOString(), '2026-12-07T15:00:00.000Z');
+  assert.throws(() => findTimeOffStart(day.date, 8 * 3600, 'UTC', [{
+    startedAt: '2026-12-07T09:00:00.000Z', endedAt: '2026-12-07T17:00:00.000Z',
+  }]), /No free 8-hour interval on 2026-12-07/);
 });
