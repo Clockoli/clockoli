@@ -367,7 +367,8 @@ function summaryProjection(state, now) {
   const thisWeekStart = localReportDate(now, -((now.getDay() + 6) % 7));
   const pendingWrites = state.pendingWrites ?? [];
   const entries = overlayPendingEntries([...cache.weekEntries, ...(state.recentCache ?? [])], pendingWrites);
-  const trackedMs = start => entries.filter(entry => startDate(entry) >= start && startDate(entry) <= today)
+  const trackedMs = start => entries.filter(entry => startDate(entry) >= start && startDate(entry) <= today
+    && new Date(entry.endedAt).getTime() <= now.getTime())
     .reduce((sum, entry) => sum + Math.max(0, new Date(entry.endedAt) - new Date(entry.startedAt)), 0)
     + runningTrackedMs(state.activeCache, now, start, today);
   return {
