@@ -20,7 +20,7 @@ Each connected repository offers **Check access**, **Open repository**, **Manage
 
 Disconnecting affects this browser only. It does not delete GitHub data or change another teammate's access. You cannot disconnect while it would strand running or unsynced work.
 
-Select **Add time repository** to connect another destination. Repository cards also show collaborator and invitation controls when you have the required permissions.
+Select **Add time repository** to connect another destination. Repository cards also show collaborator and invitation controls when you have the required permissions. Expand **Time off tasks** to view the shared list of up to 100 PTO URLs for the repository; administrators can edit it. These settings live on the repository's default branch, not in local browser preferences.
 
 See [Time repositories](time-data-repository.md) and [Work as a team](teams.md).
 
