@@ -486,7 +486,7 @@ $('calendar-next-month').addEventListener('click', () => {
   calendarMonth = shiftMonth(calendarMonth, 1); renderCalendar();
 });
 $('calendar-month-picker').addEventListener('change', () => {
-  if (/^\\d{4}-(?:0[1-9]|1[0-2])$/.test($('calendar-month-picker').value)) {
+  if (/^\d{4}-(?:0[1-9]|1[0-2])$/.test($('calendar-month-picker').value)) {
     calendarMonth = $('calendar-month-picker').value; renderCalendar();
   }
 });
