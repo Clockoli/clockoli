@@ -33,6 +33,7 @@ export function serializeTimeOffConfig(taskUrls) {
 }
 
 export function isTimeOffTask(taskUrl, config) {
+  if (typeof taskUrl !== 'string' || !/^https?:\/\//i.test(taskUrl)) return false;
   return Array.isArray(config?.taskUrls) && config.taskUrls.includes(normalizeTaskUrl(taskUrl));
 }
 
