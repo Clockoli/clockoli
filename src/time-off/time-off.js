@@ -1,4 +1,4 @@
-import { groupTimeOffRecords, normalizeTimeOffDays } from '../domain/time-off.js';
+import { groupTimeOffRecords, normalizeTimeOffDays, timeOffWallClock } from '../domain/time-off.js';
 
 const $ = id => document.getElementById(id);
 const DAY_MS = 86400000;
@@ -30,7 +30,6 @@ const duration = seconds => {
     + (mins % 60 ? ' ' + mins % 60 + 'm' : !Math.floor(mins / 60) ? '0m' : '');
 };
 const sum = entries => entries.reduce((n, entry) => n + (Number(entry.durationSeconds) || 0), 0);
-const unique = array => [...new Set(array)];
 const make = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -103,7 +102,7 @@ function renderMy() {
     const parent = $(id); parent.replaceChildren();
     const matches = currentGroups().filter(group => future ? group.planned.length > 0 : !group.planned.length);
     if (!matches.length) parent.append(make('div', 'time-off-empty',
-      future ? 'No upcoming time off. Use Add time off to plan an absence.' : 'No past time off in the loaded period.'));
+      future ? 'No upcoming time off. Use Add time off to plan an absence.' : 'No past time off.'));
     for (const group of matches) parent.append(cardFor(group, future));
   }
 }
@@ -187,8 +186,7 @@ async function loadMine({ quiet = false } = {}) {
   state.loading = true;
   if (!quiet) notice('Loading your time off…');
   try {
-    const now = today();
-    const result = await send({ type: 'LOAD_MY_TIME_OFF', startDate: addDays(now, -365), endDate: addDays(now, 365) });
+    const result = await send({ type: 'LOAD_MY_TIME_OFF' });
     state.entries = result.entries || []; state.repositories = result.repositories || [];
     state.currentUsers = result.currentUsers || {};
     renderRepositories(); renderMy();
@@ -293,15 +291,12 @@ function openForm(group = null) {
   $('edit-from').value = start; $('edit-to').value = end;
   $('edit-description').value = group?.description || '';
   $('include-weekends').checked = old.some(entry => [0, 6].includes(dateAt(entry.entryDate).getUTCDay()));
-  const first = old[0], firstStart = first ? new Date(first.startedAt) : null;
-  const time = firstStart ? String(firstStart.getHours()).padStart(2, '0') + ':'
-    + String(firstStart.getMinutes()).padStart(2, '0') : '09:00';
+  const first = old[0], time = first ? timeOffWallClock(first.startedAt, first.timezone) : '09:00';
   $('edit-start-time').value = time;
   $('edit-hours').value = String(first ? first.durationSeconds / 3600 : 8);
   for (const entry of old) {
-    const date = new Date(entry.startedAt);
     dayState.set(entry.entryDate, { hours: entry.durationSeconds / 3600,
-      startTime: String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0') });
+      startTime: timeOffWallClock(entry.startedAt, entry.timezone) });
   }
   if (group) for (let day = start; day <= end; day = addDays(day, 1)) {
     const dow = dateAt(day).getUTCDay();
@@ -333,7 +328,8 @@ async function saveForm(event) {
   try {
     const result = await send({ type: 'SAVE_TIME_OFF', destinationId: $('edit-repository').value,
       taskUrl, taskTitle: taskName(taskUrl), description: $('edit-description').value.trim(),
-      groupId: state.group?.groupId ?? null, previous, days });
+      groupId: state.group?.groupId ?? null, timezone: state.group?.entries[0]?.timezone ?? null,
+      previous, days });
     $('time-off-dialog').close();
     const prevIds = new Set(previous.map(row => row.id));
     state.entries = [...state.entries.filter(row => !prevIds.has(row.id)),
@@ -367,7 +363,8 @@ async function confirmCancel() {
   try {
     const result = await send({ type: 'SAVE_TIME_OFF', destinationId: group.destinationId,
       taskUrl: group.taskUrl, taskTitle: group.taskTitle, description: group.description,
-      groupId: group.groupId ?? null, previous, days: [] });
+      groupId: group.groupId ?? null, timezone: group.entries[0]?.timezone ?? null,
+      previous, days: [] });
     $('time-off-cancel-dialog').close();
     const ids = new Set(previous.map(row => row.id));
     state.entries = state.entries.filter(row => !ids.has(row.id));
