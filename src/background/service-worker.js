@@ -1206,7 +1206,14 @@ async function handle(message, sender) {
         || Object.keys(message).sort().join(',') !== 'taskUrl,type') throw new Error('Invalid time off task check.');
     const taskUrl = normalizeTaskUrl(message.taskUrl);
     const destinationId = await resolveStartDestinationId(store, taskUrl);
-    return { destinationId, isTimeOff: await timeOffTaskForDestination(destinationId, taskUrl, { fresh: true }) };
+    let settings;
+    try { settings = await timeOffSettingsForDestination(destinationId, { fresh: true }); }
+    catch (error) {
+      const cached = await timeOffSettingsForDestination(destinationId);
+      if (!cached.config.taskUrls.length) throw error;
+      settings = cached;
+    }
+    return { destinationId, isTimeOff: isTimeOffTask(taskUrl, settings.config) };
   }
   if (message.type === 'LOAD_TEAM_TIME_OFF') return loadTeamTimeOff(message, sender, extensionOrigin);
   if (message.type === 'LOAD_REPOSITORY_COLLABORATORS') {
@@ -1632,7 +1639,6 @@ async function handle(message, sender) {
       if (currentDestinationId && currentDestinationId !== destinationId) {
         throw new Error('A timer is running in another time repository. Stop it before adding time.');
       }
-      const futureSelected = payload.dates.at(-1) >= new Date().toISOString().slice(0, 10);
       const isTimeOff = await timeOffTaskForDestination(destinationId, payload.taskUrl);
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
       const { destinationId: _requestedDestination, ...range } = payload;
@@ -1795,7 +1801,6 @@ async function handle(message, sender) {
       if (new TextEncoder().encode(text).byteLength > 262_144) throw new Error('Bulk input is too large.');
       const { tracker, destinationId } = await context({ localOnly: true });
       const requested = parseBulkTimeText(text, { billable });
-      const future = requested.some(entry => entry.date >= new Date().toISOString().slice(0, 10));
       const settings = await timeOffSettingsForDestination(destinationId);
       const rows = requested.map(entry => ({
         ...entry, billable: isTimeOffTask(entry.taskUrl, settings.config) ? false : entry.billable,
