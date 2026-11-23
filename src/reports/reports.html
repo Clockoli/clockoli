@@ -151,6 +151,7 @@
       <div class="report-summary" aria-label="Report summary">
         <div class="summary-totals">
           <strong id="summary-time">0m</strong>
+          <p id="summary-time-types" class="muted">Work <span id="summary-work">0m</span> · Time off <span id="summary-pto">0m</span> · Planned <span id="summary-planned">0m</span></p>
           <p id="summary-billable" class="muted" hidden>Billable <span id="summary-money">Unrated</span></p>
         </div>
         <p id="summary-counts" class="muted"></p>
@@ -168,8 +169,29 @@
       </section>
       <section id="print-invoice" class="print-invoice" aria-label="Printable invoice"></section>
 
+      <section id="team-time-off-card" class="card team-time-off-card" aria-labelledby="team-time-off-heading">
+        <div class="team-time-off-heading">
+          <h2 id="team-time-off-heading">Team time off</h2>
+          <div class="team-time-off-nav">
+            <button id="team-time-off-prev" type="button" class="button secondary" aria-label="Previous week">‹</button>
+            <strong id="team-time-off-range"></strong>
+            <button id="team-time-off-next" type="button" class="button secondary" aria-label="Next week">›</button>
+          </div>
+        </div>
+        <p class="muted">Planned and taken time off for members of your connected time repositories. Descriptions are visible to everyone with repository access.</p>
+        <p id="team-time-off-status" class="muted" role="status" aria-live="polite"></p>
+        <div class="team-time-off-scroll"><table id="team-time-off-table" aria-label="Team time off by day"></table></div>
+      </section>
       <div id="reports-layout" class="reports-layout">
         <aside class="filters card" aria-label="Report filters">
+          <section>
+            <div class="section-heading"><h2>Time type</h2></div>
+            <select id="time-type-filter" aria-label="Filter time type">
+              <option value="all">All time</option>
+              <option value="work">Work</option>
+              <option value="pto">Time off</option>
+            </select>
+          </section>
           <section>
             <div class="section-heading"><h2>Client</h2></div>
             <label class="muted" for="report-client-filter">Show work for</label>
@@ -228,6 +250,7 @@
                       <option value="repository">Source</option>
                       <option value="time-repository">Time repository</option>
                       <option value="task">Task URL / title</option>
+                      <option value="time-type">Time type</option>
                     </select>
                   </label>
               </div>
