@@ -77,7 +77,7 @@ function svg(tag, attributes = {}, text = '') {
 }
 
 const METRIC_LABELS = { 'total-time': 'Total time', 'avg-time': 'Avg time', 'task-count': 'Task count', 'billable-amount': 'Billable amount' };
-const AXIS_LABELS = { day: 'Day', week: 'Week', month: 'Month', person: 'Person', repository: 'Source', 'time-repository': 'Time repository', task: 'Task URL / title' };
+const AXIS_LABELS = { day: 'Day', week: 'Week', month: 'Month', person: 'Person', repository: 'Source', 'time-repository': 'Time repository', task: 'Task URL / title', 'time-type': 'Time type' };
 
 function currencyPosition(currency) {
   return $('billable-currency').selectedOptions[0]?.dataset.position
