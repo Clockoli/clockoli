@@ -27,18 +27,4 @@ select{appearance:none;padding-right:32px;background-image:url("data:image/svg+x
   #report-content{display:block!important}.print-timesheet{display:block}body.printing-invoice .print-timesheet{display:none!important}body.printing-invoice .print-invoice{display:block}
 }
 
-.team-time-off-card{margin-bottom:16px}
-.team-time-off-heading,.team-time-off-nav{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.team-time-off-heading h2{margin:0;font:var(--text-title-shorthand-small)}
-.team-time-off-nav button{min-width:32px;padding:4px 8px}
-.team-time-off-nav strong{font:var(--text-label-shorthand)}
-.team-time-off-card>.muted{margin:8px 0}
-.team-time-off-scroll{max-width:100%;overflow-x:auto}
-.team-time-off-scroll table{border-collapse:collapse;width:100%;min-width:660px}
-.team-time-off-scroll th,.team-time-off-scroll td{padding:8px;text-align:center;border-bottom:1px solid var(--borderColor-muted)}
-.team-time-off-scroll th{font-weight:600}
-.team-time-off-scroll tbody th{text-align:left;white-space:nowrap}
-.team-time-off-day{display:inline-block;padding:4px 6px;margin:2px;border-radius:4px;background:var(--bgColor-accent-muted,var(--bgColor-muted));color:var(--fgColor-default);white-space:nowrap;font:var(--text-caption-shorthand)}
-.team-time-off-day.planned{border:1px dashed var(--borderColor-accent-emphasis,var(--borderColor-default))}
-.team-time-off-day.taken{border:1px solid var(--borderColor-default)}
 #summary-time-types{margin:4px 0}
