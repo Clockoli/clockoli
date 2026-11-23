@@ -5,7 +5,8 @@ const DAY_MS = 86400000;
 const state = { entries: [], repositories: [], currentUsers: {}, groups: [], teamEntries: [],
   view: 'my', week: '', loading: false, group: null, formBusy: false, cancelGroup: null };
 const form = $('time-off-form');
-const dayState = new Map(), excluded = new Set();
+const dayState = new Map(), takenDates = new Set();
+let calendarMonth = '', calendarAnchor = null, rangeStart = null, rangePicking = false;
 const send = request => new Promise((resolve, reject) => chrome.runtime.sendMessage(request, response => {
   if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
   if (!response?.ok) return reject(new Error(response?.error?.message || 'Clockoli request failed.'));
@@ -216,51 +217,144 @@ function fillTaskOptions() {
   select.value = [...(repo?.taskUrls || [])].includes(previous) ? previous : repo?.taskUrls?.[0] || '';
   select.disabled = Boolean(state.group);
 }
-const formDays = () => {
-  const start = $('edit-from').value, end = $('edit-to').value;
-  if (!start || !end || end < start) return { error: 'Select a valid date range.', days: [] };
-  const span = Math.round((dateAt(end) - dateAt(start)) / DAY_MS);
-  if (span > 120) return { error: 'Choose a shorter date range (up to 121 calendar days).', days: [] };
-  const days = [];
-  const fallbackHours = Number($('edit-hours').value);
-  const fallbackStart = $('edit-start-time').value;
-  for (let offset = 0; offset <= span; offset++) {
-    const date = addDays(start, offset), dow = dateAt(date).getUTCDay();
-    const weekend = dow === 0 || dow === 6;
-    if (weekend && !$('include-weekends').checked) continue;
-    const custom = dayState.get(date);
-    days.push({ date, included: !excluded.has(date), hours: custom?.hours ?? fallbackHours,
-      startTime: custom?.startTime ?? fallbackStart });
-  }
-  return { days, error: '' };
+// The selected-day map is the source of truth across calendar months.
+const selectedDays = () => [...dayState].sort(([a], [b]) => a.localeCompare(b))
+  .map(([date, value]) => ({ date, ...value }));
+const defaultHours = () => $('edit-hours').value.trim() === '' ? NaN : Number($('edit-hours').value);
+const validHours = hours => Number.isFinite(hours) && hours >= 0 && hours <= 24
+  && Number.isSafeInteger(hours * 3600);
+const weekend = date => [0, 6].includes(dateAt(date).getUTCDay());
+const monthDates = month => {
+  const [year, number] = month.split('-').map(Number);
+  const count = new Date(Date.UTC(year, number, 0)).getUTCDate();
+  return Array.from({ length: count }, (_, index) => month + '-' + String(index + 1).padStart(2, '0'));
 };
-function renderDays() {
-  const result = formDays(), host = $('day-preview');
-  host.replaceChildren();
-  $('day-preview-error').textContent = result.error;
-  $('day-preview-error').hidden = !result.error;
-  let selected = 0, seconds = 0;
-  for (const day of result.days) {
-    const row = make('div', 'time-off-day-row');
-    const choice = make('label');
-    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = day.included;
-    checkbox.setAttribute('aria-label', 'Include ' + dateLabel(day.date));
-    checkbox.addEventListener('change', () => {
-      if (checkbox.checked) excluded.delete(day.date); else excluded.add(day.date);
-      renderDays();
-    });
-    choice.append(checkbox, make('span', '', dayLabel(day.date)));
-    const hours = document.createElement('input'); hours.type = 'number'; hours.min = '0'; hours.max = '24';
-    hours.step = '0.25'; hours.value = String(day.hours); hours.disabled = !day.included;
-    hours.setAttribute('aria-label', 'Hours on ' + dateLabel(day.date));
-    hours.addEventListener('change', () => {
-      dayState.set(day.date, { hours: Number(hours.value), startTime: day.startTime }); renderDays();
-    });
-    row.append(choice, hours); host.append(row);
-    if (day.included) { selected++; seconds += day.hours * 3600; }
+const shiftMonth = (month, amount) => {
+  const [year, number] = month.split('-').map(Number);
+  return new Date(Date.UTC(year, number - 1 + amount, 1, 12)).toISOString().slice(0, 7);
+};
+function setCalendarError(message = '') {
+  $('day-preview-error').textContent = message;
+  $('day-preview-error').hidden = !message;
+}
+function validateCalendarDays() {
+  if (!dayState.size) return { days: [], error: '' };
+  try {
+    return { days: normalizeTimeOffDays(selectedDays().map(day => ({
+      date: day.date, startTime: day.startTime, durationSeconds: day.hours * 3600,
+    }))), error: '' };
+  } catch (error) { return { days: [], error: error.message }; }
+}
+function updateCalendarSummary() {
+  const selected = selectedDays(), validated = validateCalendarDays();
+  const seconds = selected.reduce((total, day) =>
+    total + (Number.isFinite(day.hours) ? day.hours * 3600 : 0), 0);
+  $('day-preview-total').textContent = selected.length
+    + (selected.length === 1 ? ' day · ' : ' days · ') + duration(seconds);
+  $('time-off-selected-range').textContent = selected.length
+    ? labelForRange(selected[0].date, selected.at(-1).date) : 'Select dates in the calendar';
+  setCalendarError(validated.error);
+  $('save-time-off').disabled = state.formBusy || !selected.length || Boolean(validated.error);
+  $('calendar-apply-hours').disabled = !selected.length || !validHours(defaultHours());
+  $('calendar-clear-selection').disabled = !selected.length;
+}
+function updateRangeControls() {
+  $('calendar-select-range').setAttribute('aria-pressed', String(rangePicking));
+  $('calendar-select-range').textContent = rangePicking ? 'Stop selecting range' : 'Select range';
+  $('time-off-calendar-help').textContent = rangePicking
+    ? (rangeStart ? 'Choose the last date of the range.' : 'Choose the first date of the range.')
+    : 'Click dates to select them. Use Select range (two clicks) or Shift-click for a range. Change hours on individual days.';
+}
+function addCalendarDates(dates) {
+  const added = new Map(dayState);
+  for (const date of dates) {
+    if (takenDates.has(date) || added.has(date)) continue;
+    added.set(date, { hours: defaultHours(), startTime: $('edit-start-time').value });
   }
-  $('day-preview-total').textContent = selected + (selected === 1 ? ' day · ' : ' days · ') + duration(seconds);
-  $('save-time-off').disabled = Boolean(result.error || !selected || selected > 50 || !Number.isSafeInteger(seconds));
+  const sorted = [...added.keys()].sort();
+  if (sorted.length > 50) {
+    setCalendarError('Choose no more than 50 time off days.');
+    return false;
+  }
+  if (sorted.length > 1 && (dateAt(sorted.at(-1)) - dateAt(sorted[0])) / DAY_MS >= 500) {
+    setCalendarError('Time off cannot span more than 500 days.');
+    return false;
+  }
+  dayState.clear();
+  for (const [key, value] of added) dayState.set(key, value);
+  return true;
+}
+function datesInRange(first, last) {
+  const start = first < last ? first : last, end = first < last ? last : first;
+  const span = Math.round((dateAt(end) - dateAt(start)) / DAY_MS);
+  if (span >= 500) { setCalendarError('Time off cannot span more than 500 days.'); return null; }
+  return Array.from({ length: span + 1 }, (_, index) => addDays(start, index))
+    .filter(date => !takenDates.has(date) && ($('include-weekends').checked || !weekend(date)));
+}
+function chooseCalendarDate(date, useShift = false) {
+  if (takenDates.has(date)) return;
+  if (rangePicking) {
+    if (rangeStart === null) {
+      if (!addCalendarDates([date])) return;
+      rangeStart = date;
+    } else {
+      const dates = datesInRange(rangeStart, date);
+      if (!dates || !addCalendarDates(dates)) return;
+      rangePicking = false;
+      rangeStart = null;
+    }
+  } else if (useShift && calendarAnchor) {
+    const dates = datesInRange(calendarAnchor, date);
+    if (!dates || !addCalendarDates(dates)) return;
+  } else if (dayState.has(date)) {
+    dayState.delete(date);
+  } else if (!addCalendarDates([date])) return;
+  calendarAnchor = date;
+  renderCalendar(date);
+}
+function renderCalendar(focusDate = null) {
+  const host = $('time-off-day-grid');
+  host.replaceChildren();
+  $('calendar-month-picker').value = calendarMonth;
+  const dates = monthDates(calendarMonth);
+  const firstWeekday = (dateAt(dates[0]).getUTCDay() + 6) % 7;
+  for (let index = 0; index < firstWeekday; index++) {
+    host.append(make('span', 'time-off-calendar-day-placeholder'));
+  }
+  for (const date of dates) {
+    const selected = dayState.get(date), taken = takenDates.has(date);
+    const styles = ['time-off-calendar-day', ...(weekend(date) ? ['weekend'] : []),
+      ...(selected ? ['selected'] : []), ...(taken ? ['taken'] : []),
+      ...(date === today() ? ['today'] : [])].join(' ');
+    const cell = make('div', styles);
+    const toggle = make('button', 'time-off-day-toggle', String(Number(date.slice(-2))));
+    toggle.type = 'button'; toggle.dataset.date = date;
+    toggle.setAttribute('aria-label', (selected ? 'Remove ' : taken ? 'Already taken ' : 'Select ') + dateLabel(date));
+    toggle.setAttribute('aria-pressed', String(Boolean(selected)));
+    toggle.disabled = taken;
+    toggle.addEventListener('click', event => chooseCalendarDate(date, event.shiftKey));
+    cell.append(toggle);
+    if (selected) {
+      const label = make('label', 'time-off-calendar-hours');
+      const hours = document.createElement('input');
+      hours.type = 'number'; hours.min = '0'; hours.max = '24'; hours.step = '0.25';
+      hours.value = String(selected.hours);
+      hours.setAttribute('aria-label', 'Hours on ' + dateLabel(date));
+      hours.addEventListener('input', () => {
+        selected.hours = hours.value.trim() === '' ? NaN : Number(hours.value);
+        hours.setAttribute('aria-invalid', String(!validHours(selected.hours)));
+        updateCalendarSummary();
+      });
+      label.append(hours, make('span', '', 'h'));
+      cell.append(label, make('span', 'time-off-calendar-start', selected.startTime));
+    } else if (taken) {
+      cell.append(make('span', 'time-off-calendar-taken', 'Taken'));
+    }
+    host.append(cell);
+  }
+  updateCalendarSummary();
+  updateRangeControls();
+  if (focusDate) host.querySelector('button[data-date="' + focusDate + '"]')?.focus();
 }
 function previousFor(group) {
   if (!group) return [];
@@ -273,7 +367,8 @@ function previousFor(group) {
 function openForm(group = null) {
   if (!availableRepositories().length) { notice('Configure your time off tasks in Settings first.', true); return; }
   state.group = group;
-  dayState.clear(); excluded.clear();
+  dayState.clear(); takenDates.clear();
+  calendarAnchor = null; rangeStart = null; rangePicking = false;
   setFormError('');
   $('time-off-dialog-title').textContent = group ? (group.planned.length ? 'Edit time off' : 'Correct past time off') : 'Add time off';
   $('save-time-off').textContent = group ? 'Save changes' : 'Add time off';
@@ -285,36 +380,28 @@ function openForm(group = null) {
   select.disabled = Boolean(group);
   fillTaskOptions();
   if (group) $('edit-task').value = group.taskUrl;
-  const old = group ? (group.planned.length ? group.planned : group.entries) : [];
-  const start = old[0]?.entryDate || today();
-  const end = old.at(-1)?.entryDate || start;
-  $('edit-from').value = start; $('edit-to').value = end;
   $('edit-description').value = group?.description || '';
-  $('include-weekends').checked = old.some(entry => [0, 6].includes(dateAt(entry.entryDate).getUTCDay()));
-  const first = old[0], time = first ? timeOffWallClock(first.startedAt, first.timezone) : '09:00';
-  $('edit-start-time').value = time;
+  const old = group ? (group.planned.length ? group.planned : group.entries) : [];
+  $('include-weekends').checked = false;
+  const first = old[0];
+  $('edit-start-time').value = first ? timeOffWallClock(first.startedAt, first.timezone) : '09:00';
   $('edit-hours').value = String(first ? first.durationSeconds / 3600 : 8);
   for (const entry of old) {
     dayState.set(entry.entryDate, { hours: entry.durationSeconds / 3600,
       startTime: timeOffWallClock(entry.startedAt, entry.timezone) });
   }
-  if (group) for (let day = start; day <= end; day = addDays(day, 1)) {
-    const dow = dateAt(day).getUTCDay();
-    if (($('include-weekends').checked || ![0, 6].includes(dow)) && !old.some(entry => entry.entryDate === day)) excluded.add(day);
+  if (group?.planned.length && group.taken.length) {
+    for (const entry of group.taken) takenDates.add(entry.entryDate);
   }
-  $('edit-taken-note').hidden = !group?.taken.length || !group?.planned.length;
-  renderDays();
+  calendarMonth = (first?.entryDate || today()).slice(0, 7);
+  $('edit-taken-note').hidden = !takenDates.size;
+  renderCalendar();
   $('time-off-dialog').showModal();
 }
 function plannedDaysToSave() {
-  const result = formDays();
-  if (result.error) throw new Error(result.error);
-  const days = result.days.filter(day => day.included).map(day => {
-    if (!Number.isFinite(day.hours) || day.hours < 0 || day.hours > 24
-        || !Number.isSafeInteger(day.hours * 3600)) throw new Error('Hours must be between 0 and 24.');
-    return { date: day.date, startTime: day.startTime, durationSeconds: day.hours * 3600 };
-  });
-  return normalizeTimeOffDays(days);
+  return normalizeTimeOffDays(selectedDays().map(day => ({
+    date: day.date, startTime: day.startTime, durationSeconds: day.hours * 3600,
+  })));
 }
 async function saveForm(event) {
   event.preventDefault();
@@ -343,7 +430,7 @@ async function saveForm(event) {
     void loadMine({ quiet: true });
     if (state.view === 'team') void loadTeam();
   } catch (error) { setFormError(error.message); }
-  finally { state.formBusy = false; $('save-time-off').disabled = false; }
+  finally { state.formBusy = false; updateCalendarSummary(); }
 }
 function openCancel(group) {
   state.cancelGroup = group;
@@ -392,18 +479,41 @@ $('this-week').addEventListener('click', () => { state.week = monday(today()); v
 $('close-time-off').addEventListener('click', () => $('time-off-dialog').close());
 $('cancel-time-off-form').addEventListener('click', () => $('time-off-dialog').close());
 $('edit-repository').addEventListener('change', fillTaskOptions);
-for (const id of ['edit-from', 'edit-to', 'include-weekends']) {
-  $(id).addEventListener('change', renderDays);
-}
-$('edit-hours').addEventListener('input', () => {
-  const hours = Number($('edit-hours').value);
-  for (const custom of dayState.values()) custom.hours = hours;
-  renderDays();
+$('calendar-previous-month').addEventListener('click', () => {
+  calendarMonth = shiftMonth(calendarMonth, -1); renderCalendar();
 });
+$('calendar-next-month').addEventListener('click', () => {
+  calendarMonth = shiftMonth(calendarMonth, 1); renderCalendar();
+});
+$('calendar-month-picker').addEventListener('change', () => {
+  if (/^\\d{4}-(?:0[1-9]|1[0-2])$/.test($('calendar-month-picker').value)) {
+    calendarMonth = $('calendar-month-picker').value; renderCalendar();
+  }
+});
+$('calendar-select-range').addEventListener('click', () => {
+  rangePicking = !rangePicking; rangeStart = null;
+  updateRangeControls();
+});
+$('calendar-select-weekdays').addEventListener('click', () => {
+  if (addCalendarDates(monthDates(calendarMonth).filter(date => !weekend(date) && !takenDates.has(date)))) {
+    renderCalendar();
+  }
+});
+$('calendar-clear-selection').addEventListener('click', () => {
+  dayState.clear(); calendarAnchor = null; rangeStart = null; rangePicking = false;
+  renderCalendar();
+});
+$('calendar-apply-hours').addEventListener('click', () => {
+  const hours = defaultHours();
+  if (!validHours(hours)) { setCalendarError('Enter valid default hours (0–24).'); return; }
+  for (const custom of dayState.values()) custom.hours = hours;
+  renderCalendar();
+});
+$('edit-hours').addEventListener('input', updateCalendarSummary);
 $('edit-start-time').addEventListener('input', () => {
   const time = $('edit-start-time').value;
   for (const custom of dayState.values()) custom.startTime = time;
-  renderDays();
+  renderCalendar();
 });
 form.addEventListener('submit', saveForm);
 $('keep-time-off').addEventListener('click', () => $('time-off-cancel-dialog').close());
