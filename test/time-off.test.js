@@ -59,7 +59,7 @@ test('exact PTO day schedule rejects duplicate dates, invalid hours, and overlon
   ];
   assert.deepEqual(normalizeTimeOffDays(days), days);
   assert.throws(() => normalizeTimeOffDays([...days, days[1]]), /unique/);
-  assert.throws(() => normalizeTimeOffDays([{ ...days[0], durationSeconds: 86400 }]), /same day/);
+  assert.throws(() => normalizeTimeOffDays([{ ...days[0], durationSeconds: 86400 }]), /selected day/);
   assert.throws(() => normalizeTimeOffDays([{ ...days[0], date: '2026-02-30' }]), /Invalid/);
   assert.throws(() => normalizeTimeOffDays(Array.from({ length: 51 }, (_, n) => ({
     date: '2026-12-' + String(n + 1).padStart(2, '0'), durationSeconds: 3600,
