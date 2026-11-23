@@ -2742,18 +2742,19 @@ export class TrackerService {
     return { files: await Promise.all(paths.map(path => this.readMonthly(path))), headSha: snapshot?.headSha || null };
   }
 
-  async queueAddTime({ taskUrl, taskTitle = '', startedAt, endedAt = null, description = '', billable }) {
+  async queueAddTime({ taskUrl, taskTitle = '', startedAt, endedAt = null, description = '', billable }, { allowFuture = false } = {}) {
     const canonical = normalizeStoredTaskIdentity(taskUrl);
     const now = this.clock(), start = startedAt == null ? now : new Date(startedAt);
     const end = endedAt == null ? null : new Date(endedAt);
     const startMs = start.getTime(), endMs = end?.getTime();
-    if (!Number.isFinite(startMs) || startMs > now.getTime()) throw new Error('Start time must be valid and not in the future.');
-    if (end && (!Number.isFinite(endMs) || endMs <= startMs || endMs > now.getTime())) throw new Error('End time must be after Start and not in the future.');
+    if (!Number.isFinite(startMs) || (!allowFuture && startMs > now.getTime())) throw new Error('Start time must be valid and not in the future.');
+    if (end && (!Number.isFinite(endMs) || endMs <= startMs || (!allowFuture && endMs > now.getTime()))) throw new Error('End time must be after Start and not in the future.');
     if ((endMs ?? now.getTime()) - startMs > 24 * 60 * 60 * 1000) throw new Error('One Add time entry cannot exceed 24 hours.');
     if (typeof taskTitle !== 'string' || taskTitle.length > 500 || typeof description !== 'string' || description.length > 2000) {
       throw new Error('Task title or description is too long.');
     }
     if (!end) {
+      if (startMs > now.getTime()) throw new Error('A future time off entry needs an End time.');
       const state = await this.store.getState();
       if (state.activeCache) throw new Error(`A timer is already tracking ${taskLabel(state.activeCache)}`);
       const active = await this.queueStart(canonical, taskTitle, description, { startedAt: start, requireNoOverlap: true, billable });
@@ -2772,7 +2773,7 @@ export class TrackerService {
       const usedIds = new Set(known.map(item => item.id));
       const record = this.buildActive({ id: this.uniqueRecordId(startMs, usedIds), taskUrl: canonical,
         taskTitle, startedAt: start, description, billable });
-      const entry = buildEntry({ active: record, endedAt: end, now, description });
+      const entry = buildEntry({ active: record, endedAt: end, now: end > now ? end : now, description });
       const path = monthlyRecordsPath(this.user, entry.entryDate);
       acceptedEntry = { ...entry, _path: path, _sha: null, _index: -1, _pending: true };
       const pendingWrites = [...(state.pendingWrites ?? []), {
@@ -2790,14 +2791,14 @@ export class TrackerService {
   }
 
   async addTime({ taskUrl, taskTitle = '', startedAt, endedAt = null, description = '', billable }, {
-    background = false, fixedId = null, acceptedEntry = null, updateCache = true,
+    background = false, fixedId = null, acceptedEntry = null, updateCache = true, allowFuture = false,
   } = {}) {
-    if (background) return this.queueAddTime({ taskUrl, taskTitle, startedAt, endedAt, description, billable });
+    if (background) return this.queueAddTime({ taskUrl, taskTitle, startedAt, endedAt, description, billable }, { allowFuture });
     const canonical = normalizeStoredTaskIdentity(taskUrl);
     const now = this.clock(), start = startedAt == null ? now : new Date(startedAt);
     const startMs = start.getTime(), end = endedAt == null ? null : new Date(endedAt), endMs = end?.getTime();
-    if (!Number.isFinite(startMs) || startMs > now.getTime()) throw new Error('Start time must be valid and not in the future.');
-    if (end && (!Number.isFinite(endMs) || endMs <= startMs || endMs > now.getTime())) throw new Error('End time must be after Start and not in the future.');
+    if (!Number.isFinite(startMs) || (!allowFuture && !fixedId && startMs > now.getTime())) throw new Error('Start time must be valid and not in the future.');
+    if (end && (!Number.isFinite(endMs) || endMs <= startMs || (!allowFuture && !fixedId && endMs > now.getTime()))) throw new Error('End time must be after Start and not in the future.');
     // Previously accepted work must still synchronize after a restart or a long offline period.
     if (!fixedId && (endMs ?? now.getTime()) - startMs > 24 * 60 * 60 * 1000) throw new Error('One Add time entry cannot exceed 24 hours.');
     const accepted = acceptedEntry ? validateEntry(stripInternal(acceptedEntry)) : null;
@@ -2813,6 +2814,7 @@ export class TrackerService {
       throw new Error('Task title or description is too long.');
     }
     const state = await this.store.getState();
+    if (!end && startMs > now.getTime()) throw new Error('A future time off entry needs an End time.');
     if (state.activeCache && !end) throw new Error(`A timer is already tracking ${taskLabel(state.activeCache)}`);
     if (state.pendingWrites?.length && !fixedId) throw new Error('Pending time writes must sync before adding time.');
     const indexFile = /^https?:\/\//.test(canonical) ? null : await this.assertKnownImportedTask(canonical);
@@ -2967,7 +2969,7 @@ export class TrackerService {
     return added;
   }
 
-  async addDayRange({ taskUrl, taskTitle = '', description = '', dates, durationSeconds, billable }) {
+  async addDayRange({ taskUrl, taskTitle = '', description = '', dates, durationSeconds, billable, allowFuture = false }) {
     const canonical = normalizeStoredTaskIdentity(taskUrl);
     const validDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
       && Number.isFinite(Date.parse(`${value}T00:00:00.000Z`))
@@ -2975,7 +2977,7 @@ export class TrackerService {
     if (!Array.isArray(dates) || !dates.length || dates.length > 500
         || dates.some((date, index) => !validDate(date) || index > 0 && date <= dates[index - 1])
         || (Date.parse(`${dates.at(-1)}T00:00:00.000Z`) - Date.parse(`${dates[0]}T00:00:00.000Z`)) / 86400000 >= 500
-        || dates.at(-1) > localDateInTimezone(this.clock(), this.timezone)
+        || (!allowFuture && dates.at(-1) > localDateInTimezone(this.clock(), this.timezone))
         || !Number.isSafeInteger(durationSeconds) || durationSeconds < 0 || durationSeconds > 86400
         || typeof taskTitle !== 'string' || taskTitle.length > 500
         || typeof description !== 'string' || description.length > 2000) throw new Error('Invalid selected days or hours per day.');
@@ -2983,7 +2985,7 @@ export class TrackerService {
       line: index + 1, date,
       taskUrl: canonical, taskTitle, description, durationSeconds, startTime: '09:00', billable,
     }));
-    return this.queueBulkAddTimes('', requested, { noFuture: true });
+    return this.queueBulkAddTimes('', requested, { noFuture: !allowFuture });
   }
 
   async queueBulkAddTimes(text, requested = parseBulkTimeText(text), { noFuture = false } = {}) {
