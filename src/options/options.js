@@ -680,6 +680,47 @@ function renderDestinationCard(destination, isDefault) {
   howText.textContent = 'A GitHub invitation grants repository write access, but the recipient must accept it and join Clockoli themselves. Access to this repository also allows reading teammates’ stored time.';
   how.append(howTitle, howText); team.append(how);
   article.append(team);
+  const timeOff = document.createElement('details'); timeOff.className = 'repository-time-off';
+  const timeOffTitle = document.createElement('summary'); timeOffTitle.textContent = 'Time off tasks';
+  const timeOffHelp = document.createElement('p'); timeOffHelp.className = 'help';
+  timeOffHelp.textContent = 'One task URL per line (maximum 100). Entries on these tasks count as time off for this repository, including previous entries. Only repository administrators can change the list.';
+  const timeOffUrls = document.createElement('textarea'); timeOffUrls.rows = 4; timeOffUrls.maxLength = 210000;
+  timeOffUrls.setAttribute('aria-label', 'Time off task URLs'); timeOffUrls.placeholder = 'https://github.com/acme/team/issues/123';
+  timeOffUrls.disabled = true;
+  const timeOffFeedback = document.createElement('p'); timeOffFeedback.className = 'form-feedback';
+  timeOffFeedback.setAttribute('role', 'status');
+  const timeOffSave = document.createElement('button'); timeOffSave.type = 'button';
+  timeOffSave.className = 'secondary'; timeOffSave.textContent = 'Save time off tasks'; timeOffSave.disabled = true;
+  let timeOffSha = null, timeOffLoading = false, timeOffLoaded = false;
+  timeOff.addEventListener('toggle', async () => {
+    if (!timeOff.open || timeOffLoaded || timeOffLoading) return;
+    timeOffLoading = true; timeOffFeedback.textContent = 'Loading time off tasks…';
+    try {
+      const result = await send({ type: 'GET_TIME_OFF_SETTINGS', destinationId: destination.id });
+      if (!article.isConnected) return;
+      timeOffUrls.value = result.config.taskUrls.join('\n');
+      timeOffSha = result.sha; timeOffLoaded = true;
+      timeOffUrls.disabled = !result.canEdit;
+      timeOffSave.disabled = !result.canEdit;
+      timeOffFeedback.textContent = result.canEdit ? '' : 'Only repository administrators can edit this list.';
+    } catch (error) { timeOffFeedback.textContent = error.message || 'Could not load time off tasks.'; }
+    finally { timeOffLoading = false; }
+  });
+  timeOffSave.addEventListener('click', async () => {
+    if (!timeOffLoaded || timeOffSave.disabled) return;
+    const taskUrls = timeOffUrls.value.split(/\r?\n/).map(url => url.trim()).filter(Boolean);
+    if (taskUrls.length > 100) { timeOffFeedback.textContent = 'Maximum 100 task URLs per repository.'; return; }
+    timeOffSave.disabled = true; timeOffFeedback.textContent = 'Saving…';
+    try {
+      const result = await send({ type: 'SAVE_TIME_OFF_SETTINGS', destinationId: destination.id,
+        taskUrls, expectedSha: timeOffSha });
+      timeOffSha = result.sha; timeOffUrls.value = result.config.taskUrls.join('\n');
+      timeOffFeedback.textContent = 'Time off tasks saved for the team.';
+    } catch (error) { timeOffFeedback.textContent = error.message || 'Could not save time off tasks.'; }
+    finally { timeOffSave.disabled = false; }
+  });
+  timeOff.append(timeOffTitle, timeOffHelp, timeOffUrls, timeOffFeedback, timeOffSave);
+  article.append(timeOff);
   const removalPanel = renderRemoval(article, destination);
   remove.addEventListener('click', () => { removalPanel.hidden = false; removalPanel.focus?.(); });
   return article;
