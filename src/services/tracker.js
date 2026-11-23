@@ -1,7 +1,7 @@
 import { activeRecordPath, assertUserMonthlyRecordsPath, localTimestamp, monthlyRecordsPath, normalizePlainTitle, parseActiveRecord, parseMonthlyRecords, serializeActiveRecord, serializeMonthlyRecords } from '../domain/work-records.js';
 import { applyActiveEdits, applyActiveStartEdit, applyEntryEdits, buildActiveTimer, buildEntry, isBillable, localDateInTimezone, validateActiveTimer, validateEntry } from '../domain/records.js';
 import { parseBulkTimeText } from '../domain/bulk-time.js';
-import { normalizeTimeOffChange, timeOffGroupId, timeOffStartInstant, timeOffWallClock } from '../domain/time-off.js';
+import { findTimeOffStart, normalizeTimeOffChange, timeOffGroupId, timeOffStartInstant, timeOffWallClock } from '../domain/time-off.js';
 import { applyTaskIndexChanges, parseTaskIndex, serializeTaskIndex, TASK_INDEX_PATH } from '../domain/task-index.js';
 import { createUlid } from '../domain/ulid.js';
 import { entryDateParts, entryDateValue, localDateParts, normalizeStoredTaskIdentity, normalizeTaskUrl, parseGitHubTaskUrl, taskUrlOf, validateEntryId, validatePathSegment } from '../domain/values.js';
@@ -2774,8 +2774,17 @@ export class TrackerService {
     return { files: await Promise.all(paths.map(path => this.readMonthly(path))), headSha: snapshot?.headSha || null };
   }
 
+  // Seed the local overlap hints from the same user history already loaded by
+  // My time off. This adds no extra GitHub read and leaves pending writes intact.
+  async rememberTimeOffOccupancy(records) {
+    const intervals = (records ?? []).slice(-MAX_LOCAL_DAY_RANGE_INTERVALS);
+    await this.mutateState(state => ({
+      dayRangeIntervals: rememberDayRangeIntervals(state.dayRangeIntervals, intervals),
+    }));
+  }
+
   // PTO edits are one local operation and one guarded GitHub commit across all touched months.
-  // A group is persisted only as ordinary time entries with metadata.clockoli.timeOffGroupId.
+  // An omitted startTime asks Clockoli to find a contiguous free slot automatically.
   async queueTimeOffChange(raw) {
     const change = normalizeTimeOffChange(raw);
     const timezone = change.timezone || this.timezone;
@@ -2786,13 +2795,19 @@ export class TrackerService {
       const priorIds = new Set(change.previous.map(item => item.id));
       const known = knownLocalIntervals(state).filter(item => !priorIds.has(item.id));
       const usedIds = new Set([...known.map(item => item.id), ...change.previous.map(item => item.id)]);
-      const entries = change.days.map(item => {
+      const entries = [], autoDates = [];
+      const running = state.activeCache && Date.parse(state.activeCache.startedAt) <= queuedAt.getTime()
+        ? { startedAt: state.activeCache.startedAt, endedAt: new Date(8.64e15) } : null;
+      for (const item of change.days) {
         const unchanged = change.previous.find(previous => previous.date === item.date
-          && timeOffWallClock(previous.startedAt, timezone) === item.startTime
+          && (item.startTime === undefined || timeOffWallClock(previous.startedAt, timezone) === item.startTime)
           && Date.parse(previous.endedAt) - Date.parse(previous.startedAt) === item.durationSeconds * 1000);
         const start = unchanged ? new Date(unchanged.startedAt)
-          : timeOffStartInstant(item.date, item.startTime, timezone);
+          : item.startTime !== undefined ? timeOffStartInstant(item.date, item.startTime, timezone)
+            : findTimeOffStart(item.date, item.durationSeconds, timezone,
+              running ? [...known, running] : known);
         const end = new Date(start.getTime() + item.durationSeconds * 1000);
+        if (!unchanged && item.startTime === undefined) autoDates.push(item.date);
         const id = this.uniqueRecordId(start.getTime(), usedIds);
         const active = this.buildActive({
           id, taskUrl: change.taskUrl, taskTitle: change.taskTitle, description: change.description,
@@ -2802,27 +2817,25 @@ export class TrackerService {
         const entry = buildEntry({ active, endedAt: end,
           now: new Date(Math.max(start.getTime(), queuedAt.getTime())), description: change.description });
         validateEntry(entry);
-        return entry;
-      });
-      for (const entry of entries) {
-        const start = Date.parse(entry.startedAt), end = Date.parse(entry.endedAt);
-        const overlap = known.find(other => Date.parse(other.startedAt) < end && Date.parse(other.endedAt) > start);
-        if (overlap) throw new TrackerConflictError(
-          'Planned time off overlaps work or another time entry on ' + entry.entryDate + '. Edit that entry first.',
+        const overlaps = known.some(other =>
+          Date.parse(other.startedAt) < end.getTime() && Date.parse(other.endedAt) > start.getTime());
+        if (overlaps) throw new TrackerConflictError(
+          'Time off on ' + item.date + ' overlaps existing time. Choose fewer hours or edit that time.',
           'time_off_overlap',
         );
-        if (state.activeCache && start <= queuedAt.getTime()
-            && end > Date.parse(state.activeCache.startedAt)) {
+        if (running && start.getTime() <= queuedAt.getTime()
+            && end.getTime() > Date.parse(running.startedAt)) {
           throw new TrackerConflictError('Time off overlaps the current running timer.', 'time_off_overlap');
         }
         known.push(entry);
+        entries.push(entry);
       }
       const pendingWrites = [...(state.pendingWrites ?? []), {
         id: createUlid(queuedAt.getTime() + (state.pendingWrites?.length ?? 0) + 2),
         operation: 'timeOffChange', status: 'pending', stage: 'timeOffChange',
         groupId, previousGroupId: change.groupId, taskUrl: change.taskUrl,
         previous: structuredClone(change.previous), entries: entries.map(stripInternal),
-        queuedAt: queuedAt.toISOString(), lastError: '',
+        autoDates, queuedAt: queuedAt.toISOString(), lastError: '',
       }];
       const newIds = new Set(entries.map(entry => entry.id));
       const resultEntries = entries.map(entry => ({
