@@ -127,3 +127,44 @@ test('PTO does not move into evenings when a remote work interval conflicts', as
   assert.equal(store.state.pendingWrites[0].status, 'conflict');
   assert.deepEqual(savedRecords(github).map(entry => entry.taskUrl), [existing.taskUrl]);
 });
+
+test('editing PTO in another device time zone preserves original instants and zone', async () => {
+  const { github, store } = setup();
+  const tracker = new TrackerService({ github, store, user: 'alice', timezone: 'Asia/Tokyo',
+    clock, idFactory: timestamp => createUlid(timestamp) });
+  const first = await tracker.queueTimeOffChange(payload(rows(['2027-03-26']), { timezone: 'Europe/Amsterdam' }));
+  assert.equal(first.entries[0].startedAt, '2027-03-26T08:00:00.000Z');
+  await tracker.syncPending();
+  const path = 'times/2027-03/alice.jsonl';
+  const file = github.files.get(path);
+  const original = parseMonthlyRecords(file.text, { user: 'alice', month: '2027-03', path, sha: file.sha });
+  const edit = await tracker.queueTimeOffChange(payload(rows(['2027-03-26', '2027-03-29']), {
+    timezone: 'Europe/Amsterdam', groupId: first.groupId, previous: previous(original),
+    description: 'Updated in Tokyo',
+  }));
+  assert.deepEqual(edit.entries.map(item => item.startedAt), [
+    '2027-03-26T08:00:00.000Z', '2027-03-29T07:00:00.000Z',
+  ]);
+  assert.ok(edit.entries.every(item => item.timezone === 'Europe/Amsterdam'));
+  await tracker.syncPending();
+  assert.equal(store.state.pendingWrites.length, 0);
+  const updated = parseMonthlyRecords(github.files.get(path).text, {
+    user: 'alice', month: '2027-03', path, sha: github.files.get(path).sha,
+  });
+  assert.deepEqual(updated.map(item => item.startedAt), [
+    '2027-03-26T08:00:00.000Z', '2027-03-29T07:00:00.000Z',
+  ]);
+});
+
+test('editing the second occurrence of a repeated DST hour does not shift its instant', async () => {
+  const { tracker } = setup();
+  const prior = {
+    id: createUlid(Date.parse('2027-10-31T01:30:00Z')), date: '2027-10-31',
+    startedAt: '2027-10-31T01:30:00.000Z', endedAt: '2027-10-31T02:30:00.000Z',
+    updatedAt: '2027-10-31T02:30:00.000Z',
+  };
+  const result = await tracker.queueTimeOffChange(payload([{
+    date: prior.date, startTime: '02:30', durationSeconds: 3600,
+  }], { timezone: 'Europe/Amsterdam', previous: [prior] }));
+  assert.equal(result.entries[0].startedAt, prior.startedAt);
+});
