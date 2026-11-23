@@ -145,3 +145,9 @@ select{appearance:none;padding-right:32px;background-image:url("data:image/svg+x
 .full-backup-password{max-width:360px;margin:12px 0}
 .full-backup-password input[aria-invalid="true"]{border-color:var(--fgColor-danger);box-shadow:0 0 0 1px var(--fgColor-danger)}
 #full-backup-password-feedback.error{color:var(--fgColor-danger)}
+
+.repository-time-off{margin-top:16px;padding:12px;border:1px solid var(--borderColor-muted);border-radius:6px}
+.repository-time-off>summary{cursor:pointer;font-weight:600}
+.repository-time-off>.help{margin:8px 0;color:var(--fgColor-muted)}
+.repository-time-off textarea{display:block;width:100%;min-height:96px;max-height:300px;resize:vertical;margin:8px 0;padding:8px 10px;font:inherit;border:1px solid var(--control-borderColor-rest);border-radius:6px;background:var(--control-bgColor-rest);color:var(--control-fgColor-rest)}
+.repository-time-off .form-feedback{margin:8px 0}
