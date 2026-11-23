@@ -678,11 +678,12 @@ async function loadTasks(message, sender) {
   finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
 }
 
-async function searchTasks(sender, query = '', { refresh = false, includeImported = false } = {}) {
+async function searchTasks(sender, query = '', { refresh = false, includeImported = false, destinationId = null } = {}) {
   const loadEpoch = await loadCoordinator.beginLoad();
   await store.ensureDataVersion(5); loadCoordinator.assertCurrent(loadEpoch);
   const snapshot = await configuredSnapshot({ localOnly: true }); loadCoordinator.assertCurrent(loadEpoch);
-  const { auth } = snapshot, destinations = selectReadDestinations(snapshot);
+  const { auth } = snapshot, destinations = selectReadDestinations(snapshot,
+    destinationId ? { destinationIds: [destinationId] } : {});
   if (!auth || !destinations.length) return { configured: false, tasks: [] };
   const scope = { generation: snapshot.generation ?? 0, authGeneration: snapshot.authGeneration ?? 0,
     repositories: destinations.map(destination => `${destination.id}@${destination.owner}/${destination.repo}@${destination.defaultBranch || destination.branch || 'main'}`) };
@@ -1569,9 +1570,17 @@ async function handle(message, sender) {
   if (message.type === 'LOAD_TASKS') return loadTasks(message, sender);
   if (message.type === 'LOAD_TIMES') return loadTimes(message, sender);
   if (message.type === 'SEARCH_TASKS') {
-    if (Object.keys(message).sort().join(',') !== 'query,type' || typeof message.query !== 'string'
-        || message.query.length > 300) throw new Error('Invalid task search query');
-    return searchTasks(sender, message.query);
+    const keys = Object.keys(message).sort().join(',');
+    if (!['query,type', 'destinationId,query,type'].includes(keys)
+        || typeof message.query !== 'string' || message.query.length > 300) {
+      throw new Error('Invalid task search query');
+    }
+    if (message.destinationId === undefined) return searchTasks(sender, message.query);
+    if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) {
+      throw new Error('Repository-scoped task search requires Settings.');
+    }
+    const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+    return searchTasks(sender, message.query, { destinationId });
   }
   if (message.type === 'SEARCH_ENTRY_TASKS') {
     const request = entryTaskSearchForSender(message, sender, extensionOrigin);
