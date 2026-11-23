@@ -1,6 +1,6 @@
 # Time off
 
-Clockoli uses ordinary time entries linked to configured PTO task URLs. The **Time off** page is the place to plan, view, correct, and cancel absences. It does not require a second record format, leave balances, or an approval workflow.
+Plan, review, and change your team's absences on the **Time off** page. Clockoli stores PTO as ordinary time entries without adding leave balances or approval workflows.
 
 ## Configure your team
 
