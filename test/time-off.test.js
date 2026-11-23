@@ -50,7 +50,7 @@ test('planned PTO stays editable before its future activity start', () => {
 });
 
 
-import { normalizeTimeOffDays, normalizeTimeOffChange, groupTimeOffRecords, timeOffGroupId } from '../src/domain/time-off.js';
+import { normalizeTimeOffDays, normalizeTimeOffChange, groupTimeOffRecords, timeOffGroupId, timeOffWallClock, timeOffStartInstant } from '../src/domain/time-off.js';
 
 test('exact PTO day schedule rejects duplicate dates, invalid hours, and overlong groups', () => {
   const days = [
@@ -93,4 +93,20 @@ test('one group ID yields one PTO card; legacy records stay separate', () => {
   assert.equal(group.planned.length, 0);
   assert.equal(group.totalSeconds, 57600);
   assert.equal(grouped.find(item => item.groupId === null).entries.length, 1);
+});
+
+test('PTO uses its saved time zone across DST transitions and rejects nonexistent local times', () => {
+  assert.equal(timeOffStartInstant('2027-03-26', '09:00', 'Europe/Amsterdam').toISOString(),
+    '2027-03-26T08:00:00.000Z');
+  assert.equal(timeOffStartInstant('2027-03-29', '09:00', 'Europe/Amsterdam').toISOString(),
+    '2027-03-29T07:00:00.000Z');
+  assert.equal(timeOffWallClock('2027-03-29T07:00:00.000Z', 'Europe/Amsterdam'), '09:00');
+  assert.equal(timeOffStartInstant('2027-10-31', '02:30', 'Europe/Amsterdam').toISOString(),
+    '2027-10-31T00:30:00.000Z', 'new ambiguous times use the earlier occurrence');
+  assert.throws(() => timeOffStartInstant('2027-03-28', '02:30', 'Europe/Amsterdam'),
+    /does not exist/);
+  assert.throws(() => normalizeTimeOffChange({
+    taskUrl: 'https://example.com/pto', days: [{ date: '2027-03-29', startTime: '09:00', durationSeconds: 3600 }],
+    timezone: 'Not/A_Real_Zone',
+  }), /Invalid IANA timezone/);
 });
