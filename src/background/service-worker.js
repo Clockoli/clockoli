@@ -1183,6 +1183,9 @@ async function handle(message, sender) {
   if (message.type === 'OPEN_REPORTS') {
     await chrome.tabs.create({ url: chrome.runtime.getURL('src/reports/reports.html') }); return { ok: true };
   }
+  if (message.type === 'OPEN_TIME_OFF') {
+    await chrome.tabs.create({ url: chrome.runtime.getURL('src/time-off/time-off.html') }); return { ok: true };
+  }
   if (message.type === 'OPEN_TASKS') {
     await chrome.tabs.create({ url: chrome.runtime.getURL('src/tasks/tasks.html') }); return { ok: true };
   }
@@ -1990,7 +1993,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const reportReadOnly = ['LOAD_REPORT', 'LOAD_MY_TIME_OFF', 'LOAD_TEAM_TIME_OFF', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
   const localStateRead = ['GET_STATE', 'GET_PAGE_STATE'].includes(message?.type) && !message?.refresh;
   const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS', 'GET_TIME_OFF_SETTINGS', 'CHECK_TIME_OFF_TASK'].includes(message?.type);
-  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER', 'SAVE_TIME_OFF_SETTINGS', 'SAVE_TIME_OFF'].includes(message?.type);
+  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER', 'SAVE_TIME_OFF_SETTINGS'].includes(message?.type);
   let operation;
   if (changesConfiguration) {
     try {
@@ -1999,7 +2002,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } catch (error) { operation = Promise.reject(error); }
   } else {
     const direct = readOnly || DIRECT_DEVICE_FLOW_MESSAGES.has(message?.type) || message?.type === 'CONFIRM_CLOCKIFY_MIGRATION'
-      || ['OPEN_OPTIONS', 'OPEN_REPORTS', 'OPEN_TASKS', 'OPEN_TIMES', 'OPEN_PREFERRED_SURFACE', 'CONSUME_TOOLBAR_TASK_CONTEXT'].includes(message?.type)
+      || ['OPEN_OPTIONS', 'OPEN_REPORTS', 'OPEN_TASKS', 'OPEN_TIMES', 'OPEN_TIME_OFF', 'OPEN_PREFERRED_SURFACE', 'CONSUME_TOOLBAR_TASK_CONTEXT'].includes(message?.type)
       || ['CLOCKIFY_ARM_CAPTURE', 'CLOCKIFY_ARM_CSV_CAPTURE', 'CLOCKIFY_IS_CAPTURE_ARMED', 'CLOCKIFY_DISARM_CAPTURE', 'CLOCKIFY_YEAR_OBSERVED', 'CLOCKIFY_CAPTURED_CSV', 'CLOCKIFY_CAPTURED_REPORT', 'CLOCKIFY_CSV_EMAIL_OFFER'].includes(message?.type);
     const acceptsLocally = [
       'START', 'STOP', 'SWITCH_TASK', 'DISCARD_ACTIVE', 'ADD_TIME', 'ADD_DAY_RANGE', 'BULK_ADD_TIMES', 'SAVE_TIME_OFF',
