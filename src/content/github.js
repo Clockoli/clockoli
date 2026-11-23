@@ -4889,7 +4889,8 @@
       :host(.popup-surface) .timeline-toolbar-end { grid-area:end; display:flex; align-items:center }
       :host(.popup-surface) .header-actions { grid-area:actions; width:100%; justify-content:space-between; gap:0 }
       :host(.popup-surface) .header-navigation { width:100%; justify-content:space-between; gap:0 }
-      :host(.popup-surface) .reports-button { gap:4px; padding:5px 4px; font-size:12px }
+      :host(.popup-surface) .reports-button { gap:2px; padding:5px 2px; font-size:12px; white-space:nowrap; flex:0 0 auto }
+      :host(.popup-surface) .reports-button svg { flex:none; width:16px; height:16px }
       .timeline-view-modes { display:flex; gap:1px; padding:1px; border:1px solid var(--borderColor-muted,var(--ck-border-muted)); border-radius:6px}
       .popup-switch-action:not(:empty) { display:flex; align-self:center }
             .timeline-view-button { display:flex; align-items:center; justify-content:center; width:28px; height:28px; min-height:0; margin:0; padding:0; border:0; border-radius:6px; background:transparent; color:var(--fgColor-muted,var(--ck-fg-muted)); cursor:pointer }
