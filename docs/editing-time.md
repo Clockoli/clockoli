@@ -61,7 +61,7 @@ Select **Edit** on a Timeline or Calendar entry, or edit its row in Activity Lis
 
 ![Editing a time entry](images/edit-entry.png)
 
-The form lets you change the task, Start, End, description, and **Non-billable** checkbox. Check **Non-billable** when you want to record the work without charging for it. Entries on configured time off tasks are always treated as non-billable in reports and invoices. Clear it to make the entry billable again. Existing entries are billable unless explicitly marked otherwise.
+The form lets you change the task, Start, End, description, and **Non-billable** checkbox. Check **Non-billable** when you want to record the work without charging for it. Entries on configured time off tasks are always non-billable in reports and invoices. For ordinary work, clear the checkbox to make the entry billable again. Existing entries are billable unless explicitly marked otherwise.
 
 The checkbox is also available when adding time, in the running tracker beside its description, and when saving a timer. It is optional in every case. The chosen status is saved with the entry in the GitHub time repository. See [Invoicing](invoicing.md) for how this affects amounts.
 
