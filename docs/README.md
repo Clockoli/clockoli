@@ -16,7 +16,7 @@ Clockoli tracks time against task URLs and stores the records in private GitHub 
 - [Track a task](tracking.md)
 - [Activity](activity.md)
 - [Add and edit time](editing-time.md)
-- [Team time off](time-off.md)
+- [Time off](time-off.md)
 - [Top tasks](top-tasks.md)
 
 ## Report and bill
