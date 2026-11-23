@@ -32,3 +32,19 @@ test('same task in another destination remains work; PTO is non-billable in repo
   const [taken] = classifyTimeOffRecords([future], map, new Date('2026-12-11T00:00:00.000Z'));
   assert.equal(taken.isPlannedTimeOff, false);
 });
+
+import { buildActiveTimer, buildEntry, applyEntryEdits } from '../src/domain/records.js';
+
+test('planned PTO stays editable before its future activity start', () => {
+  const active = buildActiveTimer({
+    user: 'alice', taskUrl: 'https://example.com/time-off',
+    startedAt: '2026-12-07T09:00:00.000Z', timezone: 'UTC',
+  });
+  const planned = buildEntry({ active, endedAt: '2026-12-07T17:00:00.000Z' });
+  const edited = applyEntryEdits(planned, { description: 'Vacation' }, new Date('2026-11-23T12:00:00.000Z'));
+  assert.equal(edited.description, 'Vacation');
+  assert.equal(edited.startedAt, planned.startedAt);
+  assert.equal(edited.endedAt, planned.endedAt);
+  assert.ok(Date.parse(edited.updatedAt) >= Date.parse(edited.createdAt));
+  assert.ok(Date.parse(edited.updatedAt) >= Date.parse(planned.updatedAt));
+});
