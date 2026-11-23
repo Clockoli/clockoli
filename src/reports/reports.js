@@ -13,7 +13,7 @@ const FACET_KEYS = ['people', 'projects', 'repositories', 'timeRepositories'];
 const $ = id => document.getElementById(id);
 const SAFARI_EXTENSION_PROTOCOL = 'safari-web-extension:';
 const state = {
-  records: [], range: null, pendingRange: null, sourceRepository: '', branch: '', sourceRepositories: [], billing: { clientRates: {}, invoicing: invoicingSettings() }, loading: false, stale: false, requestId: 0, analytics: null, partial: false, readStatus: [], pendingCount: 0,
+  records: [], plannedRecords: [], timeType: 'all', range: null, pendingRange: null, sourceRepository: '', branch: '', sourceRepositories: [], billing: { clientRates: {}, invoicing: invoicingSettings() }, loading: false, stale: false, requestId: 0, analytics: null, partial: false, readStatus: [], pendingCount: 0,
   people: new Set(), projects: new Set(), repositories: new Set(), timeRepositories: new Set(), projectDefinitions: [], peopleSearch: '', projectsSearch: '', repositoriesSearch: '', timeRepositoriesSearch: '',
   allSelected: { people: false, projects: true, repositories: true, timeRepositories: true }, otherProjectName: 'Other', otherProjectClient: '', rateClientId: '__project__', clientIdFilter: '',
   exchangeRates: null, exchangeKey: '', analyticsRequestId: 0, progressRequestId: null, progressValue: 0,
@@ -275,7 +275,7 @@ function setDownloadsAvailable(available) {
 }
 
 function selectedFilters() {
-  return { people: [...state.people], projects: [...state.projects], repositories: [...state.repositories], timeRepositories: [...state.timeRepositories], projectDefinitions: state.projectDefinitions, otherProjectName: state.otherProjectName, otherProjectClient: state.otherProjectClient, clientIdFilter: state.clientIdFilter, emptyMeansNone: true };
+  return { people: [...state.people], projects: [...state.projects], repositories: [...state.repositories], timeRepositories: [...state.timeRepositories], projectDefinitions: state.projectDefinitions, otherProjectName: state.otherProjectName, otherProjectClient: state.otherProjectClient, clientIdFilter: state.clientIdFilter, timeType: state.timeType, emptyMeansNone: true };
 }
 
 function currentFilteredRecords() { return filterReportRecords(state.records, selectedFilters()); }
@@ -673,6 +673,13 @@ function renderCurrencySelector(filtered) {
 function renderSummary(filtered, totals) {
   const total = filtered.reduce((sum, record) => sum + (Number(record.durationSeconds) || 0), 0);
   $('summary-time').textContent = formatClockDuration(total);
+  const work = filtered.filter(record => !record.isTimeOff).reduce((sum, record) => sum + (Number(record.durationSeconds) || 0), 0);
+  const pto = total - work;
+  const planned = filterReportRecords(state.plannedRecords, selectedFilters())
+    .reduce((sum, record) => sum + (Number(record.durationSeconds) || 0), 0);
+  $('summary-work').textContent = formatClockDuration(work);
+  $('summary-pto').textContent = formatClockDuration(pto);
+  $('summary-planned').textContent = formatClockDuration(planned);
   $('summary-billable').hidden = !Object.values(state.billing.clientRates).some(card => Object.keys(card).length);
   const missingRates = [...new Set(filtered.filter(record => isBillable(record) && !recordRate(record)).map(record => record.user))];
   const amount = filtered.some(isBillable) ? billableSummary(totals) : 'No billable entries';
@@ -943,7 +950,9 @@ function applyReportResult(result, range, reportingUtc, { cached = false } = {})
     state.range = range; state.pendingRange = null; state.loading = false; state.stale = cached;
     state.exchangeRates = null; state.exchangeKey = '';
     // Project the reporting date once so billing and invoice consumers share the report basis.
-    state.records = result.records.map(record => ({ ...record, entryDate: recordDate(record, reportingUtc) }));
+    const all = result.records.map(record => ({ ...record, entryDate: recordDate(record, reportingUtc) }));
+    state.plannedRecords = all.filter(record => record.isTimeOff && new Date(record.endedAt).getTime() > Date.now());
+    state.records = all.filter(record => !record.isTimeOff || new Date(record.endedAt).getTime() <= Date.now());
     state.sourceRepository = result.sourceRepository; state.branch = result.branch;
     state.sourceRepositories = result.sourceRepositories || (result.sourceRepository ? [result.sourceRepository] : []);
     state.partial = Boolean(result.partial); state.readStatus = result.readStatus || [];
@@ -958,7 +967,7 @@ function applyReportResult(result, range, reportingUtc, { cached = false } = {})
     state.projectDefinitions = result.billing?.projects || [];
     state.otherProjectName = result.billing?.otherProjectName || 'Other';
     state.otherProjectClient = result.billing?.otherProjectClient || '';
-    const available = buildFacets(result.records, { projectDefinitions: state.projectDefinitions, otherProjectName: state.otherProjectName });
+    const available = buildFacets(state.records, { projectDefinitions: state.projectDefinitions, otherProjectName: state.otherProjectName });
     if (firstLoad) {
       state.allSelected = { people: false, projects: true, repositories: true, timeRepositories: true };
       const currentUsers = result.currentUsers ? Object.values(result.currentUsers) : (result.currentUser ? [result.currentUser] : []);
@@ -989,7 +998,7 @@ async function loadRange(range) {
     if (requestId !== state.requestId) return;
     if (!result.configured) {
       $('setup').hidden = false; $('period-card').hidden = true; $('report-content').hidden = true;
-      state.range = null; state.records = []; state.pendingCount = 0; state.stale = false; $('pending-status').hidden = true; return;
+      state.range = null; state.records = []; state.plannedRecords = []; state.pendingCount = 0; state.stale = false; $('pending-status').hidden = true; return;
     }
     showProgress('Preparing report…', 80);
     applyReportResult(result, range, reportingUtc);
@@ -1054,6 +1063,10 @@ $('reporting-utc').addEventListener('change', async () => {
   finally { state.savingBasis = false; $('reporting-utc').disabled = false; }
 });
 for (const id of ['metric', 'billable-currency', 'horizontal-axis', 'stack-by']) $(id).addEventListener('change', render);
+$('time-type-filter').addEventListener('change', () => {
+  state.timeType = $('time-type-filter').value;
+  render();
+});
 $('rate-client').addEventListener('change', () => { state.rateClientId = $('rate-client').value; state.exchangeKey = ''; render(); });
 $('report-client-filter').addEventListener('change', () => { state.clientIdFilter = $('report-client-filter').value; render(); });
 $('analytics-details').addEventListener('toggle', () => { if (state.analytics) renderAnalyticsTable(state.analytics); });
@@ -1239,6 +1252,80 @@ colorScheme.addEventListener('change', () => {
   if (state.range && !state.loading && !$('report-content').hidden) render();
 });
 
+let teamTimeOffWeekStart = (() => {
+  const now = new Date(), monday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  return localDateValue(monday);
+})();
+let teamTimeOffRequest = 0;
+function addTeamDays(day, amount) {
+  const date = new Date(day + 'T12:00:00Z');
+  date.setUTCDate(date.getUTCDate() + amount);
+  return date.toISOString().slice(0, 10);
+}
+function teamDayHeading(date) {
+  return new Date(date + 'T12:00:00Z').toLocaleDateString('en-US', {
+    weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC',
+  });
+}
+function buildTeamTimeOffCalendar(entries, startDate) {
+  const table = $('team-time-off-table'); table.replaceChildren();
+  const header = document.createElement('thead'), heading = document.createElement('tr');
+  for (const caption of ['Person', ...Array.from({ length: 7 }, (_, day) => teamDayHeading(addTeamDays(startDate, day)))]) {
+    const th = document.createElement('th'); th.scope = 'col'; th.textContent = caption; heading.append(th);
+  }
+  header.append(heading); table.append(header);
+  const members = new Map();
+  for (const entry of entries) {
+    const key = JSON.stringify([entry.destinationId, entry.user]);
+    if (!members.has(key)) members.set(key, { user: entry.user, repo: entry.timeRepository || '', entries: [] });
+    members.get(key).entries.push(entry);
+  }
+  const body = document.createElement('tbody');
+  for (const member of [...members.values()].sort((a, b) => a.user.localeCompare(b.user) || a.repo.localeCompare(b.repo))) {
+    const tr = document.createElement('tr'), who = document.createElement('th'); who.scope = 'row';
+    who.textContent = member.repo ? `${member.user} · ${member.repo}` : member.user; tr.append(who);
+    for (let day = 0; day < 7; day += 1) {
+      const date = addTeamDays(startDate, day), cell = document.createElement('td');
+      for (const entry of member.entries.filter(item => item.entryDate === date)) {
+        const item = document.createElement('span');
+        item.className = entry.isPlannedTimeOff ? 'team-time-off-day planned' : 'team-time-off-day taken';
+        item.textContent = formatClockDuration(entry.durationSeconds);
+        const detail = [entry.isPlannedTimeOff ? 'Planned time off' : 'Time off', entry.description, entry.taskTitle, entry.taskUrl].filter(Boolean).join(' · ');
+        item.title = detail; item.setAttribute('aria-label', detail + ' · ' + formatClockDuration(entry.durationSeconds));
+        cell.append(item);
+      }
+      tr.append(cell);
+    }
+    body.append(tr);
+  }
+  table.append(body);
+}
+async function loadTeamTimeOff() {
+  const request = ++teamTimeOffRequest;
+  const startDate = teamTimeOffWeekStart, endDate = addTeamDays(startDate, 6);
+  $('team-time-off-range').textContent = `${teamDayHeading(startDate)} – ${teamDayHeading(endDate)}`;
+  $('team-time-off-status').textContent = 'Loading team time off…';
+  try {
+    const result = await send({ type: 'LOAD_TEAM_TIME_OFF', startDate, endDate });
+    if (request !== teamTimeOffRequest) return;
+    if (!result.configured) { $('team-time-off-status').textContent = 'Connect a time repository first.'; return; }
+    const entries = Array.isArray(result.entries) ? result.entries : [];
+    buildTeamTimeOffCalendar(entries, startDate);
+    $('team-time-off-status').textContent = result.partial
+      ? 'Some time repositories could not be read. The calendar may be incomplete.'
+      : entries.length ? '' : 'No time off recorded for this week.';
+  } catch (error) {
+    if (request === teamTimeOffRequest) $('team-time-off-status').textContent = error.message || 'Could not load team time off.';
+  }
+}
+for (const [id, delta] of [['team-time-off-prev', -7], ['team-time-off-next', 7]]) {
+  $(id).addEventListener('click', () => {
+    teamTimeOffWeekStart = addTeamDays(teamTimeOffWeekStart, delta);
+    void loadTeamTimeOff();
+  });
+}
+
 async function initializePeriod() {
   try {
     const preferences = await send({ type: 'GET_LOCAL_PREFERENCES' });
@@ -1264,5 +1351,6 @@ async function initializePeriod() {
   } catch (error) { setError(error); hideProgress(); }
 }
 void initializePeriod();
+void loadTeamTimeOff();
 
 mountRunningStatus($('running-status'), { send });
