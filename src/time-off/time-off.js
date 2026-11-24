@@ -154,6 +154,7 @@ function renderYear() {
   const grid = $('year-grid');
   grid.replaceChildren();
   const dayGroups = selectedDayDetails();
+  state.dayDetails = dayGroups;
   const header = make('div', 'time-off-year-row time-off-year-days');
   header.setAttribute('role', 'row');
   const monthHeading = make('span', 'time-off-year-month');
@@ -217,7 +218,7 @@ function renderYear() {
   updateAddButton();
 }
 function renderInspector() {
-  const date = state.selectedDate, group = selectedDayDetails().get(date);
+  const date = state.selectedDate, group = state.dayDetails?.get(date);
   $('selected-day-label').textContent = dateLabel(date);
   $('selected-day-summary').textContent = state.teamLoading
     ? 'Loading team availability…'
@@ -282,10 +283,6 @@ function changeYear(year) {
     highlightSelectedDay(previousDate); renderInspector(); return;
   }
   if (!activateTeamYear(year)) { renderYear(); renderInspector(); void loadTeam(); }
-}
-function closeForm() {
-  if ($('time-off-dialog').open) $('time-off-dialog').close();
-  updateAddButton();
 }
 async function loadMine({ quiet = false } = {}) {
   const request = ++state.mineRequestId;
