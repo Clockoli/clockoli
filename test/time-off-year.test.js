@@ -46,8 +46,9 @@ test('team PTO loader fetches one complete year, honors task configuration and r
   class ReportService {
     async loadRepositoryRange(range, options) {
       calls.push({ range, options });
-      return [record('a', 'alice', '2027-01-03', '2027-01-03T17:00:00Z'),
-        { ...record('b', 'bob', '2027-12-31', '2027-12-31T17:00:00Z'), taskUrl: 'https://example.com/work' }];
+      return [{ ...record('a', 'alice', '2027-01-03', '2027-01-03T17:00:00Z'), isTimeOff: undefined },
+        { ...record('b', 'bob', '2027-12-31', '2027-12-31T17:00:00Z'),
+          isTimeOff: undefined, taskUrl: 'https://example.com/work' }];
     }
   }
   const context = vm.createContext({
