@@ -39,3 +39,45 @@ export function annualTimeOffDays(records, year, currentUsers = {}, now = Date.n
   }
   return result;
 }
+
+
+// A day counts once, even if the same person has multiple PTO entries that day
+// or shares multiple time repositories. If any entry is still planned, treat
+// the day as planned rather than counting it in both totals.
+export function yearlyTimeOffTotals(records, year, login = '', currentUsers = {}, now = Date.now()) {
+  const targetYear = String(year).padStart(4, '0'), requested = login.trim().toLowerCase();
+  const days = new Map(), instant = new Date(now).getTime();
+  for (const entry of records ?? []) {
+    if (entry?.isTimeOff !== true || entry.entryDate?.slice(0, 4) !== targetYear
+        || typeof entry.user !== 'string') continue;
+    const user = entry.user.trim().toLowerCase();
+    if (requested ? user !== requested
+      : currentUsers[entry.destinationId]?.toLowerCase() !== user) continue;
+    const endedAt = Date.parse(entry.endedAt);
+    if (!Number.isFinite(endedAt)) continue;
+    const planned = endedAt > instant;
+    days.set(entry.entryDate, Boolean(days.get(entry.entryDate)) || planned);
+  }
+  let taken = 0, planned = 0;
+  for (const future of days.values()) {
+    if (future) planned++;
+    else taken++;
+  }
+  return { taken, planned };
+}
+
+// GitHub logins come from the locally cached team calendar, never from
+// GitHub requests on typing. Include the signed-in users for discovery.
+export function timeOffUserLogins(records, currentUsers = {}) {
+  const logins = new Map();
+  for (const login of [
+    ...Object.values(currentUsers || {}),
+    ...(records || []).filter(item => item?.isTimeOff).map(item => item.user),
+  ]) {
+    if (typeof login !== 'string') continue;
+    const trimmed = login.trim(), key = trimmed.toLowerCase();
+    if (!trimmed || !/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(trimmed)) continue;
+    if (!logins.has(key)) logins.set(key, trimmed);
+  }
+  return [...logins.values()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
