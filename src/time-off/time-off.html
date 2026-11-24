@@ -45,6 +45,26 @@
     <div class="time-off-layout">
       <section class="time-off-year-panel" aria-label="Annual team calendar">
         <p id="team-time-off-status" role="status" aria-live="polite"></p>
+        <div class="time-off-year-overview">
+          <div class="time-off-user-filter" id="time-off-user-filter">
+            <label for="time-off-user-search">GitHub user</label>
+            <div class="time-off-user-search-wrap">
+              <input id="time-off-user-search" type="search" autocomplete="off"
+                role="combobox" aria-autocomplete="list" aria-haspopup="listbox"
+                aria-controls="time-off-user-suggestions" aria-expanded="false"
+                placeholder="Search GitHub users…" aria-label="Filter time off by GitHub user">
+              <button id="clear-time-off-user" class="time-off-clear-user" type="button"
+                aria-label="Clear GitHub user filter" title="Show everyone" hidden>×</button>
+            </div>
+            <div id="time-off-user-suggestions" class="time-off-user-suggestions"
+              role="listbox" aria-label="GitHub users" hidden></div>
+          </div>
+          <div class="time-off-year-stats" aria-live="polite" aria-atomic="true">
+            <span id="time-off-stats-subject" class="time-off-stats-subject">My time off</span>
+            <span class="time-off-stat"><strong id="time-off-taken-days">—</strong> taken</span>
+            <span class="time-off-stat"><strong id="time-off-planned-days">—</strong> planned</span>
+          </div>
+        </div>
         <div class="time-off-year-scroll" tabindex="0" aria-label="Scroll annual team calendar">
           <div id="year-grid" class="time-off-year-grid" role="grid" aria-label="Team time off by month and day"></div>
         </div>
