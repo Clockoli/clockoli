@@ -15,13 +15,17 @@
 </p>
 
 <p align="center">
-  <a href="https://chromewebstore.google.com/detail/clockoli/omkikhlcnbjpfbiicogjekhjgmbajmnl"><img alt="Chrome Web Store version" src="https://img.shields.io/chrome-web-store/v/omkikhlcnbjpfbiicogjekhjgmbajmnl?label=Chrome%20Web%20Store"></a>
+  <a href="https://chromewebstore.google.com/detail/clockoli/omkikhlcnbjpfbiicogjekhjgmbajmnl"><img src="docs/images/add-to-chrome.svg" width="280" height="52" alt="Add to Chrome — free"></a><br>
+  <sub>Free for your entire team. No credit card required.</sub>
+</p>
+
+<p align="center">
   <a href="https://github.com/clockoli/clockoli/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/clockoli/clockoli/actions/workflows/ci.yml/badge.svg?branch=main"></a>
 </p>
 
 <p align="center">
   <a href="https://clockoli.com/">Website</a> ·
-  <a href="#install">Install</a> ·
+  <a href="#install">Firefox &amp; Safari (preview)</a> ·
   <a href="docs/getting-started.md">Getting started</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="CHANGELOG.md">Changelog</a> ·
@@ -60,7 +64,11 @@ Already using GitHub to manage your work? You don't need another account or anot
 
 ## Install
 
-**Chrome and other Chromium browsers (102+):** [add Clockoli from the Chrome Web Store](https://chromewebstore.google.com/detail/clockoli/omkikhlcnbjpfbiicogjekhjgmbajmnl). It updates automatically.
+**Chrome and other Chromium browsers (102+):** install from the Chrome Web Store. The extension updates automatically.
+
+<p align="center">
+  <a href="https://chromewebstore.google.com/detail/clockoli/omkikhlcnbjpfbiicogjekhjgmbajmnl"><img src="docs/images/add-to-chrome.svg" width="280" height="52" alt="Add to Chrome — free"></a>
+</p>
 
 <details>
 <summary><strong>Firefox (140+) and Safari (18+, macOS) preview</strong>: manual install from a GitHub release</summary>
