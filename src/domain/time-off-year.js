@@ -1,6 +1,6 @@
 // Annual Time off views count people, never individual time entries.
 // One person may record several PTO entries or share multiple time repositories.
-export function annualTimeOffDays(records, year, currentUsers = {}) {
+export function annualTimeOffDays(records, year, currentUsers = {}, now = Date.now()) {
   if (!Number.isInteger(year) || year < 1 || year > 9999) {
     throw new Error('Invalid Time off year.');
   }
@@ -26,7 +26,7 @@ export function annualTimeOffDays(records, year, currentUsers = {}) {
   for (const [date, group] of days) {
     const people = [...group.people.values()].sort((a, b) =>
       Number(b.own) - Number(a.own) || a.user.localeCompare(b.user));
-    const status = entry => Date.parse(entry.endedAt) > Date.now() ? 'planned' : 'taken';
+    const status = entry => Date.parse(entry.endedAt) > new Date(now).getTime() ? 'planned' : 'taken';
     for (const person of people) {
       person.planned = person.entries.some(entry => status(entry) === 'planned');
       person.taken = person.entries.some(entry => status(entry) === 'taken');
