@@ -1718,8 +1718,10 @@ async function handle(message, sender) {
   };
   switch (message.type) {
     case 'SAVE_TIME_OFF': {
+      const keys = Object.keys(message).sort().join(',');
       if (sender?.url !== chrome.runtime.getURL('src/time-off/time-off.html')
-          || Object.keys(message).sort().join(',') !== 'days,description,destinationId,groupId,previous,taskTitle,taskUrl,timezone,type') {
+          || !['days,description,destinationId,groupId,previous,taskTitle,taskUrl,timezone,type',
+            'days,description,destinationId,groupId,previous,singleDayDeletion,taskTitle,taskUrl,timezone,type'].includes(keys)) {
         throw new Error('Invalid time off request.');
       }
       const input = normalizeTimeOffChange(message);
