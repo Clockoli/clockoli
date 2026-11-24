@@ -65,6 +65,7 @@ html,body{min-width:320px;min-height:100%;margin:0;background:var(--bgColor-defa
 .time-off-year-day.away-4,.legend-swatch.away-4{background:var(--pto-high);color:var(--pto-ink-high)}
 .time-off-year-day.away-7,.legend-swatch.away-7{background:var(--pto-peak);color:var(--pto-ink-high)}
 .time-off-year-day.past:not(.selected):not(.draft){opacity:.52;filter:saturate(.55)}
+.time-off-year-day.past.mine:not(.selected):not(.draft){opacity:.85;filter:saturate(.7)}
 .time-off-year-day.mine,.legend-swatch.mine{box-shadow:inset 0 0 0 2px #ffca28}
 .time-off-year-day.selected,.legend-swatch.selected{border:2px solid #6639d7}
 .time-off-year-day.draft{box-shadow:inset 0 0 0 2px #218bff;background:var(--pto-preview);color:var(--pto-preview-ink)}
