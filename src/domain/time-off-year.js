@@ -70,14 +70,13 @@ export function yearlyTimeOffTotals(records, year, login = '', currentUsers = {}
 // GitHub requests on typing. Include the signed-in users for discovery.
 export function timeOffUserLogins(records, currentUsers = {}) {
   const logins = new Map();
-  for (const login of [
-    ...Object.values(currentUsers || {}),
-    ...(records || []).filter(item => item?.isTimeOff).map(item => item.user),
-  ]) {
-    if (typeof login !== 'string') continue;
+  const add = login => {
+    if (typeof login !== 'string') return;
     const trimmed = login.trim(), key = trimmed.toLowerCase();
-    if (!trimmed || !/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(trimmed)) continue;
+    if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(trimmed)) return;
     if (!logins.has(key)) logins.set(key, trimmed);
-  }
+  };
+  for (const login of Object.values(currentUsers || {})) add(login);
+  for (const entry of records || []) if (entry?.isTimeOff) add(entry.user);
   return [...logins.values()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 }
