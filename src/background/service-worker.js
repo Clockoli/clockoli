@@ -456,26 +456,33 @@ async function loadReport(message) {
 }
 
 async function loadTeamTimeOff(message, sender, extensionOrigin) {
-  if (sender?.url !== `${extensionOrigin}src/time-off/time-off.html`
+  if (sender?.url !== extensionOrigin + 'src/time-off/time-off.html'
       || Object.keys(message).sort().join(',') !== 'endDate,startDate,type') {
     throw new Error('Only Time off can load the team calendar.');
   }
-  const range = weekRangeForSender({ startDate: message.startDate, endDate: message.endDate }, sender, extensionOrigin);
+  const year = typeof message.startDate === 'string' ? message.startDate.slice(0, 4) : '';
+  if (!/^[0-9]{4}$/.test(year) || Number(year) < 1
+      || message.startDate !== year + '-01-01' || message.endDate !== year + '-12-31') {
+    throw new Error('Select one calendar year for team time off.');
+  }
+  const range = { startDate: message.startDate, endDate: message.endDate };
   const snapshot = await configuredSnapshot({ localOnly: true });
   const destinations = selectReadDestinations(snapshot);
   if (!snapshot.auth || !destinations.length) return { configured: false, entries: [] };
   const configs = {};
   const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
-    const reports = new ReportService({ github: githubForConfig(destination), cache: store });
-    const [records, settings] = await Promise.all([
-      reports.loadRepositoryRange(range, {
-        defaultBranch: destination.defaultBranch || destination.branch || 'main',
-        includeStorageMetadata: true, signal,
-      }),
-      timeOffSettingsForDestination(destination.id, { fresh: true, signal }),
-    ]);
+    const settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
     configs[destination.id] = settings.config;
-    return records;
+    if (!settings.config.taskUrls.length) return [];
+    const reports = new ReportService({ github: githubForConfig(destination), cache: store });
+    // A year can cover many user branches. Refuse an incomplete scan rather
+    // than silently suggesting a day has fewer people off than it really does.
+    return reports.loadRepositoryRange(range, {
+      defaultBranch: destination.defaultBranch || destination.branch || 'main',
+      includeStorageMetadata: true, signal,
+      budgets: { maxUsers: 500, maxTotalFiles: 6500, maxTotalBytes: 350 * 1024 * 1024,
+        maxTotalRecords: 1_000_000 },
+    });
   });
   return {
     configured: true, partial: loaded.partial, readStatus: loaded.readStatus,
@@ -483,7 +490,6 @@ async function loadTeamTimeOff(message, sender, extensionOrigin) {
       .filter(entry => entry.isTimeOff),
   };
 }
-
 
 async function loadMyTimeOff(message, sender, extensionOrigin) {
   if (sender?.url !== extensionOrigin + 'src/time-off/time-off.html'
