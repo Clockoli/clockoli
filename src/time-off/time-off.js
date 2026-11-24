@@ -322,7 +322,7 @@ function highlightSelectedDay(previous) {
     const cell = $('year-grid').querySelector('button[data-date="' + date + '"]');
     if (!cell) continue;
     cell.classList.toggle('selected', date === state.selectedDate);
-    cell.setAttribute('aria-pressed', String(date === state.selectedDate));
+    cell.setAttribute('aria-pressed', String(editing() ? dayState.has(date) : date === state.selectedDate));
   }
 }
 function selectDay(date) {
