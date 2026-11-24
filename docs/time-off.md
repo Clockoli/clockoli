@@ -10,9 +10,9 @@ This configuration also classifies historical entries on those tasks as time off
 
 ## Year calendar
 
-The calendar displays **12 months, one row per month**. Each day shows the **number of unique GitHub users** away, not the number of time entries. Colors indicate the number of teammates off; dates in the past have a softer appearance. Your own time off gets a blue outline. Clicking a date opens its details on the right, including GitHub avatars, time-off type, hours, and whether each entry is **Planned** or **Taken**.
+The calendar displays **12 months, one row per month**. Days with one person away show that person's GitHub avatar; days with multiple people away show the **number of unique users** (not time entries). All dates before today are dimmed, including empty days. Your own time off has a bright yellow outline. Clicking a date shows the people away, task, hours, and **Planned** / **Taken** status.
 
-Use the year arrows and repository filter to browse team availability. Team data is loaded from accessible time repositories, so a partial or failed GitHub read displays a warning rather than implying that missing colleagues are present.
+Use the year arrows and repository filter to browse team availability. Completed year snapshots are cached locally in IndexedDB, so revisiting a year (even after reopening the page) does **not** re-fetch GitHub data. Only an uncached year or an explicit **Refresh** performs a team scan. The cache is scoped to the connected GitHub account and repositories and is invalidated when time-off tasks change. Incomplete GitHub reads show a warning rather than implying missing colleagues are present.
 
 ## Add and edit time off
 
@@ -22,7 +22,7 @@ New days default to **8 hours**. Change a day's hours directly inside its calend
 
 Clockoli chooses a free continuous interval automatically, preferring **09:00** or the next available time later that day. It checks locally known work immediately and verifies again against GitHub while syncing. If the hours cannot fit, it reports a conflict instead of silently overlapping work or making a partial write.
 
-**My time off** remains accessible below the day details on the right. Use **Edit** or **Delete planned** on your own group. When an absence has both past and future days, only its future days can be edited or deleted; taken days are preserved. To deliberately correct or delete historical time off, use **Correct** or **Delete taken**.
+**My time off** remains below the day details on the right. Use **Edit** or **Delete planned** on upcoming groups. When an absence spans past and future days, only its remaining days change; taken days are preserved. **Past time off** uses compact one-line rows with small edit and delete icons for deliberate historical corrections.
 
 One plan stores an ordinary time entry per selected day with a shared metadata.clockoli.timeOffGroupId. Edits/deletions are queued locally and synchronized in **one guarded atomic GitHub commit**, including changes spanning months. Teammates cannot change each other's time off.
 
