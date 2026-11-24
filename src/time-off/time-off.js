@@ -317,6 +317,14 @@ function renderInspector() {
   }
 }
 
+function highlightSelectedDay(previous) {
+  for (const date of new Set([previous, state.selectedDate])) {
+    const cell = $('year-grid').querySelector('button[data-date="' + date + '"]');
+    if (!cell) continue;
+    cell.classList.toggle('selected', date === state.selectedDate);
+    cell.setAttribute('aria-pressed', String(date === state.selectedDate));
+  }
+}
 function selectDay(date) {
   if (typeof date !== 'string') return;
   const year = Number(date.slice(0, 4));
@@ -325,15 +333,17 @@ function selectDay(date) {
     if (!activateTeamYear(year)) { renderYear(); renderInspector(); void loadTeam(); }
     return;
   }
+  const previous = state.selectedDate;
   state.selectedDate = date;
-  renderYear(); renderInspector();
+  highlightSelectedDay(previous);
+  renderInspector();
 }
 function changeYear(year) {
   if (!Number.isInteger(year) || year < 1 || year > 9999) return;
-  const previousYear = state.year, current = today();
+  const previousYear = state.year, previousDate = state.selectedDate, current = today();
   state.year = year;
   state.selectedDate = year === Number(current.slice(0, 4)) ? current : String(year).padStart(4, '0') + '-01-01';
-  if (year === previousYear) { renderYear(); renderInspector(); return; }
+  if (year === previousYear) { highlightSelectedDay(previousDate); renderInspector(); return; }
   if (!activateTeamYear(year)) { renderYear(); renderInspector(); void loadTeam(); }
 }
 function closeForm() {
@@ -539,7 +549,6 @@ function renderCalendar(focusDate = null) {
         selected.hours = hours.value.trim() === '' ? NaN : Number(hours.value);
         hours.setAttribute('aria-invalid', String(!validHours(selected.hours)));
         updateCalendarSummary();
-        renderYear();
       });
       label.append(hours, make('span', '', 'h'));
       cell.append(label);
