@@ -261,7 +261,13 @@ test('deleting one day of a grouped PTO keeps all other planned dates unchanged'
   assert.equal(store.state.pendingWrites.length, 0);
   const current = savedRecords(github);
   assert.deepEqual(current.map(item => item.entryDate), ['2026-12-07', '2026-12-09']);
-  assert.deepEqual(current, untouched, 'sibling records keep their IDs and timestamps');
+  const identity = entry => ({
+    id: entry.id, entryDate: entry.entryDate, startedAt: entry.startedAt,
+    endedAt: entry.endedAt, updatedAt: entry.updatedAt, description: entry.description,
+    groupId: entry.metadata?.clockoli?.timeOffGroupId,
+  });
+  assert.deepEqual(current.map(identity), untouched.map(identity),
+    'sibling records keep their IDs and timestamps, although their file SHA changes');
 });
 
 test('deleting a taken day does not alter future days from the same PTO group', async () => {
@@ -294,7 +300,7 @@ test('single-day PTO deletion rejects stale remote entry and leaves the group in
   const path = 'times/2026-12/alice.jsonl', file = github.files.get(path);
   github.files.set(path, { sha: 'changed-revision',
     text: serializeMonthlyRecords(originals.map(item =>
-      item.id === originals[0].id ? { ...item, updatedAt: '2026-12-01T12:00:00.000Z' } : item)),
+      item.id === originals[0].id ? { ...item, updatedAt: '2026-12-10T12:00:00.000Z' } : item)),
   });
   await tracker.syncPending();
   assert.equal(store.state.pendingWrites.length, 1);
