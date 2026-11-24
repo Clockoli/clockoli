@@ -14,6 +14,8 @@ The annual calendar shows **12 month rows**. Days with exactly one teammate away
 
 **Hover over a day** to see the list of teammates in the right panel instantly. **Clicking a day** also selects it for new time off and keeps that day's details visible while the cursor stays inside the calendar. After leaving the calendar, returning to any cell resumes hover previews. The right panel shows each person's small GitHub avatar, name, hours on the right, optional description, and a delete icon only for your own saved records. There are no separate Planned/Taken count headings or task titles in the day details.
 
+Above the calendar, type a GitHub username to see autocomplete suggestions from the locally loaded PTO records and connected account. Select a suggestion to show **only that user's time off** in the year grid and daily details; use the **×** control to show everyone again. Searching makes no GitHub API requests. The year totals at the top right show the number of **distinct days taken and planned** by the selected user, or **your own** days when nobody is selected. If a day has multiple entries, it counts once; a day with any unfinished PTO is counted as planned. The time-repository filter also applies to these totals.
+
 Navigate between years, filter by time repository, or choose **This year**. Successful year scans are cached locally in IndexedDB, and revisiting a year does not make another GitHub request. **Refresh** is the explicit way to fetch updated data. Caches are scoped to the account and configured time repositories; changing PTO settings invalidates them. Incomplete remote reads show a warning and do not replace a complete cached year.
 
 ## Add time off
