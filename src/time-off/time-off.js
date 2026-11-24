@@ -5,7 +5,7 @@ const $ = id => document.getElementById(id);
 const DAY_MS = 86400000;
 const state = { entries: [], repositories: [], currentUsers: {}, groups: [], teamEntries: [],
   year: Number(new Date().getFullYear()), selectedDate: '', loadedTeamYear: null,
-  mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(),
+  mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(), teamIdentity: null,
   teamLoading: false, teamIncomplete: true, teamYears: new Map(),
   group: null, formBusy: false, cancelGroup: null };
 const form = $('time-off-form');
@@ -361,13 +361,25 @@ async function loadMine({ quiet = false } = {}) {
   try {
     const result = await send({ type: 'LOAD_MY_TIME_OFF' });
     if (request !== state.mineRequestId) return;
+    const identity = JSON.stringify({
+      repositories: (result.repositories || []).map(repo => [
+        repo.id, [...(repo.taskUrls || [])].sort(),
+      ]).sort((a, b) => a[0].localeCompare(b[0])),
+      users: result.currentUsers || {},
+    });
+    const changedIdentity = !result.partial && state.teamIdentity !== null && state.teamIdentity !== identity;
+    if (!result.partial) state.teamIdentity = identity;
+    if (changedIdentity) {
+      state.teamYears.clear(); state.teamEntries = []; state.loadedTeamYear = null;
+      state.teamIncomplete = true;
+    }
     state.entries = result.entries || [];
     state.repositories = result.repositories || [];
     state.currentUsers = result.currentUsers || {};
     state.myLoadedDestinations = new Set((result.readStatus || [])
       .filter(item => item.status === 'ok').map(item => item.destinationId));
-    // The setup response has no per-repository read status on empty installations.
     renderRepositories(); renderMy(); renderYear(); renderInspector();
+    if (changedIdentity) void loadTeam({ refresh: true });
     if (result.partial) notice('Some time repositories could not be read. The calendar may be incomplete.');
     else if (!availableRepositories().length) notice('Configure a Time off task in Settings → Time repositories to get started.');
     else if (!quiet) notice('');
@@ -389,7 +401,7 @@ function activateTeamYear(year) {
   return true;
 }
 async function loadTeam({ refresh = false } = {}) {
-  const year = state.year;
+  const year = state.year, identity = state.teamIdentity;
   if (!refresh && activateTeamYear(year)) return;
   const request = ++state.teamRequestId;
   const previous = state.teamYears.get(year);
@@ -407,6 +419,8 @@ async function loadTeam({ refresh = false } = {}) {
     const endDate = String(year).padStart(4, '0') + '-12-31';
     const result = await send({ type: 'LOAD_TEAM_TIME_OFF', startDate, endDate,
       ...(refresh ? { refresh: true } : {}) });
+    // Ignore an old account's response after reconfiguration or logout.
+    if (identity !== null && identity !== state.teamIdentity) return;
     state.teamYears.delete(year);
     state.teamYears.set(year, result);
     while (state.teamYears.size > 5) state.teamYears.delete(state.teamYears.keys().next().value);
