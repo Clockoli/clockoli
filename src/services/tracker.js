@@ -2833,7 +2833,8 @@ export class TrackerService {
       const pendingWrites = [...(state.pendingWrites ?? []), {
         id: createUlid(queuedAt.getTime() + (state.pendingWrites?.length ?? 0) + 2),
         operation: 'timeOffChange', status: 'pending', stage: 'timeOffChange',
-        groupId, previousGroupId: change.groupId, taskUrl: change.taskUrl,
+        groupId, previousGroupId: change.groupId, singleDayDeletion: change.singleDayDeletion,
+        taskUrl: change.taskUrl,
         previous: structuredClone(change.previous), entries: entries.map(stripInternal),
         autoDates, queuedAt: queuedAt.toISOString(), lastError: '',
       }];
@@ -2857,6 +2858,9 @@ export class TrackerService {
   async commitTimeOffChange(operation) {
     const previous = operation.previous ?? [];
     let proposed = operation.entries ?? [];
+    if (operation.singleDayDeletion && (previous.length !== 1 || proposed.length)) {
+      throw new TrackerConflictError('A one-day deletion must target exactly one original PTO record.', 'time_off_invalid');
+    }
     const anchor = proposed.length ? proposed : previous.map(item => ({ ...item, entryDate: item.date }));
     if (!anchor.length) throw new TrackerConflictError('Empty time off change.', 'time_off_invalid');
     const overlap = await this.readEditOverlapFiles(anchor);
@@ -2900,7 +2904,7 @@ export class TrackerService {
       throw new TrackerConflictError('Time off record ID already exists on GitHub.', 'time_off_changed');
     }
     // Do not accidentally erase other dates from the same group if the editor loaded only part of it.
-    if (operation.previousGroupId) {
+    if (operation.previousGroupId && !operation.singleDayDeletion) {
       const unexpected = [...files.values()].flatMap(file => file.entries).filter(entry =>
         timeOffGroupId(entry) === operation.previousGroupId
         && !alreadyIds.has(entry.id)
