@@ -1,5 +1,5 @@
 import { groupTimeOffRecords, normalizeTimeOffDays, timeOffGroupId } from '../domain/time-off.js';
-import { annualTimeOffDays } from '../domain/time-off-year.js';
+import { annualTimeOffDays, yearlyTimeOffTotals, timeOffUserLogins } from '../domain/time-off-year.js';
 
 const $ = id => document.getElementById(id);
 const DAY_MS = 86400000;
@@ -7,7 +7,7 @@ const state = { entries: [], repositories: [], currentUsers: {}, groups: [], tea
   year: Number(new Date().getFullYear()), selectedDate: '', loadedTeamYear: null,
   mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(), teamIdentity: null,
   teamLoading: false, teamIncomplete: true, teamYears: new Map(),
-  formBusy: false, cancelEntry: null };
+  formBusy: false, cancelEntry: null, selectedUser: '', userCandidates: [], suggestionIndex: -1 };
 const form = $('time-off-form');
 const selectedDates = new Set();
 let selectionAnchor = null, pinDayUntilLeave = false;
@@ -135,8 +135,28 @@ function effectiveTeamRecords() {
   return records;
 }
 function selectedDayDetails() {
-  return annualTimeOffDays(effectiveTeamRecords(), state.year, state.currentUsers);
+  const records = effectiveTeamRecords();
+  state.userCandidates = timeOffUserLogins(records, state.currentUsers);
+  updateYearStats(records);
+  if (!$('time-off-user-suggestions').hidden) renderUserSuggestions();
+  const selected = state.selectedUser.toLowerCase();
+  return annualTimeOffDays(selected
+    ? records.filter(entry => entry.user?.toLowerCase() === selected)
+    : records, state.year, state.currentUsers);
 }
+function updateYearStats(records) {
+  const available = state.selectedUser
+    ? state.loadedTeamYear === state.year
+    : state.myLoadedDestinations.size > 0;
+  const stats = available
+    ? yearlyTimeOffTotals(records, state.year, state.selectedUser, state.currentUsers)
+    : null;
+  $('time-off-stats-subject').textContent = state.selectedUser
+    ? '@' + state.selectedUser : 'My time off';
+  $('time-off-taken-days').textContent = stats ? String(stats.taken) : '—';
+  $('time-off-planned-days').textContent = stats ? String(stats.planned) : '—';
+}
+
 function avatar(login) {
   const node = make('span', 'time-off-avatar');
   node.append(make('span', 'time-off-avatar-fallback', login.slice(0, 1).toUpperCase()));
