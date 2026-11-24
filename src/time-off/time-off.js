@@ -70,6 +70,7 @@ function groupStatus(group) {
   return group.planned.length ? 'Planned' : 'Taken';
 }
 function cardFor(group) {
+  if (!group.planned.length) return compactPastCard(group);
   const card = make('article', 'time-off-card');
   card.dataset.groupKey = group.key;
   const dates = group.planned.length ? group.planned : group.entries;
@@ -100,6 +101,45 @@ function cardFor(group) {
   card.append(copy, actions);
   return card;
 }
+function iconAction(kind, title, action) {
+  const button = make('button', 'time-off-icon-action');
+  button.type = 'button';
+  button.setAttribute('aria-label', title);
+  button.title = title;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('fill', 'currentColor');
+  path.setAttribute('d', kind === 'edit'
+    ? 'M11.94 1.94a1.5 1.5 0 0 1 2.12 2.12l-8.5 8.5a1 1 0 0 1-.45.26L2 13.75l.93-3.11a1 1 0 0 1 .26-.45l8.75-8.25ZM3.6 11.1l-.35 1.15 1.15-.35 8.6-8.6-.8-.8-8.6 8.6Z'
+    : 'M5.5 1a1 1 0 0 0-1 1v1H2a.75.75 0 0 0 0 1.5h.75l.55 8.05A2 2 0 0 0 5.3 14.5h5.4a2 2 0 0 0 2-1.95l.55-8.05H14a.75.75 0 0 0 0-1.5h-2.5V2a1 1 0 0 0-1-1h-5Zm.5 2v-.5h4V3H6Zm-1.75 1.5h7.5l-.54 7.95a.5.5 0 0 1-.5.55H5.3a.5.5 0 0 1-.5-.55l-.55-7.95Z');
+  svg.append(path); button.append(svg);
+  button.addEventListener('click', action);
+  return button;
+}
+function compactPastCard(group) {
+  const card = make('article', 'time-off-card time-off-past-row');
+  card.dataset.groupKey = group.key;
+  const date = make('button', 'time-off-card-date',
+    labelForRange(group.startDate, group.endDate));
+  date.type = 'button';
+  date.addEventListener('click', () => selectDay(group.startDate));
+  const detail = make('span', 'time-off-past-meta',
+    duration(group.totalSeconds) + ' · ' + (group.taskTitle || taskName(group.taskUrl)));
+  detail.title = [group.taskTitle || taskName(group.taskUrl), group.description].filter(Boolean).join(' · ');
+  const actions = make('span', 'time-off-icon-actions');
+  const edit = iconAction('edit', 'Correct past time off', () => openForm(group));
+  const remove = iconAction('delete', 'Delete taken time off', () => openCancel(group));
+  if (group.entries.some(entry => entry._pending)) {
+    edit.disabled = remove.disabled = true;
+    edit.title = remove.title = 'Sync the previous change before editing this time off.';
+  }
+  actions.append(edit, remove);
+  card.append(date, detail, actions);
+  return card;
+}
+
 function renderMy() {
   state.groups = groupTimeOffRecords(state.entries);
   const groups = currentGroups();
@@ -194,11 +234,14 @@ function renderYear() {
       const group = dayGroups.get(date), count = group?.count ?? 0;
       const grade = count === 0 ? 0 : count === 1 ? 1 : count < 4 ? 2 : count < 7 ? 4 : 7;
       const classes = ['time-off-year-day', 'away-' + grade];
-      if (date < today() && count) classes.push('past');
+      if (date < today()) classes.push('past');
       if (group?.own) classes.push('mine');
       if (date === state.selectedDate) classes.push('selected');
       if (editing() && dayState.has(date)) classes.push('draft');
-      const cell = make('button', classes.join(' '), count ? String(count) : '');
+      const cell = make('button', classes.join(' '));
+      if (count === 1 && group?.people?.[0]) {
+        cell.append(avatar(group.people[0].user));
+      } else if (count > 1) cell.textContent = String(count);
       cell.type = 'button'; cell.dataset.date = date;
       cell.setAttribute('role', 'gridcell');
       cell.setAttribute('aria-pressed', String(editing() ? dayState.has(date) : date === state.selectedDate));
