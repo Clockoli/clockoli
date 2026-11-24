@@ -68,6 +68,10 @@ test('exact PTO day schedule rejects duplicate dates, invalid hours, and overlon
     taskTitle: 'Vacation', description: '', groupId: null, previous: [], days });
   assert.equal(edit.days.length, 2);
   assert.throws(() => normalizeTimeOffChange({ ...edit, days: [] }), /between 1 and 50/);
+  assert.throws(() => normalizeTimeOffChange({ ...edit, singleDayDeletion: true }),
+    /exactly one original entry/);
+  assert.throws(() => normalizeTimeOffChange({ ...edit, singleDayDeletion: 'true' }),
+    /Invalid time off task or group/);
 });
 
 test('one group ID yields one PTO card; legacy records stay separate', () => {
