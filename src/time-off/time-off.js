@@ -1,4 +1,4 @@
-import { groupTimeOffRecords, normalizeTimeOffDays } from '../domain/time-off.js';
+import { groupTimeOffRecords, normalizeTimeOffDays, timeOffGroupId } from '../domain/time-off.js';
 import { annualTimeOffDays } from '../domain/time-off-year.js';
 
 const $ = id => document.getElementById(id);
@@ -7,10 +7,10 @@ const state = { entries: [], repositories: [], currentUsers: {}, groups: [], tea
   year: Number(new Date().getFullYear()), selectedDate: '', loadedTeamYear: null,
   mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(), teamIdentity: null,
   teamLoading: false, teamIncomplete: true, teamYears: new Map(),
-  group: null, formBusy: false, cancelGroup: null };
+  formBusy: false, cancelEntry: null };
 const form = $('time-off-form');
-const dayState = new Map(), takenDates = new Set();
-let calendarMonth = '', calendarAnchor = null;
+const selectedDates = new Set();
+let selectionAnchor = null, pinDayUntilLeave = false;
 const send = request => new Promise((resolve, reject) => chrome.runtime.sendMessage(request, response => {
   if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
   if (!response?.ok) return reject(new Error(response?.error?.message || 'Clockoli request failed.'));
@@ -55,54 +55,44 @@ const taskName = url => {
 };
 const labelForRange = (start, end) => start === end ? dateLabel(start) : dateLabel(start) + ' – ' + dateLabel(end);
 
+function updateAddButton() {
+  const count = selectedDates.size;
+  const configured = availableRepositories().length > 0;
+  const add = $('new-time-off');
+  add.disabled = count === 0 || !configured || $('time-off-dialog').open;
+  $('year-selection-summary').textContent = count
+    ? count + (count === 1 ? ' day selected' : ' days selected') : 'Click days to select time off';
+  $('add-time-off-help').title = !configured
+    ? 'Configure Time off tasks under Settings → Time repositories first.'
+    : !count ? 'Select one or more days in the calendar to add time off.'
+      : 'Add time off for ' + count + (count === 1 ? ' selected day.' : ' selected days.');
+}
 function renderRepositories() {
   const select = $('time-off-repository-filter'), previous = select.value;
   select.replaceChildren(new Option('All repositories', ''));
   for (const repo of state.repositories) select.append(new Option(repo.label, repo.id));
   select.value = state.repositories.some(repo => repo.id === previous) ? previous : '';
-  $('new-time-off').disabled = !availableRepositories().length || !$('time-off-editor').hidden;
+  updateAddButton();
 }
 function currentGroups() {
   const selected = $('time-off-repository-filter').value;
   return state.groups.filter(group => !selected || group.destinationId === selected);
 }
-function groupStatus(group) {
-  if (group.planned.length && group.taken.length) return 'Partly taken';
-  return group.planned.length ? 'Planned' : 'Taken';
-}
 function cardFor(group) {
-  if (!group.planned.length) return compactPastCard(group);
   const card = make('article', 'time-off-card');
   card.dataset.groupKey = group.key;
-  const dates = group.planned.length ? group.planned : group.entries;
-  const title = make('button', 'time-off-card-date', labelForRange(dates[0].entryDate, dates.at(-1).entryDate));
-  title.type = 'button';
-  title.addEventListener('click', () => selectDay(dates[0].entryDate));
-  const copy = make('div', 'time-off-card-copy');
-  copy.append(title, make('span', 'time-off-card-status', groupStatus(group)));
-  const task = make('p', 'time-off-card-description', group.taskTitle || taskName(group.taskUrl));
-  copy.append(task);
-  if (group.description) copy.append(make('p', 'time-off-card-description', group.description));
-  copy.append(make('p', 'time-off-card-meta',
-    dates.length + (dates.length === 1 ? ' day · ' : ' days · ') + duration(sum(dates))
-    + (group.entries.some(entry => entry._pending) ? ' · Sync pending' : '')));
-  const actions = make('div', 'time-off-group-actions');
-  const edit = make('button', 'time-off-secondary', group.planned.length
-    ? (group.taken.length ? 'Edit remaining' : 'Edit') : 'Correct');
-  edit.type = 'button';
-  edit.addEventListener('click', () => openForm(group));
-  const remove = make('button', 'time-off-danger', group.planned.length ? 'Delete planned' : 'Delete taken');
-  remove.type = 'button';
-  remove.addEventListener('click', () => openCancel(group));
-  if (group.entries.some(entry => entry._pending)) {
-    edit.disabled = remove.disabled = true;
-    edit.title = remove.title = 'Sync the pending change before editing this time off.';
-  }
-  actions.append(edit, remove);
-  card.append(copy, actions);
+  const upcoming = group.planned;
+  const date = make('button', 'time-off-card-date',
+    labelForRange(upcoming[0].entryDate, upcoming.at(-1).entryDate));
+  date.type = 'button';
+  date.addEventListener('click', () => selectDay(upcoming[0].entryDate));
+  card.append(date, make('span', 'time-off-card-meta',
+    upcoming.length + (upcoming.length === 1 ? ' day · ' : ' days · ')
+    + duration(sum(upcoming)) + (group.entries.some(entry => entry._pending)
+      ? ' · Sync pending' : '')));
   return card;
 }
-function iconAction(kind, title, action) {
+function deleteIconAction(title, action) {
   const button = make('button', 'time-off-icon-action');
   button.type = 'button';
   button.setAttribute('aria-label', title);
@@ -112,48 +102,22 @@ function iconAction(kind, title, action) {
   svg.setAttribute('aria-hidden', 'true');
   const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
   path.setAttribute('fill', 'currentColor');
-  path.setAttribute('d', kind === 'edit'
-    ? 'M11.94 1.94a1.5 1.5 0 0 1 2.12 2.12l-8.5 8.5a1 1 0 0 1-.45.26L2 13.75l.93-3.11a1 1 0 0 1 .26-.45l8.75-8.25ZM3.6 11.1l-.35 1.15 1.15-.35 8.6-8.6-.8-.8-8.6 8.6Z'
-    : 'M5.5 1a1 1 0 0 0-1 1v1H2a.75.75 0 0 0 0 1.5h.75l.55 8.05A2 2 0 0 0 5.3 14.5h5.4a2 2 0 0 0 2-1.95l.55-8.05H14a.75.75 0 0 0 0-1.5h-2.5V2a1 1 0 0 0-1-1h-5Zm.5 2v-.5h4V3H6Zm-1.75 1.5h7.5l-.54 7.95a.5.5 0 0 1-.5.55H5.3a.5.5 0 0 1-.5-.55l-.55-7.95Z');
-  svg.append(path); button.append(svg);
+  path.setAttribute('d',
+    'M5.5 1a1 1 0 0 0-1 1v1H2a.75.75 0 0 0 0 1.5h.75l.55 8.05A2 2 0 0 0 5.3 14.5h5.4a2 2 0 0 0 2-1.95l.55-8.05H14a.75.75 0 0 0 0-1.5h-2.5V2a1 1 0 0 0-1-1h-5Zm.5 2v-.5h4V3H6Zm-1.75 1.5h7.5l-.54 7.95a.5.5 0 0 1-.5.55H5.3a.5.5 0 0 1-.5-.55l-.55-7.95Z');
+  svg.append(path);
+  button.append(svg);
   button.addEventListener('click', action);
   return button;
 }
-function compactPastCard(group) {
-  const card = make('article', 'time-off-card time-off-past-row');
-  card.dataset.groupKey = group.key;
-  const date = make('button', 'time-off-card-date',
-    labelForRange(group.startDate, group.endDate));
-  date.type = 'button';
-  date.addEventListener('click', () => selectDay(group.startDate));
-  const detail = make('span', 'time-off-past-meta',
-    duration(group.totalSeconds) + ' · ' + (group.taskTitle || taskName(group.taskUrl)));
-  detail.title = [group.taskTitle || taskName(group.taskUrl), group.description].filter(Boolean).join(' · ');
-  const actions = make('span', 'time-off-icon-actions');
-  const edit = iconAction('edit', 'Correct past time off', () => openForm(group));
-  const remove = iconAction('delete', 'Delete taken time off', () => openCancel(group));
-  if (group.entries.some(entry => entry._pending)) {
-    edit.disabled = remove.disabled = true;
-    edit.title = remove.title = 'Sync the previous change before editing this time off.';
-  }
-  actions.append(edit, remove);
-  card.append(date, detail, actions);
-  return card;
-}
-
 function renderMy() {
   state.groups = groupTimeOffRecords(state.entries);
-  const groups = currentGroups();
-  for (const [id, future] of [['upcoming-time-off', true], ['past-time-off', false]]) {
-    const parent = $(id); parent.replaceChildren();
-    const matches = groups.filter(group => future ? group.planned.length > 0 : !group.planned.length);
-    if (future) matches.sort((a, b) => a.planned[0].entryDate.localeCompare(b.planned[0].entryDate));
-    if (!matches.length) parent.append(make('p', 'time-off-empty',
-      future ? 'No upcoming time off.' : 'No past time off.'));
-    for (const group of matches) parent.append(cardFor(group));
-  }
+  const host = $('upcoming-time-off');
+  host.replaceChildren();
+  const groups = currentGroups().filter(group => group.planned.length)
+    .sort((a, b) => a.planned[0].entryDate.localeCompare(b.planned[0].entryDate));
+  if (!groups.length) host.append(make('p', 'time-off-empty', 'No upcoming time off.'));
+  for (const group of groups) host.append(cardFor(group));
 }
-function editing() { return !$('time-off-editor').hidden; }
 function isOwnEntry(entry) {
   const login = state.currentUsers[entry.destinationId];
   return Boolean(login && typeof entry.user === 'string' &&
@@ -163,27 +127,11 @@ function effectiveTeamRecords() {
   const repository = $('time-off-repository-filter').value;
   let records = state.loadedTeamYear === state.year ? [...state.teamEntries] : [];
   records = records.filter(entry => !repository || entry.destinationId === repository);
-  // My time off is projected through the pending local queue, unlike GitHub
-  // reads of other teammates. Replace only destinations we successfully read.
   records = records.filter(entry =>
     !isOwnEntry(entry) || !state.myLoadedDestinations.has(entry.destinationId));
   records.push(...state.entries.filter(entry =>
-    (!repository || entry.destinationId === repository) &&
-    entry.entryDate?.slice(0, 4) === String(state.year)));
-  if (editing()) {
-    const previousIds = new Set(previousFor(state.group).map(entry => entry.id));
-    records = records.filter(entry => !isOwnEntry(entry) || !previousIds.has(entry.id));
-    const destinationId = $('edit-repository').value, user = state.currentUsers[destinationId];
-    if ((!repository || destinationId === repository) && user) {
-      records.push(...selectedDays().map(item => ({
-        id: 'draft:' + item.date, destinationId, user, taskUrl: $('edit-task').value,
-        entryDate: item.date, isTimeOff: true, _draft: true,
-        startedAt: item.date + 'T09:00:00Z',
-        endedAt: item.date + 'T23:59:59Z',
-        durationSeconds: Number(item.hours) * 3600,
-      })));
-    }
-  }
+    (!repository || entry.destinationId === repository)
+    && entry.entryDate?.slice(0, 4) === String(state.year)));
   return records;
 }
 function selectedDayDetails() {
