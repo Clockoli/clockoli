@@ -1,0 +1,56 @@
+// Keep completed annual team scans across page reloads. Scope the data to the
+// current GitHub identity, configuration generation, and connected repositories.
+export const TEAM_TIME_OFF_YEAR_CACHE_KEY = 'timeOffTeamYearsV1';
+const MAX_YEARS = 5;
+const MAX_YEAR_BYTES = 8 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 24 * 1024 * 1024;
+
+export function teamTimeOffCacheScope(snapshot, destinations) {
+  return JSON.stringify({
+    generation: snapshot.generation,
+    authGeneration: snapshot.authGeneration,
+    login: snapshot.auth?.githubLogin || snapshot.auth?.user?.login || '',
+    destinations: destinations.map(item => [
+      item.id, item.owner, item.repo, item.branch || 'main',
+      item.defaultBranch || 'main', item.repoId || null, item.storageLogin || '',
+    ]).sort((a, b) => a[0].localeCompare(b[0])),
+  });
+}
+
+export async function readCachedTeamTimeOff(backend, scope, year) {
+  const cache = (await backend.getMany([TEAM_TIME_OFF_YEAR_CACHE_KEY]))[TEAM_TIME_OFF_YEAR_CACHE_KEY];
+  const result = cache?.version === 1 && cache.scope === scope
+    ? cache.years?.[String(year)]?.result : null;
+  return result?.configured === true && result.partial === false && Array.isArray(result.entries)
+    ? { ...result, cached: true } : null;
+}
+
+export async function saveCachedTeamTimeOff(backend, scope, year, result, savedAt = Date.now()) {
+  if (result?.configured !== true || result.partial || !Array.isArray(result.entries)) return false;
+  const { cached, ...value } = result;
+  const size = JSON.stringify(value).length;
+  if (size > MAX_YEAR_BYTES) return false;
+  return backend.mutateMany([TEAM_TIME_OFF_YEAR_CACHE_KEY], current => {
+    const stored = current[TEAM_TIME_OFF_YEAR_CACHE_KEY];
+    const years = stored?.version === 1 && stored.scope === scope ? { ...stored.years } : {};
+    const key = String(year);
+    if ((years[key]?.savedAt ?? -1) > savedAt) return { result: false };
+    years[key] = { savedAt, size, result: value };
+    const recent = Object.entries(years).sort((a, b) => b[1].savedAt - a[1].savedAt);
+    let total = 0;
+    const retained = {};
+    for (const [itemYear, item] of recent) {
+      if (Object.keys(retained).length >= MAX_YEARS || total + item.size > MAX_TOTAL_BYTES) continue;
+      retained[itemYear] = item;
+      total += item.size;
+    }
+    return {
+      set: { [TEAM_TIME_OFF_YEAR_CACHE_KEY]: { version: 1, scope, years: retained } },
+      result: true,
+    };
+  });
+}
+
+export async function invalidateCachedTeamTimeOff(backend) {
+  await backend.deleteMany([TEAM_TIME_OFF_YEAR_CACHE_KEY]);
+}
