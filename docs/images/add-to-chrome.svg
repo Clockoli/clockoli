@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="52" viewBox="0 0 280 52" role="img" aria-labelledby="title">
+  <title id="title">Add to Chrome — free</title>
+  <rect x="0.5" y="0.5" width="279" height="51" rx="8" fill="#237d3c" stroke="#1c6831"/>
+  <g transform="translate(28 26)">
+    <circle r="14.5" fill="#fff"/>
+    <path d="M0 -13 A13 13 0 0 1 11.26 -6.5 H0 A6.5 6.5 0 0 0 -5.63 3.25 L-11.26 -6.5 A13 13 0 0 1 0 -13Z" fill="#ea4335"/>
+    <path d="M11.26 -6.5 A13 13 0 0 1 0 13 L5.63 3.25 A6.5 6.5 0 0 0 0 -6.5Z" fill="#fbbc05"/>
+    <path d="M0 13 A13 13 0 0 1 -11.26 -6.5 L-5.63 3.25 A6.5 6.5 0 0 0 5.63 3.25Z" fill="#34a853"/>
+    <circle r="6.3" fill="#4285f4" stroke="#fff" stroke-width="1"/>
+  </g>
+  <text x="153" y="32" fill="#fff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" font-size="17" font-weight="600" text-anchor="middle">Add to Chrome — free</text>
+</svg>
