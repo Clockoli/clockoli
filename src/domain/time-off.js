@@ -166,11 +166,12 @@ export function findTimeOffStart(date, durationSeconds, timezone, occupied = [])
 
 export function normalizeTimeOffChange(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid time off change.');
-  const { taskUrl, taskTitle = '', description = '', groupId = null, previous = [], days, timezone = null } = value;
+  const { taskUrl, taskTitle = '', description = '', groupId = null, previous = [], days, timezone = null, singleDayDeletion = false } = value;
   const url = normalizeTaskUrl(taskUrl);
   if (typeof taskTitle !== 'string' || taskTitle.length > 500
       || typeof description !== 'string' || description.length > 2000
-      || (groupId !== null && (typeof groupId !== 'string' || !GROUP_RE.test(groupId)))) {
+      || (groupId !== null && (typeof groupId !== 'string' || !GROUP_RE.test(groupId)))
+      || typeof singleDayDeletion !== 'boolean') {
     throw new Error('Invalid time off task or group.');
   }
   if (!Array.isArray(previous) || previous.length > 50
@@ -183,7 +184,10 @@ export function normalizeTimeOffChange(value) {
   }
   if (new Set(previous.map(item => item.id)).size !== previous.length) throw new Error('Duplicate previous time off entry.');
   const normalizedDays = normalizeTimeOffDays(days, { allowEmpty: previous.length > 0 });
-  return { taskUrl: url, taskTitle, description, groupId, timezone: timezone === null ? null : normalizeTimezone(timezone), previous: previous.map(item => ({
+  if (singleDayDeletion && (previous.length !== 1 || normalizedDays.length !== 0)) {
+    throw new Error('Deleting one time off day requires exactly one original entry and no new entries.');
+  }
+  return { taskUrl: url, taskTitle, description, groupId, singleDayDeletion, timezone: timezone === null ? null : normalizeTimezone(timezone), previous: previous.map(item => ({
     id: item.id, date: item.date, startedAt: item.startedAt,
     endedAt: item.endedAt, updatedAt: item.updatedAt,
   })), days: normalizedDays };
