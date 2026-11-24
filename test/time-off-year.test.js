@@ -4,6 +4,21 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { annualTimeOffDays } from '../src/domain/time-off-year.js';
 import { classifyTimeOffRecords } from '../src/domain/time-off.js';
+import { TEAM_TIME_OFF_YEAR_CACHE_KEY, teamTimeOffCacheScope, readCachedTeamTimeOff,
+  saveCachedTeamTimeOff, invalidateCachedTeamTimeOff } from '../src/services/time-off-year-cache.js';
+
+class MemoryYearCache {
+  constructor() { this.data = {}; }
+  async getMany(keys) {
+    return Object.fromEntries(keys.filter(key => key in this.data).map(key => [key, this.data[key]]));
+  }
+  async mutateMany(keys, callback) {
+    const change = callback(await this.getMany(keys));
+    Object.assign(this.data, change.set ?? {});
+    return change.result;
+  }
+  async deleteMany(keys) { for (const key of keys) delete this.data[key]; }
+}
 
 const PTO = 'https://github.com/acme/team/issues/15';
 const record = (id, user, date, endedAt, destinationId = 'github:1') => ({
@@ -42,6 +57,8 @@ test('team PTO loader fetches one complete year, honors task configuration and r
   const end = worker.indexOf('async function loadMyTimeOff(', start);
   assert.ok(start >= 0 && end > start);
   const calls = [], origin = 'chrome-extension://clockoli/';
+  const timeOffCacheBackend = new MemoryYearCache();
+  let generation = 3;
   const destination = { id: 'github:1', owner: 'acme', repo: 'time', defaultBranch: 'main' };
   class ReportService {
     async loadRepositoryRange(range, options) {
@@ -52,8 +69,11 @@ test('team PTO loader fetches one complete year, honors task configuration and r
     }
   }
   const context = vm.createContext({
-    ReportService, store: {},
-    configuredSnapshot: async () => ({ auth: { githubLogin: 'alice' } }),
+    ReportService, store: {}, timeOffCacheBackend,
+    teamTimeOffCacheScope, readCachedTeamTimeOff, saveCachedTeamTimeOff,
+    configuredSnapshot: async () => ({
+      auth: { githubLogin: 'alice' }, generation, authGeneration: 9,
+    }),
     selectReadDestinations: () => [destination],
     githubForConfig: () => ({}),
     timeOffSettingsForDestination: async () => ({ config: { version: 1, taskUrls: [PTO] } }),
@@ -73,10 +93,51 @@ test('team PTO loader fetches one complete year, honors task configuration and r
     { startDate: '2027-01-01', endDate: '2027-12-31' });
   assert.ok(calls[0].options.budgets.maxTotalFiles > 1000);
   assert.equal(result.entries.length, 1, 'unconfigured work tasks are never counted as PTO');
+  const cached = await context.loadTeamTimeOff({
+    type: 'LOAD_TEAM_TIME_OFF', startDate: '2027-01-01', endDate: '2027-12-31',
+  }, sender, origin);
+  assert.equal(cached.cached, true);
+  assert.equal(calls.length, 1, 'revisiting a year must not scan GitHub again');
+  await context.loadTeamTimeOff({
+    type: 'LOAD_TEAM_TIME_OFF', startDate: '2027-01-01', endDate: '2027-12-31', refresh: true,
+  }, sender, origin);
+  assert.equal(calls.length, 2, 'only explicit Refresh scans GitHub again');
+  generation = 4;
+  await context.loadTeamTimeOff({
+    type: 'LOAD_TEAM_TIME_OFF', startDate: '2027-01-01', endDate: '2027-12-31',
+  }, sender, origin);
+  assert.equal(calls.length, 3, 'configuration changes invalidate the saved year');
   await assert.rejects(() => context.loadTeamTimeOff({
     type: 'LOAD_TEAM_TIME_OFF', startDate: '2027-01-01', endDate: '2028-01-01',
   }, sender, origin), /one calendar year/);
   await assert.rejects(() => context.loadTeamTimeOff({
     type: 'LOAD_TEAM_TIME_OFF', startDate: '2027-01-01', endDate: '2027-12-31',
   }, { url: origin + 'src/reports/reports.html' }, origin), /Only Time off/);
+});
+
+
+test('annual team cache survives reloads and is scoped to connected repos and GitHub login', async () => {
+  const backend = new MemoryYearCache();
+  const repos = [{ id: 'github:1', owner: 'acme', repo: 'time', branch: 'main' }];
+  const snapshot = { generation: 1, authGeneration: 4, auth: { githubLogin: 'alice' } };
+  const scope = teamTimeOffCacheScope(snapshot, repos);
+  const view = { configured: true, partial: false, readStatus: [], entries: [
+    record('one', 'bob', '2027-03-01', '2027-03-01T17:00:00Z'),
+  ] };
+  assert.equal(await readCachedTeamTimeOff(backend, scope, 2027), null);
+  assert.equal(await saveCachedTeamTimeOff(backend, scope, 2027, view), true);
+  assert.equal((await readCachedTeamTimeOff(backend, scope, 2027)).cached, true);
+  assert.equal((await readCachedTeamTimeOff(backend, scope, 2027)).entries.length, 1);
+  assert.equal(await readCachedTeamTimeOff(backend, scope, 2026), null);
+  assert.equal(await readCachedTeamTimeOff(backend,
+    teamTimeOffCacheScope({ ...snapshot, auth: { githubLogin: 'bob' } }, repos), 2027), null);
+  assert.equal(await readCachedTeamTimeOff(backend,
+    teamTimeOffCacheScope(snapshot, [{ ...repos[0], branch: 'different' }]), 2027), null);
+  assert.equal(await saveCachedTeamTimeOff(backend, scope, 2028, { ...view, partial: true }), false);
+  for (let year = 2028; year < 2034; year++) {
+    await saveCachedTeamTimeOff(backend, scope, year, view, year);
+  }
+  assert.ok(Object.keys(backend.data[TEAM_TIME_OFF_YEAR_CACHE_KEY].years).length <= 5);
+  await invalidateCachedTeamTimeOff(backend);
+  assert.equal(await readCachedTeamTimeOff(backend, scope, 2033), null);
 });
