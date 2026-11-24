@@ -414,6 +414,10 @@ async function loadMine({ quiet = false } = {}) {
     if (changedIdentity) {
       state.teamYears.clear(); state.teamEntries = []; state.loadedTeamYear = null;
       state.teamIncomplete = true;
+      state.selectedUser = '';
+      $('time-off-user-search').value = '';
+      closeUserSuggestions();
+      syncUserClearButton();
     }
     state.entries = result.entries || [];
     state.repositories = result.repositories || [];
