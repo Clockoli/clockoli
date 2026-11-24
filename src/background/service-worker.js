@@ -34,6 +34,8 @@ import { ConfigurationService } from '../services/configuration.js';
 import { annotateDestinationRecord, loadDestinationRecords, mergeDestinationRecords, mergeDestinationTaskSummaries, ReportService, withoutInternalMetadata } from '../services/reports.js';
 import { ExchangeRateService } from '../services/exchange-rates.js';
 import { readTimeOffSettings, saveTimeOffSettings } from '../services/time-off-settings.js';
+import { teamTimeOffCacheScope, readCachedTeamTimeOff, saveCachedTeamTimeOff,
+  invalidateCachedTeamTimeOff } from '../services/time-off-year-cache.js';
 import { TaskMetadataService } from '../services/task-metadata.js';
 import { mergeTaskCatalogIndexes, taskCandidates } from '../services/task-catalog.js';
 import { InstallationDiscoveryService, RepositoryInitializer } from '../services/github-app-onboarding.js';
@@ -456,8 +458,10 @@ async function loadReport(message) {
 }
 
 async function loadTeamTimeOff(message, sender, extensionOrigin) {
+  const keys = Object.keys(message).sort().join(',');
   if (sender?.url !== extensionOrigin + 'src/time-off/time-off.html'
-      || Object.keys(message).sort().join(',') !== 'endDate,startDate,type') {
+      || !['endDate,startDate,type', 'endDate,refresh,startDate,type'].includes(keys)
+      || (keys.includes('refresh') && message.refresh !== true)) {
     throw new Error('Only Time off can load the team calendar.');
   }
   const year = typeof message.startDate === 'string' ? message.startDate.slice(0, 4) : '';
@@ -469,6 +473,11 @@ async function loadTeamTimeOff(message, sender, extensionOrigin) {
   const snapshot = await configuredSnapshot({ localOnly: true });
   const destinations = selectReadDestinations(snapshot);
   if (!snapshot.auth || !destinations.length) return { configured: false, entries: [] };
+  const scope = teamTimeOffCacheScope(snapshot, destinations);
+  if (message.refresh !== true) {
+    const cached = await readCachedTeamTimeOff(timeOffCacheBackend, scope, year).catch(() => null);
+    if (cached) return cached;
+  }
   const configs = {};
   const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
     const settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
@@ -484,11 +493,13 @@ async function loadTeamTimeOff(message, sender, extensionOrigin) {
         maxTotalRecords: 1_000_000 },
     });
   });
-  return {
+  const result = {
     configured: true, partial: loaded.partial, readStatus: loaded.readStatus,
     entries: classifyTimeOffRecords(loaded.records.map(withoutInternalMetadata), configs)
       .filter(entry => entry.isTimeOff),
   };
+  await saveCachedTeamTimeOff(timeOffCacheBackend, scope, year, result).catch(() => {});
+  return result;
 }
 
 async function loadMyTimeOff(message, sender, extensionOrigin) {
@@ -1265,6 +1276,8 @@ async function handle(message, sender) {
       repoId: snapshot.config.repoId, defaultBranch: snapshot.config.defaultBranch,
       config: saved.config, sha: saved.sha,
     } });
+    // Reclassification can affect every year, even years with no new entries.
+    await invalidateCachedTeamTimeOff(timeOffCacheBackend);
     return saved;
   }
   if (message.type === 'CHECK_TIME_OFF_TASK') {
