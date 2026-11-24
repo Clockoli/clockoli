@@ -155,6 +155,8 @@ function updateYearStats(records) {
     ? '@' + state.selectedUser : 'My time off';
   $('time-off-taken-days').textContent = stats ? String(stats.taken) : '—';
   $('time-off-planned-days').textContent = stats ? String(stats.planned) : '—';
+  $('time-off-taken-unit').textContent = stats?.taken === 1 ? 'day' : 'days';
+  $('time-off-planned-unit').textContent = stats?.planned === 1 ? 'day' : 'days';
 }
 
 function closeUserSuggestions() {
