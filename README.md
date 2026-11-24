@@ -40,21 +40,9 @@ Most time trackers make you choose between a hosted service and a server you hav
 
 Clockoli takes a third approach. Your GitHub repository is your database. Your browser is your time tracker. Git is your change history.
 
-```mermaid
-flowchart LR
-    subgraph SaaS["SaaS"]
-        direction TB
-        A1["Your browser"] --> A2["Vendor's server"] --> A3[("Vendor's database")]
-    end
-    subgraph Hosted["Self-hosted"]
-        direction TB
-        B1["Your browser"] --> B2["Your server"] --> B3[("Your database")]
-    end
-    subgraph GitNative["Git-native · Clockoli"]
-        direction TB
-        C1["Your browser"] --> C2[("Your GitHub repo")]
-    end
-```
+<p align="center">
+  <img src="docs/images/time-tracking-architectures.svg" width="860" alt="Three architectures side by side: SaaS sends time records through a vendor's server to a vendor's database; self-hosted sends them through your own server to your own database; Clockoli sends them directly from your browser to your GitHub repository, with no application server.">
+</p>
 
 Track any task, collaborate with your team, generate reports and invoices without another SaaS subscription or a server to maintain.
 
