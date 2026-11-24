@@ -1,6 +1,6 @@
 # Time off
 
-Open **Time off** for a year-at-a-glance team calendar, your own time off, and inline planning. Time off uses ordinary Clockoli time entries; no separate leave database or approval workflow is needed.
+Open **Time off** to see team absences for the whole year, inspect who is away each day, and plan or edit your own PTO in the calendar.
 
 ## Configure the team
 
