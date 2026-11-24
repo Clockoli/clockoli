@@ -20,7 +20,7 @@ Navigate between years, filter by time repository, or choose **This year**. Succ
 
 1. Click one or more dates in the annual calendar. Click a selected day again to remove it from the selection. You can also **Shift-click** a range of weekdays; weekends can be selected individually.
 2. When at least one day is selected and a time-off task is configured, the **Add time off** button at the bottom right of the calendar becomes available. Otherwise it is disabled, with a tooltip explaining what is required.
-3. Click **Add time off** to open a short dialog. Choose the **Time repository**, **Type** (a configured PTO task), **Hours per day** (8 by default) and an optional **Description**. The selected dates are shown for confirmation; there is no second calendar or manual start time.
+3. Click **Add time off** to open a short dialog. Choose the **Time repository** and **Type** (configured PTO task) when there is more than one option. Clockoli automatically selects the only available repository or task and hides its selector. Set **Hours per day** (8 by default) and an optional **Description**. The selected dates are shown for confirmation; there is no second calendar or manual start time.
 4. Save. Clockoli immediately queues the complete plan locally. Your teammates will see it after GitHub synchronization. Up to 50 days across a 500-day span can be saved together.
 
 Clockoli automatically chooses a free continuous interval, preferring 09:00 or the next available slot later that day. It checks local time immediately and verifies against GitHub when syncing. If the requested hours cannot fit, it reports a conflict and avoids overlapping or partially saving the plan.
