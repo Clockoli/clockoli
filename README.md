@@ -5,8 +5,13 @@
 <h1 align="center">Clockoli</h1>
 
 <p align="center">
-  <strong>Time tracking that lives in your GitHub repo.</strong><br>
-  A browser extension that tracks time on any task URL and writes readable records to private GitHub repositories you control. There is no Clockoli server.
+  <strong>Your code lives in Git. Why doesn't your time?</strong><br>
+  The Git-native, open-source time tracker for teams.<br>
+  Free forever. No subscriptions. No seat limits. No servers to run.
+</p>
+
+<p align="center">
+  Track time on any web page with a browser extension that stores your records in private GitHub repositories you control.
 </p>
 
 <p align="center">
@@ -27,19 +32,43 @@
   <img src="docs/images/timeline.png" width="860" alt="Clockoli Activity: a running timer for a GitHub issue above a timeline of the day's tracked tasks, grouped by project">
 </p>
 
-## Why Clockoli
+<a name="why-clockoli"></a>
 
-Most time trackers keep your hours in a vendor database. Clockoli writes them to Git instead:
+## Time tracking without the SaaS tax
 
-- **Your data stays in your repository.** Hours go to a private GitHub repository you choose, so you decide who can read them, how long they are kept and when they are deleted.
-- **Back up everything with one command.** `git clone` copies every entry you have tracked. Each completed entry is one line of JSON in a monthly file, in a [documented format](docs/data-format-v1.md), so the copy stays readable without Clockoli.
-- **Ask an AI where the time went.** Point an AI agent at the clone and ask which tasks ran over or how many hours to bill this month. No export step, no Clockoli API.
-- **See every change, and undo it.** Each synchronized edit or deletion is a Git commit, so `git log` shows what changed and when, and an earlier version can be restored from history. Several edits made before a sync arrive as one commit.
-- **No Clockoli account or server.** The extension talks directly to GitHub. There is nothing to sign up for, and your GitHub credentials stay in the extension.
-- **Your rates stay in your browser.** Reports, billable amounts and invoices are calculated locally. Hourly rates and invoice details live only in browser storage: they are never written to the time repository, so teammates who share it never see them, and no tracker server holds them. The only copy outside the browser is a settings backup file you export yourself. Mixed-currency reports send only currency codes and dates to the [Frankfurter](https://frankfurter.dev/) exchange-rate service.
-- **Any URL is a task.** GitHub issues and pull requests, documents, support tickets, dashboards: the page address is the task identity, and a title is optional.
+Most time trackers make you choose between a hosted service and a server you have to maintain yourself.
 
-Clockoli fits teams that already work in GitHub and care more about owning and auditing their data than about one-click SaaS onboarding. [Why Clockoli](docs/why-clockoli.md) explains the tradeoffs, and [clockoli.com](https://clockoli.com/#compare) compares it with Toggl Track, Clockify, Harvest, Kimai and solidtime.
+Clockoli takes a third approach. Your GitHub repository is your database. Your browser is your time tracker. Git is your change history.
+
+```mermaid
+flowchart LR
+    subgraph SaaS["SaaS"]
+        direction TB
+        A1["Your browser"] --> A2["Vendor's server"] --> A3[("Vendor's database")]
+    end
+    subgraph Hosted["Self-hosted"]
+        direction TB
+        B1["Your browser"] --> B2["Your server"] --> B3[("Your database")]
+    end
+    subgraph GitNative["Git-native · Clockoli"]
+        direction TB
+        C1["Your browser"] --> C2[("Your GitHub repo")]
+    end
+```
+
+Track any task, collaborate with your team, generate reports and invoices without another SaaS subscription or a server to maintain.
+
+**Even if Clockoli disappears, your data doesn't.** You can read your records without us, and the source code is yours to fork.
+
+- **Your time. Your data. Your repo.** Hours go to a private GitHub repository you choose, so you decide who can read them, how long they are kept and when they are deleted.
+- **Your backup is one `git clone` away.** Clone your repository to copy all synchronized entries and their Git history. Each completed entry is one line of JSON in a monthly file, in a [documented format](docs/data-format-v1.md), so the copy stays readable without Clockoli.
+- **Your timesheets are AI-ready by design.** Point an AI agent at the clone and ask which tasks ran over or how many hours to bill this month. No export step, no Clockoli API.
+- **Version control for your time.** Each synchronized edit or deletion is a Git commit, so `git log` shows what changed and when, and an earlier version can be restored from history. Several edits made before a sync arrive as one commit.
+- **We can't hold your data hostage. We don't have it.** The extension talks directly to GitHub. There is no Clockoli account or server, and your GitHub credentials stay in the extension.
+- **Share your hours, not your rates.** Reports, billable amounts and invoices are calculated locally. Hourly rates and invoice details live only in browser storage: they are never written to the time repository, so teammates who share it never see them, and no tracker server holds them. The only copy outside the browser is a settings backup file you export yourself. Mixed-currency reports send only currency codes and dates to the [Frankfurter](https://frankfurter.dev/) exchange-rate service.
+- **If it has a URL, you can track it.** GitHub issues and pull requests, documents, support tickets, dashboards: any HTTP(S) page address can be a task identity, and a title is optional.
+
+Already using GitHub to manage your work? You don't need another account or another database to track your team's time. [Why Clockoli](docs/why-clockoli.md) explains the tradeoffs, and [clockoli.com](https://clockoli.com/#compare) compares it with Toggl Track, Clockify, Harvest, Kimai and solidtime.
 
 ## Install
 
@@ -111,7 +140,11 @@ Your GitHub account signs you in, a source repository may own the issue you trac
   <img src="docs/images/reports.png" width="600" alt="Reports: hours per day stacked by person, with CSV, JSON, Print and Create invoice actions">
 </p>
 
-### Work as a team
+<a name="work-as-a-team"></a>
+
+### Grow your team, not your bill
+
+Clockoli has no per-seat fees or paid team plans. Everyone who tracks time needs a GitHub account and access to the shared repository.
 
 - Teammates track into the same private repository, each on a personal branch, and Reports reads them as one view.
 - If you administer a time repository, invite teammates to it from Settings.
@@ -139,7 +172,9 @@ Clockoli sends data only to GitHub, plus currency codes and dates to the [Frankf
 
 Anyone who can read a time repository can read the URLs, titles, timestamps and descriptions in it. See [Data, privacy, and security](docs/data-and-privacy.md) for the full storage model.
 
-## Current limitations
+<a name="current-limitations"></a>
+
+## What's the catch?
 
 - Chrome and other Chromium browsers are the supported platform. Firefox and Safari builds are still in testing and update manually.
 - There is no mobile app, no reminders and no side-by-side conflict editor. Unresolved sync conflicts can need your action.
