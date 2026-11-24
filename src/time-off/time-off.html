@@ -25,8 +25,7 @@
   </nav></div>
   <main class="time-off-page">
     <header class="time-off-header">
-      <div><h1>Time off</h1><p>See who is away throughout the year. Click a day for details, or plan your own time off.</p></div>
-      <button id="new-time-off" type="button" class="time-off-primary" disabled>Add time off</button>
+      <div><h1>Time off</h1><p>Hover over a day to see who's away. Click days to select them for new time off.</p></div>
     </header>
     <p id="time-off-status" role="status" aria-live="polite"></p>
     <p id="time-off-error" role="alert" hidden></p>
@@ -55,71 +54,58 @@
           <span><i class="legend-swatch away-2"></i>2–3 away</span>
           <span><i class="legend-swatch away-4"></i>4–6 away</span>
           <span><i class="legend-swatch away-7"></i>7+ away</span>
-          <span><i class="legend-swatch past"></i>Past (taken)</span>
+          <span><i class="legend-swatch past"></i>Past</span>
           <span><i class="legend-swatch mine"></i>My time off</span>
-          <span><i class="legend-swatch selected"></i>Selected day</span>
+          <span><i class="legend-swatch selected"></i>Selected for adding</span>
+        </div>
+        <div class="time-off-year-actions">
+          <span id="year-selection-summary" aria-live="polite">Select days to add time off</span>
+          <span id="add-time-off-help" class="time-off-add-help" title="Select one or more days in the calendar to add time off.">
+            <button id="new-time-off" type="button" class="time-off-primary" disabled>Add time off</button>
+          </span>
         </div>
       </section>
-      <aside class="time-off-inspector" aria-label="Time off details and planning">
+      <aside class="time-off-inspector" aria-label="Time off day details">
         <section id="day-inspector" class="time-off-inspector-panel">
           <h2 id="selected-day-label"></h2>
           <p id="selected-day-summary" class="time-off-muted"></p>
           <div id="selected-day-people" class="time-off-people-list"></div>
         </section>
-        <section id="time-off-editor" class="time-off-inspector-panel" hidden>
-          <form id="time-off-form" novalidate>
-            <div class="time-off-dialog-header">
-              <h2 id="time-off-dialog-title">Add time off</h2>
-              <button type="button" id="close-time-off" class="time-off-close" aria-label="Close time off editor">×</button>
-            </div>
-            <div class="time-off-form-grid">
-              <label>Time repository<select id="edit-repository" required></select></label>
-              <label>Type<select id="edit-task" required></select></label>
-              <label>Hours for new days<input id="edit-hours" type="number" min="0" max="24" step="0.25" value="8" required></label>
-            </div>
-            <div class="time-off-calendar-editor">
-              <div class="time-off-calendar-toolbar">
-                <div class="time-off-calendar-month-nav">
-                  <button id="calendar-previous-month" type="button" class="time-off-secondary" aria-label="Previous month">‹</button>
-                  <label for="calendar-month-picker">Month <input id="calendar-month-picker" type="month" required></label>
-                  <button id="calendar-next-month" type="button" class="time-off-secondary" aria-label="Next month">›</button>
-                </div>
-                <button id="calendar-clear-selection" type="button" class="time-off-secondary">Clear</button>
-              </div>
-              <p id="time-off-calendar-help" class="time-off-hint">Click a date, or Shift-click a range of weekdays. Enter hours on each selected day.</p>
-              <div class="time-off-month-scroll" tabindex="0" aria-label="Time off month picker">
-                <div class="time-off-calendar-weekdays" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
-                <div id="time-off-day-grid" class="time-off-day-grid" role="group" aria-label="Choose dates and hours"></div>
-              </div>
-              <div class="time-off-calendar-summary"><strong id="day-preview-total">0 days · 0m</strong><span id="time-off-selected-range"></span></div>
-              <p id="edit-taken-note" class="time-off-hint" hidden>Already taken days remain unchanged. Only planned days will be updated.</p>
-              <p id="day-preview-error" class="time-off-hint" role="alert" hidden></p>
-            </div>
-            <label class="time-off-description">Description (optional)<textarea id="edit-description" rows="2" maxlength="2000" placeholder="Vacation"></textarea></label>
-            <p id="time-off-form-error" role="alert" hidden></p>
-            <footer class="time-off-dialog-actions">
-              <button id="cancel-time-off-form" class="time-off-secondary" type="button">Cancel</button>
-              <button id="save-time-off" class="time-off-primary" type="submit">Add time off</button>
-            </footer>
-          </form>
-        </section>
         <section id="my-time-off-summary" class="time-off-inspector-panel">
-          <h2>My time off</h2>
-          <h3>Upcoming</h3>
+          <h2>My upcoming time off</h2>
           <div id="upcoming-time-off" class="time-off-group-list"></div>
-          <details class="time-off-past-details">
-            <summary>Past time off</summary>
-            <div id="past-time-off" class="time-off-group-list"></div>
-          </details>
         </section>
       </aside>
     </div>
   </main>
+  <dialog id="time-off-dialog" aria-labelledby="time-off-dialog-title">
+    <form id="time-off-form" novalidate>
+      <div class="time-off-dialog-header">
+        <h2 id="time-off-dialog-title">Add time off</h2>
+        <button id="close-time-off" type="button" class="time-off-close" aria-label="Close">×</button>
+      </div>
+      <p id="chosen-time-off-dates" class="time-off-selected-description"></p>
+      <div class="time-off-form-grid">
+        <label>Time repository<select id="edit-repository" required></select></label>
+        <label>Type<select id="edit-task" required></select></label>
+        <label>Hours per day<input id="edit-hours" type="number" min="0" max="24" step="0.25" value="8" required></label>
+      </div>
+      <label class="time-off-description">Description (optional)<textarea id="edit-description" rows="2" maxlength="2000" placeholder="Vacation"></textarea></label>
+      <p id="time-off-form-error" role="alert" hidden></p>
+      <footer class="time-off-dialog-actions">
+        <button id="cancel-time-off-form" class="time-off-secondary" type="button">Cancel</button>
+        <button id="save-time-off" class="time-off-primary" type="submit">Add time off</button>
+      </footer>
+    </form>
+  </dialog>
   <dialog id="time-off-cancel-dialog" aria-labelledby="time-off-cancel-title">
-    <h2 id="time-off-cancel-title">Cancel time off?</h2>
+    <h2 id="time-off-cancel-title">Delete time off for this day?</h2>
     <p id="time-off-cancel-message"></p>
     <p id="time-off-cancel-error" role="alert" hidden></p>
-    <div class="time-off-dialog-actions"><button id="keep-time-off" type="button" class="time-off-secondary">Keep</button><button id="confirm-cancel-time-off" type="button" class="time-off-danger">Cancel time off</button></div>
+    <div class="time-off-dialog-actions">
+      <button id="keep-time-off" type="button" class="time-off-secondary">Keep</button>
+      <button id="confirm-cancel-time-off" type="button" class="time-off-danger">Delete this day</button>
+    </div>
   </dialog>
   <script type="module" src="time-off.js"></script>
 </body>
