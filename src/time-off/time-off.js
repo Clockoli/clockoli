@@ -640,6 +640,16 @@ async function confirmCancel() {
   } finally { button.disabled = false; }
 }
 
+$('time-off-user-search').addEventListener('focus', renderUserSuggestions);
+$('time-off-user-search').addEventListener('input', handleUserSearch);
+$('time-off-user-search').addEventListener('keydown', handleUserSearchKeydown);
+$('clear-time-off-user').addEventListener('click', clearUserFilter);
+$('time-off-user-filter').addEventListener('focusout', () => queueMicrotask(() => {
+  if (!$('time-off-user-filter').contains(document.activeElement)) closeUserSuggestions();
+}));
+document.addEventListener('pointerdown', event => {
+  if (!$('time-off-user-filter').contains(event.target)) closeUserSuggestions();
+});
 $('year-grid').addEventListener('mouseleave', () => { pinDayUntilLeave = false; });
 $('new-time-off').addEventListener('click', openForm);
 $('refresh-time-off').addEventListener('click', () => {
