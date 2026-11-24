@@ -6,7 +6,7 @@ const DAY_MS = 86400000;
 const state = { entries: [], repositories: [], currentUsers: {}, groups: [], teamEntries: [],
   year: Number(new Date().getFullYear()), selectedDate: '', loadedTeamYear: null,
   mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(),
-  teamLoading: false, group: null, formBusy: false, cancelGroup: null };
+  teamLoading: false, teamIncomplete: true, group: null, formBusy: false, cancelGroup: null };
 const form = $('time-off-form');
 const dayState = new Map(), takenDates = new Set();
 let calendarMonth = '', calendarAnchor = null;
@@ -225,7 +225,8 @@ function renderInspector() {
   $('selected-day-label').textContent = dateLabel(date);
   $('selected-day-summary').textContent = state.teamLoading
     ? 'Loading team availability…'
-    : !group?.count ? 'Nobody is away on this day.'
+    : !group?.count ? (state.teamIncomplete
+      ? 'No known absences (team data is incomplete).' : 'Nobody is away on this day.')
       : group.count + (group.count === 1 ? ' person away' : ' people away');
   const host = $('selected-day-people');
   host.replaceChildren();
@@ -311,8 +312,9 @@ async function loadMine({ quiet = false } = {}) {
       .filter(item => item.status === 'ok').map(item => item.destinationId));
     // The setup response has no per-repository read status on empty installations.
     renderRepositories(); renderMy(); renderYear(); renderInspector();
-    notice(result.partial ? 'Some time repositories could not be read. The calendar may be incomplete.'
-      : !availableRepositories().length ? 'Configure a Time off task in Settings → Time repositories to get started.' : '');
+    if (result.partial) notice('Some time repositories could not be read. The calendar may be incomplete.');
+    else if (!availableRepositories().length) notice('Configure a Time off task in Settings → Time repositories to get started.');
+    else if (!quiet) notice('');
   } catch (error) {
     if (request === state.mineRequestId) notice(error.message || 'Could not load your time off.', true);
   }
@@ -320,6 +322,7 @@ async function loadMine({ quiet = false } = {}) {
 async function loadTeam() {
   const year = state.year, request = ++state.teamRequestId;
   state.teamLoading = true;
+  state.teamIncomplete = true;
   state.loadedTeamYear = null; state.teamEntries = [];
   $('team-time-off-status').textContent = 'Loading team time off for ' + year + '…';
   renderYear(); renderInspector();
@@ -330,6 +333,7 @@ async function loadTeam() {
     if (request !== state.teamRequestId) return;
     state.teamEntries = result.entries || [];
     state.loadedTeamYear = year;
+    state.teamIncomplete = Boolean(result.partial);
     $('team-time-off-status').textContent = result.partial
       ? 'Some time repositories could not be read. The year may show fewer people away than expected.'
       : '';
