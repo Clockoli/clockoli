@@ -109,6 +109,7 @@ const EXPECTED_RUNTIME_INVENTORY = [
   'src/services/task-catalog.js',
   'src/services/task-metadata.js',
   'src/services/time-off-settings.js',
+  'src/services/time-off-year-cache.js',
   'src/services/tracker.js',
   'src/services/user-storage-branch.js',
   'src/storage/chrome-store.js',
