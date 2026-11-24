@@ -6,7 +6,8 @@ const DAY_MS = 86400000;
 const state = { entries: [], repositories: [], currentUsers: {}, groups: [], teamEntries: [],
   year: Number(new Date().getFullYear()), selectedDate: '', loadedTeamYear: null,
   mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(),
-  teamLoading: false, teamIncomplete: true, group: null, formBusy: false, cancelGroup: null };
+  teamLoading: false, teamIncomplete: true, teamYears: new Map(),
+  group: null, formBusy: false, cancelGroup: null };
 const form = $('time-off-form');
 const dayState = new Map(), takenDates = new Set();
 let calendarMonth = '', calendarAnchor = null;
@@ -321,17 +322,19 @@ function selectDay(date) {
   const year = Number(date.slice(0, 4));
   if (year !== state.year) {
     state.year = year; state.selectedDate = date;
-    renderYear(); renderInspector(); void loadTeam(); return;
+    if (!activateTeamYear(year)) { renderYear(); renderInspector(); void loadTeam(); }
+    return;
   }
   state.selectedDate = date;
   renderYear(); renderInspector();
 }
 function changeYear(year) {
   if (!Number.isInteger(year) || year < 1 || year > 9999) return;
-  const current = today();
+  const previousYear = state.year, current = today();
   state.year = year;
   state.selectedDate = year === Number(current.slice(0, 4)) ? current : String(year).padStart(4, '0') + '-01-01';
-  renderYear(); renderInspector(); void loadTeam();
+  if (year === previousYear) { renderYear(); renderInspector(); return; }
+  if (!activateTeamYear(year)) { renderYear(); renderInspector(); void loadTeam(); }
 }
 function closeForm() {
   state.group = null;
@@ -362,29 +365,51 @@ async function loadMine({ quiet = false } = {}) {
     if (request === state.mineRequestId) notice(error.message || 'Could not load your time off.', true);
   }
 }
-async function loadTeam() {
-  const year = state.year, request = ++state.teamRequestId;
-  state.teamLoading = true;
-  state.teamIncomplete = true;
-  state.loadedTeamYear = null; state.teamEntries = [];
-  $('team-time-off-status').textContent = 'Loading team time off for ' + year + '…';
+function activateTeamYear(year) {
+  const saved = state.teamYears.get(year);
+  if (!saved) return false;
+  state.teamEntries = saved.entries || [];
+  state.loadedTeamYear = year;
+  state.teamIncomplete = Boolean(saved.partial);
+  state.teamLoading = false;
+  $('team-time-off-status').textContent = saved.partial
+    ? 'Some time repositories could not be read. The year may show fewer people away than expected.'
+    : '';
+  renderYear(); renderInspector();
+  return true;
+}
+async function loadTeam({ refresh = false } = {}) {
+  const year = state.year;
+  if (!refresh && activateTeamYear(year)) return;
+  const request = ++state.teamRequestId;
+  const previous = state.teamYears.get(year);
+  state.teamLoading = !previous;
+  if (!previous) {
+    state.loadedTeamYear = null;
+    state.teamEntries = [];
+    state.teamIncomplete = true;
+  }
+  $('team-time-off-status').textContent = (refresh ? 'Refreshing' : 'Loading')
+    + ' team time off for ' + year + '…';
   renderYear(); renderInspector();
   try {
     const startDate = String(year).padStart(4, '0') + '-01-01';
     const endDate = String(year).padStart(4, '0') + '-12-31';
-    const result = await send({ type: 'LOAD_TEAM_TIME_OFF', startDate, endDate });
-    if (request !== state.teamRequestId) return;
-    state.teamEntries = result.entries || [];
-    state.loadedTeamYear = year;
-    state.teamIncomplete = Boolean(result.partial);
-    $('team-time-off-status').textContent = result.partial
-      ? 'Some time repositories could not be read. The year may show fewer people away than expected.'
-      : '';
+    const result = await send({ type: 'LOAD_TEAM_TIME_OFF', startDate, endDate,
+      ...(refresh ? { refresh: true } : {}) });
+    state.teamYears.delete(year);
+    state.teamYears.set(year, result);
+    while (state.teamYears.size > 5) state.teamYears.delete(state.teamYears.keys().next().value);
+    if (request === state.teamRequestId && state.year === year) activateTeamYear(year);
   } catch (error) {
-    if (request !== state.teamRequestId) return;
-    $('team-time-off-status').textContent = error.message || 'Could not load team time off.';
+    if (request !== state.teamRequestId || state.year !== year) return;
+    if (previous) activateTeamYear(year);
+    $('team-time-off-status').textContent =
+      (error.message || 'Could not load team time off.') +
+      (previous ? ' Showing the last locally saved calendar.' : '');
+    state.teamIncomplete = true;
   } finally {
-    if (request === state.teamRequestId) {
+    if (request === state.teamRequestId && state.year === year) {
       state.teamLoading = false;
       renderYear(); renderInspector();
     }
@@ -478,7 +503,7 @@ function chooseCalendarDate(date, useShift = false) {
   state.selectedDate = date;
   if (Number(date.slice(0, 4)) !== state.year) {
     state.year = Number(date.slice(0, 4));
-    void loadTeam();
+    if (!activateTeamYear(state.year)) void loadTeam();
   }
   renderCalendar(date);
 }
@@ -571,7 +596,7 @@ function openForm(group = null) {
   if (Number(date.slice(0, 4)) !== state.year) {
     state.year = Number(date.slice(0, 4));
     state.selectedDate = date;
-    void loadTeam();
+    if (!activateTeamYear(state.year)) void loadTeam();
   }
   renderCalendar();
 }
@@ -605,7 +630,8 @@ async function saveForm(event) {
     state.selectedDate = days[0]?.date || state.selectedDate;
     closeForm(); renderMy();
     if (Number(state.selectedDate.slice(0, 4)) !== state.year) {
-      state.year = Number(state.selectedDate.slice(0, 4)); void loadTeam();
+      state.year = Number(state.selectedDate.slice(0, 4));
+      if (!activateTeamYear(state.year)) void loadTeam();
     }
     renderYear(); renderInspector();
     notice('Saved locally. Your team will see it after GitHub synchronization.');
@@ -653,7 +679,9 @@ async function confirmCancel() {
 }
 
 $('new-time-off').addEventListener('click', () => openForm());
-$('refresh-time-off').addEventListener('click', () => { void loadMine(); void loadTeam(); });
+$('refresh-time-off').addEventListener('click', () => {
+  void loadMine(); void loadTeam({ refresh: true });
+});
 $('time-off-repository-filter').addEventListener('change', () => {
   renderMy(); renderYear(); renderInspector();
 });
