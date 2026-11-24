@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
-import { annualTimeOffDays } from '../src/domain/time-off-year.js';
+import { annualTimeOffDays, yearlyTimeOffTotals, timeOffUserLogins } from '../src/domain/time-off-year.js';
 import { ChromeStore } from '../src/storage/chrome-store.js';
 import { classifyTimeOffRecords } from '../src/domain/time-off.js';
 import { TEAM_TIME_OFF_YEAR_CACHE_KEY, teamTimeOffCacheScope, readCachedTeamTimeOff,
@@ -51,6 +51,46 @@ test('annual heatmap counts unique users per day across entries and repositories
   assert.equal(past.planned, false);
   assert.equal(past.taken, true);
   assert.throws(() => annualTimeOffDays(source, 0), /Invalid Time off year/);
+});
+
+test('yearly PTO stats count distinct dates for one user or the current account', () => {
+  const data = [
+    record('a', 'alice', '2027-03-03', '2027-03-03T17:00:00Z'),
+    record('b', 'ALICE', '2027-03-03', '2027-03-03T18:00:00Z', 'github:2'),
+    record('c', 'Alice', '2027-03-04', '2027-03-04T17:00:00Z'),
+    record('d', 'bob', '2027-03-03', '2027-03-03T17:00:00Z'),
+    record('e', 'Bob', '2027-03-05', '2027-03-05T17:00:00Z'),
+    record('f', 'alice', '2028-03-03', '2028-03-03T17:00:00Z'),
+    { ...record('g', 'alice', '2027-03-06', '2027-03-06T17:00:00Z'), isTimeOff: false },
+    { ...record('h', 'alice', '2027-03-04', '2027-03-08T17:00:00Z'), id: 'h' },
+    record('i', 'Carol', '2027-03-06', '2027-03-06T17:00:00Z', 'github:3'),
+  ];
+  const users = { 'github:1': 'alice', 'github:2': 'Alice', 'github:3': 'CAROL' };
+  const now = '2027-03-04T12:00:00Z';
+  // Two entries on March 3 count once; March 4 has one unfinished entry,
+  // so it is planned rather than counted in both categories.
+  assert.deepEqual(yearlyTimeOffTotals(data, 2027, 'aLIce', users, now),
+    { taken: 1, planned: 1 });
+  assert.deepEqual(yearlyTimeOffTotals(data, 2027, 'BOB', users, now),
+    { taken: 1, planned: 1 });
+  assert.deepEqual(yearlyTimeOffTotals(data, 2027, '', users, now),
+    { taken: 1, planned: 2 }, 'default totals combine only my dates across connected repos');
+  assert.deepEqual(yearlyTimeOffTotals(data, 2026, 'alice', users, now),
+    { taken: 0, planned: 0 });
+  assert.deepEqual(yearlyTimeOffTotals(data.filter(entry => entry.destinationId === 'github:1'),
+    2027, 'alice', users, now), { taken: 1, planned: 1 });
+});
+
+test('GitHub login suggestions deduplicate case and exclude invalid or ordinary-work records', () => {
+  const data = [
+    record('a', 'Alice', '2027-03-01', '2027-03-01T17:00:00Z'),
+    record('b', 'alice', '2027-03-02', '2027-03-02T17:00:00Z'),
+    record('c', 'Bob', '2027-03-02', '2027-03-02T17:00:00Z'),
+    { ...record('d', 'No Work', '2027-03-02', '2027-03-02T17:00:00Z'), isTimeOff: false },
+    { ...record('e', 'Bad Name', '2027-03-02', '2027-03-02T17:00:00Z') },
+  ];
+  assert.deepEqual(timeOffUserLogins(data, { 'github:1': 'ALICE', 'github:2': 'carol' }),
+    ['ALICE', 'Bob', 'carol']);
 });
 
 test('team PTO loader fetches one complete year, honors task configuration and rejects wider requests', async () => {
