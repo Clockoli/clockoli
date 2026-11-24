@@ -1,9 +1,12 @@
 import { groupTimeOffRecords, normalizeTimeOffDays } from '../domain/time-off.js';
+import { annualTimeOffDays } from '../domain/time-off-year.js';
 
 const $ = id => document.getElementById(id);
 const DAY_MS = 86400000;
 const state = { entries: [], repositories: [], currentUsers: {}, groups: [], teamEntries: [],
-  view: 'my', week: '', loading: false, group: null, formBusy: false, cancelGroup: null };
+  year: Number(new Date().getFullYear()), selectedDate: '', loadedTeamYear: null,
+  mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(),
+  teamLoading: false, group: null, formBusy: false, cancelGroup: null };
 const form = $('time-off-form');
 const dayState = new Map(), takenDates = new Set();
 let calendarMonth = '', calendarAnchor = null;
@@ -58,154 +61,276 @@ function renderRepositories() {
   select.replaceChildren(new Option('All repositories', ''));
   for (const repo of state.repositories) select.append(new Option(repo.label, repo.id));
   select.value = state.repositories.some(repo => repo.id === previous) ? previous : '';
-  $('new-time-off').disabled = !availableRepositories().length;
+  $('new-time-off').disabled = !availableRepositories().length || !$('time-off-editor').hidden;
 }
 function currentGroups() {
   const selected = $('time-off-repository-filter').value;
   return state.groups.filter(group => !selected || group.destinationId === selected);
 }
 function groupStatus(group) {
-  if (group.planned.length && group.taken.length) return 'Partially taken';
+  if (group.planned.length && group.taken.length) return 'Partly taken';
   return group.planned.length ? 'Planned' : 'Taken';
 }
-function cardFor(group, future) {
+function cardFor(group) {
   const card = make('article', 'time-off-card');
   card.dataset.groupKey = group.key;
-  const body = make('div', 'time-off-card-copy');
-  const dates = future && group.taken.length ? group.planned : group.entries;
-  body.append(make('div', 'time-off-card-title', labelForRange(dates[0].entryDate, dates.at(-1).entryDate)));
-  body.append(make('div', 'time-off-card-description', group.taskTitle || taskName(group.taskUrl)));
-  if (group.description) body.append(make('p', 'time-off-card-description', group.description));
-  const details = make('div', 'time-off-card-meta');
-  const hours = duration(sum(dates));
-  details.append(make('span', '', dates.length + (dates.length === 1 ? ' day · ' : ' days · ') + hours));
-  details.append(make('span', '', repositoryOf(group.destinationId)?.label || group.repository));
-  if (group.entries.some(entry => entry._pending)) details.append(make('span', '', 'Sync pending'));
-  body.append(details);
-  const status = make('span', 'time-off-card-status', groupStatus(group));
+  const dates = group.planned.length ? group.planned : group.entries;
+  const title = make('button', 'time-off-card-date', labelForRange(dates[0].entryDate, dates.at(-1).entryDate));
+  title.type = 'button';
+  title.addEventListener('click', () => selectDay(dates[0].entryDate));
+  const copy = make('div', 'time-off-card-copy');
+  copy.append(title, make('span', 'time-off-card-status', groupStatus(group)));
+  const task = make('p', 'time-off-card-description', group.taskTitle || taskName(group.taskUrl));
+  copy.append(task);
+  if (group.description) copy.append(make('p', 'time-off-card-description', group.description));
+  copy.append(make('p', 'time-off-card-meta',
+    dates.length + (dates.length === 1 ? ' day · ' : ' days · ') + duration(sum(dates))
+    + (group.entries.some(entry => entry._pending) ? ' · Sync pending' : '')));
   const actions = make('div', 'time-off-group-actions');
-  const edit = make('button', '', future && group.taken.length ? 'Edit remaining' : future ? 'Edit' : 'Correct');
-  edit.type = 'button'; edit.addEventListener('click', () => openForm(group));
-  const cancel = make('button', 'time-off-danger', group.taken.length && future ? 'Cancel remaining' : 'Cancel');
-  cancel.type = 'button'; cancel.addEventListener('click', () => openCancel(group));
+  const edit = make('button', 'time-off-secondary', group.planned.length
+    ? (group.taken.length ? 'Edit remaining' : 'Edit') : 'Correct');
+  edit.type = 'button';
+  edit.addEventListener('click', () => openForm(group));
+  const remove = make('button', 'time-off-danger', group.planned.length ? 'Delete planned' : 'Delete taken');
+  remove.type = 'button';
+  remove.addEventListener('click', () => openCancel(group));
   if (group.entries.some(entry => entry._pending)) {
-    edit.disabled = true; cancel.disabled = true;
-    edit.title = cancel.title = 'Sync the previous change before editing this time off.';
+    edit.disabled = remove.disabled = true;
+    edit.title = remove.title = 'Sync the pending change before editing this time off.';
   }
-  actions.append(edit, cancel);
-  card.append(body, status, actions);
+  actions.append(edit, remove);
+  card.append(copy, actions);
   return card;
 }
 function renderMy() {
-  const groups = groupTimeOffRecords(state.entries);
-  state.groups = groups;
+  state.groups = groupTimeOffRecords(state.entries);
+  const groups = currentGroups();
   for (const [id, future] of [['upcoming-time-off', true], ['past-time-off', false]]) {
     const parent = $(id); parent.replaceChildren();
-    const matches = currentGroups().filter(group => future ? group.planned.length > 0 : !group.planned.length);
-    if (!matches.length) parent.append(make('div', 'time-off-empty',
-      future ? 'No upcoming time off. Use Add time off to plan an absence.' : 'No past time off.'));
-    for (const group of matches) parent.append(cardFor(group, future));
+    const matches = groups.filter(group => future ? group.planned.length > 0 : !group.planned.length);
+    if (future) matches.sort((a, b) => a.planned[0].entryDate.localeCompare(b.planned[0].entryDate));
+    if (!matches.length) parent.append(make('p', 'time-off-empty',
+      future ? 'No upcoming time off.' : 'No past time off.'));
+    for (const group of matches) parent.append(cardFor(group));
   }
 }
-function renderTeam() {
-  const start = state.week, end = addDays(start, 6);
-  $('current-week-label').textContent = labelForRange(start, end);
-  const table = $('team-time-off-table');
-  table.replaceChildren();
-  const headings = make('thead'), heading = make('tr');
-  for (const value of ['Person', ...Array.from({ length: 7 }, (_, offset) => dayLabel(addDays(start, offset)))]) {
-    const th = make('th', '', value); th.scope = 'col'; heading.append(th);
+function editing() { return !$('time-off-editor').hidden; }
+function isOwnEntry(entry) {
+  const login = state.currentUsers[entry.destinationId];
+  return Boolean(login && typeof entry.user === 'string' &&
+    entry.user.toLowerCase() === login.toLowerCase());
+}
+function effectiveTeamRecords() {
+  const repository = $('time-off-repository-filter').value;
+  let records = state.loadedTeamYear === state.year ? [...state.teamEntries] : [];
+  records = records.filter(entry => !repository || entry.destinationId === repository);
+  // My time off is projected through the pending local queue, unlike GitHub
+  // reads of other teammates. Replace only destinations we successfully read.
+  records = records.filter(entry =>
+    !isOwnEntry(entry) || !state.myLoadedDestinations.has(entry.destinationId));
+  records.push(...state.entries.filter(entry =>
+    (!repository || entry.destinationId === repository) &&
+    entry.entryDate?.slice(0, 4) === String(state.year)));
+  if (editing()) {
+    const previousIds = new Set(previousFor(state.group).map(entry => entry.id));
+    records = records.filter(entry => !isOwnEntry(entry) || !previousIds.has(entry.id));
+    const destinationId = $('edit-repository').value, user = state.currentUsers[destinationId];
+    if ((!repository || destinationId === repository) && user) {
+      records.push(...selectedDays().map(item => ({
+        id: 'draft:' + item.date, destinationId, user, taskUrl: $('edit-task').value,
+        entryDate: item.date, isTimeOff: true, _draft: true,
+        startedAt: item.date + 'T09:00:00Z',
+        endedAt: item.date + 'T23:59:59Z',
+        durationSeconds: Number(item.hours) * 3600,
+      })));
+    }
   }
-  headings.append(heading); table.append(headings);
-  const all = state.teamEntries.filter(entry => !$('time-off-repository-filter').value
-    || entry.destinationId === $('time-off-repository-filter').value);
-  const people = new Map();
-  for (const entry of all) {
-    const key = entry.destinationId + ':' + entry.user;
-    if (!people.has(key)) people.set(key, { user: entry.user, destinationId: entry.destinationId, entries: [] });
-    people.get(key).entries.push(entry);
+  return records;
+}
+function selectedDayDetails() {
+  return annualTimeOffDays(effectiveTeamRecords(), state.year, state.currentUsers);
+}
+function avatar(login) {
+  const node = make('span', 'time-off-avatar');
+  node.append(make('span', 'time-off-avatar-fallback', login.slice(0, 1).toUpperCase()));
+  if (/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(login)) {
+    const img = document.createElement('img');
+    img.alt = ''; img.loading = 'lazy'; img.referrerPolicy = 'no-referrer';
+    img.src = 'https://github.com/' + encodeURIComponent(login) + '.png?size=64';
+    img.addEventListener('error', () => img.remove(), { once: true });
+    node.prepend(img);
   }
-  const tbody = make('tbody');
-  for (const person of [...people.values()].sort((a, b) => a.user.localeCompare(b.user))) {
-    const row = make('tr'), name = make('th', '', person.user); name.scope = 'row';
-    const repo = repositoryOf(person.destinationId)?.label;
-    if (repo && !($('time-off-repository-filter').value)) name.title = repo;
-    row.append(name);
-    for (let i = 0; i < 7; i++) {
-      const day = addDays(start, i), td = make('td');
-      const entries = person.entries.filter(entry => entry.entryDate === day);
-      if (entries.length) {
-        const own = person.user === state.currentUsers[person.destinationId];
-        const cell = make('button', 'time-off-calendar-slot' + (entries.some(entry => entry.isPlannedTimeOff) ? ' planned' : '') + (own ? ' own' : ''),
-          duration(sum(entries)));
-        cell.type = 'button';
-        cell.title = entries.map(entry => [entry.taskTitle || taskName(entry.taskUrl), entry.description].filter(Boolean).join(' · ')).join('\n');
-        cell.setAttribute('aria-label', person.user + ': ' + duration(sum(entries)) + ' time off on ' + day);
-        cell.addEventListener('click', () => showTeamDetail(person, entries));
-        td.append(cell);
+  return node;
+}
+function renderYear() {
+  $('current-year-label').textContent = String(state.year);
+  const grid = $('year-grid');
+  grid.replaceChildren();
+  const dayGroups = selectedDayDetails();
+  const header = make('div', 'time-off-year-row time-off-year-days');
+  header.setAttribute('role', 'row');
+  const monthHeading = make('span', 'time-off-year-month');
+  monthHeading.setAttribute('role', 'columnheader');
+  monthHeading.textContent = 'Month';
+  header.append(monthHeading);
+  for (let day = 1; day <= 31; day++) {
+    const cell = make('span', 'time-off-year-day-heading', String(day));
+    cell.setAttribute('role', 'columnheader'); header.append(cell);
+  }
+  grid.append(header);
+  const year = String(state.year).padStart(4, '0');
+  for (let month = 1; month <= 12; month++) {
+    const prefix = year + '-' + String(month).padStart(2, '0');
+    const lastDay = new Date(Date.UTC(state.year, month, 0)).getUTCDate();
+    const row = make('div', 'time-off-year-row');
+    row.setAttribute('role', 'row');
+    const monthLabel = make('span', 'time-off-year-month',
+      dateAt(prefix + '-01').toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }));
+    monthLabel.setAttribute('role', 'rowheader'); row.append(monthLabel);
+    for (let day = 1; day <= 31; day++) {
+      if (day > lastDay) {
+        const empty = make('span', 'time-off-year-outside');
+        empty.setAttribute('aria-hidden', 'true'); row.append(empty); continue;
       }
-      row.append(td);
+      const date = prefix + '-' + String(day).padStart(2, '0');
+      const group = dayGroups.get(date), count = group?.count ?? 0;
+      const grade = count === 0 ? 0 : count === 1 ? 1 : count < 4 ? 2 : count < 7 ? 4 : 7;
+      const classes = ['time-off-year-day', 'away-' + grade];
+      if (date < today() && count) classes.push('past');
+      if (group?.own) classes.push('mine');
+      if (date === state.selectedDate) classes.push('selected');
+      if (editing() && dayState.has(date)) classes.push('draft');
+      const cell = make('button', classes.join(' '), count ? String(count) : '');
+      cell.type = 'button'; cell.dataset.date = date;
+      cell.setAttribute('role', 'gridcell');
+      cell.setAttribute('aria-pressed', String(editing() ? dayState.has(date) : date === state.selectedDate));
+      cell.setAttribute('aria-label', dateLabel(date) + ': ' + count
+        + (count === 1 ? ' person away' : ' people away')
+        + (group?.own ? ', my time off' : '')
+        + (editing() && dayState.has(date) ? ', selected for editing' : ''));
+      cell.title = group?.people?.length
+        ? group.people.map(person => person.user).join(', ') : 'No one away';
+      cell.addEventListener('click', event => {
+        if (editing()) {
+          calendarMonth = date.slice(0, 7);
+          chooseCalendarDate(date, event.shiftKey);
+        } else selectDay(date);
+      });
+      row.append(cell);
     }
-    tbody.append(row);
+    grid.append(row);
   }
-  if (!people.size) {
-    const row = make('tr'), empty = make('td', '', 'No time off scheduled this week');
-    empty.colSpan = 8; row.append(empty); tbody.append(row);
-  }
-  table.append(tbody);
 }
-function showTeamDetail(person, entries) {
-  const dialog = make('dialog', 'time-off-detail');
-  const title = make('h2', '', person.user + ' · ' + dateLabel(entries[0].entryDate));
-  const info = make('p', '', entries.map(item =>
-    (item.taskTitle || taskName(item.taskUrl)) + ' · ' + duration(item.durationSeconds)
-    + (item.description ? ' · ' + item.description : '')).join('\n'));
-  info.style.whiteSpace = 'pre-wrap';
-  const close = make('button', 'time-off-secondary', 'Close'); close.type = 'button';
-  close.addEventListener('click', () => dialog.close());
-  dialog.addEventListener('close', () => dialog.remove());
-  dialog.append(title, info);
-  if (person.user === state.currentUsers[person.destinationId]) {
-    const group = state.groups.find(item => item.entries.some(row => row.id === entries[0].id));
-    if (group) {
-      const edit = make('button', 'time-off-primary', 'Edit my time off');
-      edit.type = 'button'; edit.addEventListener('click', () => { dialog.close(); setView('my'); openForm(group); });
-      dialog.append(edit);
+function renderInspector() {
+  if (editing()) return;
+  const date = state.selectedDate, group = selectedDayDetails().get(date);
+  $('selected-day-label').textContent = dateLabel(date);
+  $('selected-day-summary').textContent = state.teamLoading
+    ? 'Loading team availability…'
+    : !group?.count ? 'Nobody is away on this day.'
+      : group.count + (group.count === 1 ? ' person away' : ' people away');
+  const people = $('selected-day-people');
+  people.replaceChildren();
+  for (const person of group?.people ?? []) {
+    const row = make('article', 'time-off-person-row');
+    row.append(avatar(person.user));
+    const copy = make('div', 'time-off-person-copy');
+    const heading = make('div', 'time-off-person-heading');
+    heading.append(make('strong', '', person.user));
+    if (person.own) heading.append(make('span', 'time-off-person-own', 'You'));
+    copy.append(heading);
+    for (const entry of person.entries) {
+      const label = entry._draft ? 'Preview' :
+        Date.parse(entry.endedAt) > Date.now() ? 'Planned' : 'Taken';
+      copy.append(make('p', 'time-off-person-entry',
+        (entry.taskTitle || taskName(entry.taskUrl)) + ' · '
+          + duration(entry.durationSeconds) + ' · ' + label));
+      if (entry.description) copy.append(make('p', 'time-off-person-note', entry.description));
     }
+    if (person.own && !person.entries.some(entry => entry._draft)) {
+      const uniqueGroups = [...new Set(person.entries.map(entry =>
+        state.groups.find(item => item.entries.some(rowEntry => rowEntry.id === entry.id))).filter(Boolean))];
+      for (const ownGroup of uniqueGroups) {
+        const edit = make('button', 'time-off-inline-edit', ownGroup.planned.length ? 'Edit my time off' : 'Correct my time off');
+        edit.type = 'button';
+        edit.disabled = ownGroup.entries.some(entry => entry._pending);
+        edit.addEventListener('click', () => openForm(ownGroup));
+        copy.append(edit);
+      }
+    }
+    row.append(copy); people.append(row);
   }
-  dialog.append(close); document.body.append(dialog); dialog.showModal();
 }
-function setView(name) {
-  state.view = name;
-  $('view-my').setAttribute('aria-selected', String(name === 'my'));
-  $('view-team').setAttribute('aria-selected', String(name === 'team'));
-  $('my-time-off').hidden = name !== 'my'; $('team-time-off').hidden = name !== 'team';
-  if (name === 'team') void loadTeam();
+function selectDay(date) {
+  if (typeof date !== 'string') return;
+  const year = Number(date.slice(0, 4));
+  if (year !== state.year) {
+    state.year = year; state.selectedDate = date;
+    renderYear(); renderInspector(); void loadTeam(); return;
+  }
+  state.selectedDate = date;
+  renderYear(); renderInspector();
+}
+function changeYear(year) {
+  if (!Number.isInteger(year) || year < 1 || year > 9999) return;
+  const current = today();
+  state.year = year;
+  state.selectedDate = year === Number(current.slice(0, 4)) ? current : String(year).padStart(4, '0') + '-01-01';
+  renderYear(); renderInspector(); void loadTeam();
+}
+function closeForm() {
+  state.group = null;
+  dayState.clear(); takenDates.clear(); calendarAnchor = null;
+  $('time-off-editor').hidden = true;
+  $('day-inspector').hidden = false;
+  $('my-time-off-summary').hidden = false;
+  renderRepositories();
+  renderYear(); renderInspector();
 }
 async function loadMine({ quiet = false } = {}) {
-  if (state.loading) return;
-  state.loading = true;
+  const request = ++state.mineRequestId;
   if (!quiet) notice('Loading your time off…');
   try {
     const result = await send({ type: 'LOAD_MY_TIME_OFF' });
-    state.entries = result.entries || []; state.repositories = result.repositories || [];
+    if (request !== state.mineRequestId) return;
+    state.entries = result.entries || [];
+    state.repositories = result.repositories || [];
     state.currentUsers = result.currentUsers || {};
-    renderRepositories(); renderMy();
-    notice(result.partial ? 'Some time repositories could not be read. The list may be incomplete.'
-      : !availableRepositories().length ? 'Configure a time off task in Settings → Time repositories to get started.' : '');
-  } catch (error) { notice(error.message || 'Could not load your time off.', true); }
-  finally { state.loading = false; }
+    state.myLoadedDestinations = new Set((result.readStatus || [])
+      .filter(item => item.status === 'ok').map(item => item.destinationId));
+    // The setup response has no per-repository read status on empty installations.
+    renderRepositories(); renderMy(); renderYear(); renderInspector();
+    notice(result.partial ? 'Some time repositories could not be read. The calendar may be incomplete.'
+      : !availableRepositories().length ? 'Configure a Time off task in Settings → Time repositories to get started.' : '');
+  } catch (error) {
+    if (request === state.mineRequestId) notice(error.message || 'Could not load your time off.', true);
+  }
 }
 async function loadTeam() {
-  const week = state.week;
-  $('team-time-off-status').textContent = 'Loading team time off…';
+  const year = state.year, request = ++state.teamRequestId;
+  state.teamLoading = true;
+  state.loadedTeamYear = null; state.teamEntries = [];
+  $('team-time-off-status').textContent = 'Loading team time off for ' + year + '…';
+  renderYear(); renderInspector();
   try {
-    const result = await send({ type: 'LOAD_TEAM_TIME_OFF', startDate: week, endDate: addDays(week, 6) });
-    if (state.week !== week || state.view !== 'team') return;
+    const startDate = String(year).padStart(4, '0') + '-01-01';
+    const endDate = String(year).padStart(4, '0') + '-12-31';
+    const result = await send({ type: 'LOAD_TEAM_TIME_OFF', startDate, endDate });
+    if (request !== state.teamRequestId) return;
     state.teamEntries = result.entries || [];
-    $('team-time-off-status').textContent = result.partial ? 'Some repositories could not be read. The calendar may be incomplete.' : '';
-    renderTeam();
-  } catch (error) { $('team-time-off-status').textContent = error.message || 'Could not load the team calendar.'; }
+    state.loadedTeamYear = year;
+    $('team-time-off-status').textContent = result.partial
+      ? 'Some time repositories could not be read. The year may show fewer people away than expected.'
+      : '';
+  } catch (error) {
+    if (request !== state.teamRequestId) return;
+    $('team-time-off-status').textContent = error.message || 'Could not load team time off.';
+  } finally {
+    if (request === state.teamRequestId) {
+      state.teamLoading = false;
+      renderYear(); renderInspector();
+    }
+  }
 }
 
 function fillTaskOptions() {
