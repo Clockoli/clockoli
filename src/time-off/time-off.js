@@ -157,6 +157,97 @@ function updateYearStats(records) {
   $('time-off-planned-days').textContent = stats ? String(stats.planned) : '—';
 }
 
+function closeUserSuggestions() {
+  $('time-off-user-suggestions').hidden = true;
+  $('time-off-user-search').setAttribute('aria-expanded', 'false');
+  $('time-off-user-search').removeAttribute('aria-activedescendant');
+  state.suggestionIndex = -1;
+}
+function syncUserClearButton() {
+  $('clear-time-off-user').hidden = !$('time-off-user-search').value.trim() && !state.selectedUser;
+}
+function setSuggestionIndex(index) {
+  const buttons = [...$('time-off-user-suggestions').querySelectorAll('[role="option"]')];
+  if (!buttons.length) return;
+  state.suggestionIndex = (index + buttons.length) % buttons.length;
+  for (const [i, button] of buttons.entries()) button.classList.toggle('active', i === state.suggestionIndex);
+  $('time-off-user-search').setAttribute('aria-activedescendant', buttons[state.suggestionIndex].id);
+  buttons[state.suggestionIndex].scrollIntoView({ block: 'nearest' });
+}
+function renderUserSuggestions() {
+  const host = $('time-off-user-suggestions'), input = $('time-off-user-search');
+  const query = input.value.trim().replace(/^@/, '').toLowerCase();
+  const matches = state.userCandidates.filter(login => login.toLowerCase().includes(query)).slice(0, 8);
+  host.replaceChildren();
+  state.suggestionIndex = -1;
+  input.removeAttribute('aria-activedescendant');
+  if (!matches.length) {
+    host.append(make('p', 'time-off-user-no-results', query
+      ? 'No matching GitHub users in this year.' : 'No GitHub users in this calendar yet.'));
+  }
+  for (const [index, login] of matches.entries()) {
+    const option = make('button', 'time-off-user-option');
+    option.id = 'time-off-user-option-' + index;
+    option.type = 'button';
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(state.selectedUser.toLowerCase() === login.toLowerCase()));
+    option.append(avatar(login), make('span', '', '@' + login));
+    option.addEventListener('pointerdown', event => event.preventDefault());
+    option.addEventListener('click', () => selectUser(login));
+    host.append(option);
+  }
+  host.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+}
+function selectUser(login) {
+  state.selectedUser = login;
+  $('time-off-user-search').value = login;
+  closeUserSuggestions();
+  syncUserClearButton();
+  renderYear();
+  renderInspector();
+}
+function clearUserFilter() {
+  const hadFilter = Boolean(state.selectedUser);
+  state.selectedUser = '';
+  $('time-off-user-search').value = '';
+  closeUserSuggestions();
+  syncUserClearButton();
+  if (hadFilter) { renderYear(); renderInspector(); }
+}
+function handleUserSearch() {
+  const input = $('time-off-user-search');
+  const value = input.value.trim().replace(/^@/, '').toLowerCase();
+  if (state.selectedUser && value !== state.selectedUser.toLowerCase()) {
+    state.selectedUser = '';
+    renderYear();
+    renderInspector();
+  }
+  syncUserClearButton();
+  renderUserSuggestions();
+}
+function handleUserSearchKeydown(event) {
+  const input = $('time-off-user-search'), host = $('time-off-user-suggestions');
+  if (event.key === 'Escape') { closeUserSuggestions(); return; }
+  if (!['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) return;
+  if (host.hidden) renderUserSuggestions();
+  const options = [...host.querySelectorAll('[role="option"]')];
+  if (!options.length) return;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    setSuggestionIndex(state.suggestionIndex + (event.key === 'ArrowDown' ? 1 : -1));
+  } else {
+    event.preventDefault();
+    if (state.suggestionIndex >= 0) options[state.suggestionIndex].click();
+    else {
+      const exact = options.find(option => option.textContent.toLowerCase()
+        === '@' + input.value.trim().replace(/^@/, '').toLowerCase());
+      if (exact) exact.click();
+      else if (options.length === 1) options[0].click();
+    }
+  }
+}
+
 function avatar(login) {
   const node = make('span', 'time-off-avatar');
   node.append(make('span', 'time-off-avatar-fallback', login.slice(0, 1).toUpperCase()));
