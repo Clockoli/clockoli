@@ -25,8 +25,6 @@ const addDays = (date, count) => {
   const day = dateAt(date); day.setUTCDate(day.getUTCDate() + count);
   return day.toISOString().slice(0, 10);
 };
-const monday = date => addDays(date, -((dateAt(date).getUTCDay() + 6) % 7));
-const dayLabel = date => dateAt(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', weekday: 'short', timeZone: 'UTC' });
 const dateLabel = date => dateAt(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 const duration = seconds => {
   const mins = Math.round((Number(seconds) || 0) / 60);
@@ -417,6 +415,11 @@ function chooseCalendarDate(date, useShift = false) {
     dayState.delete(date);
   } else if (!addCalendarDates([date])) return;
   calendarAnchor = date;
+  state.selectedDate = date;
+  if (Number(date.slice(0, 4)) !== state.year) {
+    state.year = Number(date.slice(0, 4));
+    void loadTeam();
+  }
   renderCalendar(date);
 }
 function renderCalendar(focusDate = null) {
@@ -451,6 +454,7 @@ function renderCalendar(focusDate = null) {
         selected.hours = hours.value.trim() === '' ? NaN : Number(hours.value);
         hours.setAttribute('aria-invalid', String(!validHours(selected.hours)));
         updateCalendarSummary();
+        renderYear();
       });
       label.append(hours, make('span', '', 'h'));
       cell.append(label);
@@ -460,6 +464,7 @@ function renderCalendar(focusDate = null) {
     host.append(cell);
   }
   updateCalendarSummary();
+  renderYear();
   if (focusDate) host.querySelector('button[data-date="' + focusDate + '"]')?.focus();
 }
 function previousFor(group) {
@@ -496,10 +501,19 @@ function openForm(group = null) {
   if (group?.planned.length && group.taken.length) {
     for (const entry of group.taken) takenDates.add(entry.entryDate);
   }
-  calendarMonth = (first?.entryDate || today()).slice(0, 7);
+  const date = first?.entryDate || state.selectedDate || today();
+  calendarMonth = date.slice(0, 7);
   $('edit-taken-note').hidden = !takenDates.size;
+  $('time-off-editor').hidden = false;
+  $('day-inspector').hidden = true;
+  $('my-time-off-summary').hidden = true;
+  $('new-time-off').disabled = true;
+  if (Number(date.slice(0, 4)) !== state.year) {
+    state.year = Number(date.slice(0, 4));
+    state.selectedDate = date;
+    void loadTeam();
+  }
   renderCalendar();
-  $('time-off-dialog').showModal();
 }
 function plannedDaysToSave() {
   return normalizeTimeOffDays(selectedDays().map(day => ({
@@ -512,7 +526,7 @@ async function saveForm(event) {
   let days;
   try { days = plannedDaysToSave(); } catch (error) { setFormError(error.message); return; }
   const taskUrl = $('edit-task').value;
-  if (!taskUrl) { setFormError('Choose a time off task.'); return; }
+  if (!taskUrl) { setFormError('Choose a Time off type.'); return; }
   const previous = previousFor(state.group);
   state.formBusy = true; $('save-time-off').disabled = true; setFormError('');
   try {
@@ -520,28 +534,37 @@ async function saveForm(event) {
       taskUrl, taskTitle: taskName(taskUrl), description: $('edit-description').value.trim(),
       groupId: state.group?.groupId ?? null, timezone: state.group?.entries[0]?.timezone ?? null,
       previous, days });
-    $('time-off-dialog').close();
-    const prevIds = new Set(previous.map(row => row.id));
-    state.entries = [...state.entries.filter(row => !prevIds.has(row.id)),
+    const removed = new Set(previous.map(entry => entry.id));
+    state.entries = [...state.entries.filter(entry => !removed.has(entry.id)),
       ...(result.entries || []).map(entry => ({
         ...entry, isTimeOff: true, isPlannedTimeOff: Date.parse(entry.endedAt) > Date.now(),
         destinationId: result.destinationId, timeRepository: repositoryOf(result.destinationId)?.label || '',
         user: state.currentUsers[result.destinationId] || '',
       }))];
-    renderMy();
-    notice('Saved locally. Your team will see the change after GitHub synchronization.');
+    state.myLoadedDestinations.add(result.destinationId);
+    state.selectedDate = days[0]?.date || state.selectedDate;
+    closeForm(); renderMy();
+    if (Number(state.selectedDate.slice(0, 4)) !== state.year) {
+      state.year = Number(state.selectedDate.slice(0, 4)); void loadTeam();
+    }
+    renderYear(); renderInspector();
+    notice('Saved locally. Your team will see it after GitHub synchronization.');
     void loadMine({ quiet: true });
-    if (state.view === 'team') void loadTeam();
-  } catch (error) { setFormError(error.message); }
-  finally { state.formBusy = false; updateCalendarSummary(); }
+  } catch (error) { setFormError(error.message || 'Could not save time off.'); }
+  finally { state.formBusy = false; if (editing()) updateCalendarSummary(); }
 }
 function openCancel(group) {
   state.cancelGroup = group;
   const affected = group.planned.length ? group.planned : group.entries;
-  $('time-off-cancel-message').textContent = 'Remove ' + affected.length
+  const future = group.planned.length > 0;
+  $('time-off-cancel-title').textContent = future ? 'Delete planned time off?' : 'Delete taken time off?';
+  $('confirm-cancel-time-off').textContent = future ? 'Delete planned days' : 'Delete taken days';
+  $('time-off-cancel-message').textContent = 'Delete ' + affected.length
     + (affected.length === 1 ? ' day' : ' days') + ' (' + duration(sum(affected))
-    + ') for ' + (group.taskTitle || taskName(group.taskUrl)) + '?'
-    + (group.taken.length && group.planned.length ? ' Completed days will be preserved.' : '');
+    + ') for ' + (group.taskTitle || taskName(group.taskUrl)) + '? '
+    + (group.taken.length && future ? 'Already taken days will be preserved.'
+      : future ? 'These future days will be removed from the team calendar.'
+        : 'This will remove historical time off records.');
   $('time-off-cancel-error').hidden = true;
   $('time-off-cancel-dialog').showModal();
 }
@@ -558,10 +581,10 @@ async function confirmCancel() {
     $('time-off-cancel-dialog').close();
     const ids = new Set(previous.map(row => row.id));
     state.entries = state.entries.filter(row => !ids.has(row.id));
-    renderMy();
-    notice('Time off cancellation saved locally. Your team will see it after synchronization.');
+    state.myLoadedDestinations.add(group.destinationId);
+    renderMy(); renderYear(); renderInspector();
+    notice('Time off deletion saved locally. Your team will see it after synchronization.');
     void loadMine({ quiet: true });
-    if (state.view === 'team') void loadTeam();
     state.cancelGroup = null;
   } catch (error) {
     $('time-off-cancel-error').textContent = error.message || 'Could not cancel time off.';
@@ -569,19 +592,18 @@ async function confirmCancel() {
   } finally { button.disabled = false; }
 }
 
-$('view-my').addEventListener('click', () => setView('my'));
-$('view-team').addEventListener('click', () => setView('team'));
 $('new-time-off').addEventListener('click', () => openForm());
-$('refresh-time-off').addEventListener('click', () => { void loadMine(); if (state.view === 'team') void loadTeam(); });
+$('refresh-time-off').addEventListener('click', () => { void loadMine(); void loadTeam(); });
 $('time-off-repository-filter').addEventListener('change', () => {
-  renderMy(); if (state.view === 'team') renderTeam();
+  renderMy(); renderYear(); renderInspector();
 });
-$('previous-week').addEventListener('click', () => { state.week = addDays(state.week, -7); void loadTeam(); });
-$('next-week').addEventListener('click', () => { state.week = addDays(state.week, 7); void loadTeam(); });
-$('this-week').addEventListener('click', () => { state.week = monday(today()); void loadTeam(); });
-$('close-time-off').addEventListener('click', () => $('time-off-dialog').close());
-$('cancel-time-off-form').addEventListener('click', () => $('time-off-dialog').close());
-$('edit-repository').addEventListener('change', fillTaskOptions);
+$('previous-year').addEventListener('click', () => changeYear(state.year - 1));
+$('next-year').addEventListener('click', () => changeYear(state.year + 1));
+$('this-year').addEventListener('click', () => changeYear(new Date().getFullYear()));
+$('close-time-off').addEventListener('click', closeForm);
+$('cancel-time-off-form').addEventListener('click', closeForm);
+$('edit-repository').addEventListener('change', () => { fillTaskOptions(); renderYear(); });
+$('edit-task').addEventListener('change', renderYear);
 $('calendar-previous-month').addEventListener('click', () => {
   calendarMonth = shiftMonth(calendarMonth, -1); renderCalendar();
 });
@@ -601,5 +623,7 @@ $('edit-hours').addEventListener('input', updateCalendarSummary);
 form.addEventListener('submit', saveForm);
 $('keep-time-off').addEventListener('click', () => $('time-off-cancel-dialog').close());
 $('confirm-cancel-time-off').addEventListener('click', confirmCancel);
-state.week = monday(today());
+state.selectedDate = today();
+renderYear(); renderInspector();
 void loadMine();
+void loadTeam();
