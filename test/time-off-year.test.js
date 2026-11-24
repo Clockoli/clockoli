@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { annualTimeOffDays } from '../src/domain/time-off-year.js';
+import { ChromeStore } from '../src/storage/chrome-store.js';
 import { classifyTimeOffRecords } from '../src/domain/time-off.js';
 import { TEAM_TIME_OFF_YEAR_CACHE_KEY, teamTimeOffCacheScope, readCachedTeamTimeOff,
   saveCachedTeamTimeOff, invalidateCachedTeamTimeOff } from '../src/services/time-off-year-cache.js';
@@ -14,6 +15,7 @@ class MemoryYearCache {
   }
   async mutateMany(keys, callback) {
     const change = callback(await this.getMany(keys));
+    for (const key of change.delete ?? []) delete this.data[key];
     Object.assign(this.data, change.set ?? {});
     return change.result;
   }
@@ -145,4 +147,20 @@ test('annual team cache survives reloads and is scoped to connected repos and Gi
   assert.ok(Object.keys(backend.data[TEAM_TIME_OFF_YEAR_CACHE_KEY].years).length <= 5);
   await invalidateCachedTeamTimeOff(backend);
   assert.equal(await readCachedTeamTimeOff(backend, scope, 2033), null);
+});
+
+
+test('disconnecting Clockoli clears cached team absences from local storage', async () => {
+  const backend = new MemoryYearCache();
+  const store = new ChromeStore(backend);
+  const scope = teamTimeOffCacheScope({
+    generation: 2, authGeneration: 3, auth: { githubLogin: 'alice' },
+  }, [{ id: 'github:1', owner: 'acme', repo: 'time' }]);
+  await saveCachedTeamTimeOff(backend, scope, 2027, {
+    configured: true, partial: false, entries: [record('a', 'alice',
+      '2027-01-02', '2027-01-02T17:00:00Z')],
+  });
+  assert.equal((await readCachedTeamTimeOff(backend, scope, 2027)).entries.length, 1);
+  await store.clearConfig();
+  assert.equal(await readCachedTeamTimeOff(backend, scope, 2027), null);
 });
