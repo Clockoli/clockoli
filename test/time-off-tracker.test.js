@@ -238,3 +238,66 @@ test('remote work that fills the day leaves an automatic PTO conflict for review
   assert.match(store.state.pendingWrites[0].lastError, /No free 8-hour interval/);
   assert.equal(github.writes.length, 0);
 });
+
+
+test('deleting one day of a grouped PTO keeps all other planned dates unchanged', async () => {
+  const { github, tracker, store } = setup();
+  const group = await tracker.queueTimeOffChange(payload(rows([
+    '2026-12-07', '2026-12-08', '2026-12-09',
+  ])));
+  await tracker.syncPending();
+  const before = savedRecords(github);
+  const removed = before.find(item => item.entryDate === '2026-12-08');
+  const untouched = before.filter(item => item.id !== removed.id);
+  const accepted = await tracker.queueTimeOffChange(payload([], {
+    groupId: group.groupId, previous: previous([removed]), singleDayDeletion: true,
+  }));
+  assert.equal(accepted.pending, true);
+  assert.equal(accepted.entries.length, 0);
+  assert.equal(github.writes.length, 1, 'delete must be accepted locally first');
+  assert.equal(store.state.pendingWrites[0].singleDayDeletion, true);
+  await tracker.syncPending();
+  assert.equal(github.writes.length, 2, 'one atomic commit removes just the requested day');
+  assert.equal(store.state.pendingWrites.length, 0);
+  const current = savedRecords(github);
+  assert.deepEqual(current.map(item => item.entryDate), ['2026-12-07', '2026-12-09']);
+  assert.deepEqual(current, untouched, 'sibling records keep their IDs and timestamps');
+});
+
+test('deleting a taken day does not alter future days from the same PTO group', async () => {
+  const { github, tracker, store } = setup();
+  const group = await tracker.queueTimeOffChange(payload(rows(['2026-11-10', '2026-12-07'])));
+  await tracker.syncPending();
+  const path = 'times/2026-11/alice.jsonl';
+  const november = github.files.get(path);
+  const taken = parseMonthlyRecords(november.text, {
+    user: 'alice', month: '2026-11', path, sha: november.sha,
+  })[0];
+  const future = savedRecords(github)[0];
+  await tracker.queueTimeOffChange(payload([], {
+    groupId: group.groupId, previous: previous([taken]), singleDayDeletion: true,
+  }));
+  await tracker.syncPending();
+  assert.equal(github.files.has(path), false);
+  assert.deepEqual(savedRecords(github), [future]);
+  assert.equal(store.state.pendingWrites.length, 0);
+});
+
+test('single-day PTO deletion rejects stale remote entry and leaves the group intact', async () => {
+  const { github, tracker, store } = setup();
+  const group = await tracker.queueTimeOffChange(payload(rows(['2026-12-07', '2026-12-08'])));
+  await tracker.syncPending();
+  const originals = savedRecords(github);
+  await tracker.queueTimeOffChange(payload([], {
+    groupId: group.groupId, previous: previous([originals[0]]), singleDayDeletion: true,
+  }));
+  const path = 'times/2026-12/alice.jsonl', file = github.files.get(path);
+  github.files.set(path, { sha: 'changed-revision',
+    text: serializeMonthlyRecords(originals.map(item =>
+      item.id === originals[0].id ? { ...item, updatedAt: '2026-12-01T12:00:00.000Z' } : item)),
+  });
+  await tracker.syncPending();
+  assert.equal(store.state.pendingWrites.length, 1);
+  assert.equal(store.state.pendingWrites[0].status, 'conflict');
+  assert.equal(savedRecords(github).length, 2);
+});
