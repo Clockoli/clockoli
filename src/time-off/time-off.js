@@ -336,7 +336,9 @@ function renderInspector() {
   $('selected-day-summary').textContent = state.teamLoading
     ? 'Loading team availability…'
     : !group?.count ? (state.teamIncomplete
-      ? 'No known absences (team data is incomplete).' : 'Nobody is away on this day.')
+      ? 'No known absences (team data is incomplete).'
+      : state.selectedUser ? 'No time off for @' + state.selectedUser + ' on this day.'
+        : 'Nobody is away on this day.')
       : group.count + (group.count === 1 ? ' person away' : ' people away');
   const host = $('selected-day-people');
   host.replaceChildren();
