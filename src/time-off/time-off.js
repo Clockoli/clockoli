@@ -365,7 +365,7 @@ async function loadMine({ quiet = false } = {}) {
       repositories: (result.repositories || []).map(repo => [
         repo.id, [...(repo.taskUrls || [])].sort(),
       ]).sort((a, b) => a[0].localeCompare(b[0])),
-      users: result.currentUsers || {},
+      users: Object.entries(result.currentUsers || {}).sort(([a], [b]) => a.localeCompare(b)),
     });
     const changedIdentity = !result.partial && state.teamIdentity !== null && state.teamIdentity !== identity;
     if (!result.partial) state.teamIdentity = identity;
@@ -421,6 +421,15 @@ async function loadTeam({ refresh = false } = {}) {
       ...(refresh ? { refresh: true } : {}) });
     // Ignore an old account's response after reconfiguration or logout.
     if (identity !== null && identity !== state.teamIdentity) return;
+    if (result.partial && previous && !previous.partial) {
+      if (request === state.teamRequestId && state.year === year) {
+        activateTeamYear(year);
+        state.teamIncomplete = true;
+        $('team-time-off-status').textContent =
+          'GitHub returned incomplete data. Showing the last complete local snapshot.';
+      }
+      return;
+    }
     state.teamYears.delete(year);
     state.teamYears.set(year, result);
     while (state.teamYears.size > 5) state.teamYears.delete(state.teamYears.keys().next().value);
