@@ -73,6 +73,7 @@ const EXPECTED_RUNTIME_INVENTORY = [
   'src/domain/reporting.js',
   'src/domain/task-index.js',
   'src/domain/tasks.js',
+  'src/domain/time-off-year.js',
   'src/domain/time-off.js',
   'src/domain/ulid.js',
   'src/domain/values.js',
