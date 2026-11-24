@@ -186,33 +186,37 @@ function renderYear() {
       if (date < today()) classes.push('past');
       if (group?.own) classes.push('mine');
       if (date === state.selectedDate) classes.push('selected');
-      if (editing() && dayState.has(date)) classes.push('draft');
+      if (selectedDates.has(date)) classes.push('pick');
       const cell = make('button', classes.join(' '));
       if (count === 1 && group?.people?.[0]) {
         cell.append(avatar(group.people[0].user));
       } else if (count > 1) cell.textContent = String(count);
       cell.type = 'button'; cell.dataset.date = date;
       cell.setAttribute('role', 'gridcell');
-      cell.setAttribute('aria-pressed', String(editing() ? dayState.has(date) : date === state.selectedDate));
+      cell.setAttribute('aria-pressed', String(selectedDates.has(date)));
       cell.setAttribute('aria-label', dateLabel(date) + ': ' + count
         + (count === 1 ? ' person away' : ' people away')
         + (group?.own ? ', my time off' : '')
-        + (editing() && dayState.has(date) ? ', selected for editing' : ''));
-      cell.title = group?.people?.length
-        ? group.people.map(person => person.user).join(', ') : 'No one away';
+        + (selectedDates.has(date) ? ', selected to add time off' : ''));
+      cell.addEventListener('mouseenter', () => {
+        if (!pinDayUntilLeave) selectDay(date);
+      });
+      cell.addEventListener('focus', () => {
+        if (!pinDayUntilLeave) selectDay(date);
+      });
       cell.addEventListener('click', event => {
-        if (editing()) {
-          calendarMonth = date.slice(0, 7);
-          chooseCalendarDate(date, event.shiftKey);
-        } else selectDay(date);
+        event.preventDefault();
+        pinDayUntilLeave = true;
+        selectDay(date);
+        toggleDateSelection(date, event.shiftKey);
       });
       row.append(cell);
     }
     grid.append(row);
   }
+  updateAddButton();
 }
 function renderInspector() {
-  if (editing()) return;
   const date = state.selectedDate, group = selectedDayDetails().get(date);
   $('selected-day-label').textContent = dateLabel(date);
   $('selected-day-summary').textContent = state.teamLoading
@@ -222,55 +226,35 @@ function renderInspector() {
       : group.count + (group.count === 1 ? ' person away' : ' people away');
   const host = $('selected-day-people');
   host.replaceChildren();
-  for (const section of [{ label: 'Planned', future: true }, { label: 'Taken', future: false }]) {
-    const matches = (group?.people ?? []).map(person => ({
-      ...person,
-      visibleEntries: person.entries.filter(entry =>
-        Boolean(entry._draft || Date.parse(entry.endedAt) > Date.now()) === section.future),
-    })).filter(person => person.visibleEntries.length);
-    if (!matches.length) continue;
-    const heading = make('h3', 'time-off-status-heading');
-    heading.append(make('span', 'time-off-status-dot ' + (section.future ? 'planned' : 'taken')));
-    heading.append(document.createTextNode(section.label + ' · ' + matches.length));
-    host.append(heading);
-    for (const person of matches) {
+  for (const person of group?.people ?? []) {
+    for (const entry of person.entries) {
       const row = make('article', 'time-off-person-row');
       row.append(avatar(person.user));
       const copy = make('div', 'time-off-person-copy');
-      const title = make('div', 'time-off-person-heading');
-      title.append(make('strong', '', person.user));
-      if (person.own) title.append(make('span', 'time-off-person-own', 'You'));
-      copy.append(title);
-      for (const entry of person.visibleEntries) {
-        copy.append(make('p', 'time-off-person-entry',
-          (entry.taskTitle || taskName(entry.taskUrl)) + ' · '
-            + duration(entry.durationSeconds) + (entry._draft ? ' · Preview' : '')));
-        if (entry.description) copy.append(make('p', 'time-off-person-note', entry.description));
+      const name = make('strong', 'time-off-person-name', person.user);
+      copy.append(name);
+      if (entry.description) copy.append(make('p', 'time-off-person-note', entry.description));
+      const actions = make('div', 'time-off-person-actions');
+      actions.append(make('span', 'time-off-person-hours', duration(entry.durationSeconds)));
+      const ownEntry = state.entries.find(item => item.id === entry.id
+        && item.destinationId === entry.destinationId && isOwnEntry(item));
+      if (ownEntry) {
+        const remove = deleteIconAction('Delete my time off on ' + dateLabel(entry.entryDate),
+          () => openDeleteEntry(ownEntry));
+        remove.disabled = Boolean(ownEntry._pending);
+        if (remove.disabled) remove.title = 'Sync pending time off before deleting it.';
+        actions.append(remove);
       }
-      if (person.own && !person.visibleEntries.some(entry => entry._draft)) {
-        const groups = [...new Set(person.visibleEntries.map(entry =>
-          state.groups.find(group => group.entries.some(rowEntry => rowEntry.id === entry.id))).filter(Boolean))];
-        for (const ownGroup of groups) {
-          const edit = make('button', 'time-off-inline-edit', ownGroup.planned.length
-            ? (ownGroup.taken.length ? 'Edit remaining time off' : 'Edit my time off')
-            : 'Correct my time off');
-          edit.type = 'button';
-          edit.disabled = ownGroup.entries.some(entry => entry._pending);
-          edit.addEventListener('click', () => openForm(ownGroup));
-          copy.append(edit);
-        }
-      }
-      row.append(copy); host.append(row);
+      row.append(copy, actions);
+      host.append(row);
     }
   }
 }
-
 function highlightSelectedDay(previous) {
   for (const date of new Set([previous, state.selectedDate])) {
     const cell = $('year-grid').querySelector('button[data-date="' + date + '"]');
     if (!cell) continue;
     cell.classList.toggle('selected', date === state.selectedDate);
-    cell.setAttribute('aria-pressed', String(editing() ? dayState.has(date) : date === state.selectedDate));
   }
 }
 function selectDay(date) {
@@ -281,6 +265,7 @@ function selectDay(date) {
     if (!activateTeamYear(year)) { renderYear(); renderInspector(); void loadTeam(); }
     return;
   }
+  if (date === state.selectedDate) return;
   const previous = state.selectedDate;
   state.selectedDate = date;
   highlightSelectedDay(previous);
@@ -290,18 +275,17 @@ function changeYear(year) {
   if (!Number.isInteger(year) || year < 1 || year > 9999) return;
   const previousYear = state.year, previousDate = state.selectedDate, current = today();
   state.year = year;
-  state.selectedDate = year === Number(current.slice(0, 4)) ? current : String(year).padStart(4, '0') + '-01-01';
-  if (year === previousYear) { highlightSelectedDay(previousDate); renderInspector(); return; }
+  pinDayUntilLeave = false;
+  state.selectedDate = year === Number(current.slice(0, 4))
+    ? current : String(year).padStart(4, '0') + '-01-01';
+  if (year === previousYear) {
+    highlightSelectedDay(previousDate); renderInspector(); return;
+  }
   if (!activateTeamYear(year)) { renderYear(); renderInspector(); void loadTeam(); }
 }
 function closeForm() {
-  state.group = null;
-  dayState.clear(); takenDates.clear(); calendarAnchor = null;
-  $('time-off-editor').hidden = true;
-  $('day-inspector').hidden = false;
-  $('my-time-off-summary').hidden = false;
-  renderRepositories();
-  renderYear(); renderInspector();
+  if ($('time-off-dialog').open) $('time-off-dialog').close();
+  updateAddButton();
 }
 async function loadMine({ quiet = false } = {}) {
   const request = ++state.mineRequestId;
