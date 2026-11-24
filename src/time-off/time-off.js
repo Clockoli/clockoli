@@ -380,10 +380,11 @@ async function loadTeam({ refresh = false } = {}) {
 
 function fillTaskOptions() {
   const repo = repositoryOf($('edit-repository').value), select = $('edit-task');
-  const previous = select.value;
+  const previous = select.value, tasks = repo?.taskUrls || [];
   select.replaceChildren();
-  for (const url of repo?.taskUrls || []) select.append(new Option(taskName(url), url));
-  select.value = (repo?.taskUrls || []).includes(previous) ? previous : repo?.taskUrls?.[0] || '';
+  for (const url of tasks) select.append(new Option(taskName(url), url));
+  select.value = tasks.includes(previous) ? previous : tasks[0] || '';
+  $('edit-task-field').hidden = tasks.length === 1;
 }
 const chosenDates = () => [...selectedDates].sort();
 const validHours = n => Number.isFinite(n) && n >= 0 && n <= 24 && Number.isSafeInteger(n * 3600);
@@ -431,6 +432,7 @@ function openForm() {
   for (const repo of repos) select.append(new Option(repo.label, repo.id));
   const preferred = $('time-off-repository-filter').value;
   select.value = repos.some(repo => repo.id === preferred) ? preferred : repos[0].id;
+  $('edit-repository-field').hidden = repos.length === 1;
   fillTaskOptions();
   $('edit-hours').value = '8';
   $('edit-description').value = '';
