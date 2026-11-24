@@ -227,38 +227,51 @@ function renderInspector() {
     ? 'Loading team availability…'
     : !group?.count ? 'Nobody is away on this day.'
       : group.count + (group.count === 1 ? ' person away' : ' people away');
-  const people = $('selected-day-people');
-  people.replaceChildren();
-  for (const person of group?.people ?? []) {
-    const row = make('article', 'time-off-person-row');
-    row.append(avatar(person.user));
-    const copy = make('div', 'time-off-person-copy');
-    const heading = make('div', 'time-off-person-heading');
-    heading.append(make('strong', '', person.user));
-    if (person.own) heading.append(make('span', 'time-off-person-own', 'You'));
-    copy.append(heading);
-    for (const entry of person.entries) {
-      const label = entry._draft ? 'Preview' :
-        Date.parse(entry.endedAt) > Date.now() ? 'Planned' : 'Taken';
-      copy.append(make('p', 'time-off-person-entry',
-        (entry.taskTitle || taskName(entry.taskUrl)) + ' · '
-          + duration(entry.durationSeconds) + ' · ' + label));
-      if (entry.description) copy.append(make('p', 'time-off-person-note', entry.description));
-    }
-    if (person.own && !person.entries.some(entry => entry._draft)) {
-      const uniqueGroups = [...new Set(person.entries.map(entry =>
-        state.groups.find(item => item.entries.some(rowEntry => rowEntry.id === entry.id))).filter(Boolean))];
-      for (const ownGroup of uniqueGroups) {
-        const edit = make('button', 'time-off-inline-edit', ownGroup.planned.length ? 'Edit my time off' : 'Correct my time off');
-        edit.type = 'button';
-        edit.disabled = ownGroup.entries.some(entry => entry._pending);
-        edit.addEventListener('click', () => openForm(ownGroup));
-        copy.append(edit);
+  const host = $('selected-day-people');
+  host.replaceChildren();
+  for (const section of [{ label: 'Planned', future: true }, { label: 'Taken', future: false }]) {
+    const matches = (group?.people ?? []).map(person => ({
+      ...person,
+      visibleEntries: person.entries.filter(entry =>
+        Boolean(entry._draft || Date.parse(entry.endedAt) > Date.now()) === section.future),
+    })).filter(person => person.visibleEntries.length);
+    if (!matches.length) continue;
+    const heading = make('h3', 'time-off-status-heading');
+    heading.append(make('span', 'time-off-status-dot ' + (section.future ? 'planned' : 'taken')));
+    heading.append(document.createTextNode(section.label + ' · ' + matches.length));
+    host.append(heading);
+    for (const person of matches) {
+      const row = make('article', 'time-off-person-row');
+      row.append(avatar(person.user));
+      const copy = make('div', 'time-off-person-copy');
+      const title = make('div', 'time-off-person-heading');
+      title.append(make('strong', '', person.user));
+      if (person.own) title.append(make('span', 'time-off-person-own', 'You'));
+      copy.append(title);
+      for (const entry of person.visibleEntries) {
+        copy.append(make('p', 'time-off-person-entry',
+          (entry.taskTitle || taskName(entry.taskUrl)) + ' · '
+            + duration(entry.durationSeconds) + (entry._draft ? ' · Preview' : '')));
+        if (entry.description) copy.append(make('p', 'time-off-person-note', entry.description));
       }
+      if (person.own && !person.visibleEntries.some(entry => entry._draft)) {
+        const groups = [...new Set(person.visibleEntries.map(entry =>
+          state.groups.find(group => group.entries.some(rowEntry => rowEntry.id === entry.id))).filter(Boolean))];
+        for (const ownGroup of groups) {
+          const edit = make('button', 'time-off-inline-edit', ownGroup.planned.length
+            ? (ownGroup.taken.length ? 'Edit remaining time off' : 'Edit my time off')
+            : 'Correct my time off');
+          edit.type = 'button';
+          edit.disabled = ownGroup.entries.some(entry => entry._pending);
+          edit.addEventListener('click', () => openForm(ownGroup));
+          copy.append(edit);
+        }
+      }
+      row.append(copy); host.append(row);
     }
-    row.append(copy); people.append(row);
   }
 }
+
 function selectDay(date) {
   if (typeof date !== 'string') return;
   const year = Number(date.slice(0, 4));
