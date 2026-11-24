@@ -121,6 +121,11 @@ test('annual team cache survives reloads and is scoped to connected repos and Gi
   const repos = [{ id: 'github:1', owner: 'acme', repo: 'time', branch: 'main' }];
   const snapshot = { generation: 1, authGeneration: 4, auth: { githubLogin: 'alice' } };
   const scope = teamTimeOffCacheScope(snapshot, repos);
+  assert.equal(teamTimeOffCacheScope({ ...snapshot, authGeneration: 99 }, repos), scope,
+    'rotating OAuth tokens for the same GitHub user must not discard team years');
+  assert.notEqual(teamTimeOffCacheScope({ ...snapshot, auth: { mode: 'pat' } }, repos),
+    teamTimeOffCacheScope({ ...snapshot, auth: { mode: 'pat' }, authGeneration: 99 }, repos),
+    'accounts without a known login must still be isolated by auth generation');
   const view = { configured: true, partial: false, readStatus: [], entries: [
     record('one', 'bob', '2027-03-01', '2027-03-01T17:00:00Z'),
   ] };
