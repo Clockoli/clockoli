@@ -6,10 +6,13 @@ const MAX_YEAR_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 24 * 1024 * 1024;
 
 export function teamTimeOffCacheScope(snapshot, destinations) {
+  const login = snapshot.auth?.githubLogin || snapshot.auth?.user?.login || '';
   return JSON.stringify({
     generation: snapshot.generation,
-    authGeneration: snapshot.authGeneration,
-    login: snapshot.auth?.githubLogin || snapshot.auth?.user?.login || '',
+    // OAuth token rotation must not invalidate a cached year for the same user.
+    identity: login ? {
+      mode: snapshot.auth?.mode || 'github_app', login: login.toLowerCase(),
+    } : { mode: snapshot.auth?.mode || 'unknown', authGeneration: snapshot.authGeneration },
     destinations: destinations.map(item => [
       item.id, item.owner, item.repo, item.branch || 'main',
       item.defaultBranch || 'main', item.repoId || null, item.storageLogin || '',
