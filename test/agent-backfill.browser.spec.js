@@ -72,11 +72,37 @@ test('unchanged large journal resumes and linked Claude files reconcile', async 
       const store = await import(chrome.runtime.getURL('src/storage/agent-activity-store.js'));
       const scan = await chrome.runtime.sendMessage({ type: 'AGENT_COLLECTOR_CONTROL', provider: 'claude', action: 'scan' });
       return { coverage: scan.data.coverage.claude,
-        turnKey: (await store.getAgentProjection('claude', 1)).turns[0].key };
+        turnKey: (await store.getAgentProjection('claude', 1)).turns[0].key,
+        revision: (await store.getAgentProjection('claude', 1)).revision };
     });
     expect(claudeRepeat.turnKey).toBe(claude.projection.turns[0].key);
     expect(claudeRepeat.coverage.time.agentMs).toBe(3000);
+    expect(claudeRepeat.revision).toBe(claude.projection.revision);
+    expect(claude.projection.projectionVersion).toBe(1);
+    expect(claude.projection.turns[0].startedAt).toBe('2026-01-01T00:01:00.000Z');
+    expect(claude.projection.turns[0].endedAt).toBe('2026-01-01T00:01:04.000Z');
+    expect(claude.projection.turns[0].anchored).toBe(false);
     expect(claudeRepeat.coverage.turns.discovered).toBe(1);
+    // Simulate a projection produced before timestamp preservation was added.
+    // The source cursor remains valid; the next scan must repair derived data only.
+    const repaired = await page.evaluate(async () => {
+      const store = await import(chrome.runtime.getURL('src/storage/agent-activity-store.js'));
+      const db = await store.openAgentDb();
+      const before = await store.getAgentProjection('claude', 1);
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction('projections', 'readwrite');
+        const legacy = { ...before, projectionVersion: 0,
+          turns: before.turns.map(turn => ({ ...turn, startedAt: null, endedAt: null })) };
+        tx.objectStore('projections').put(legacy, 'claude:1');
+        tx.oncomplete = resolve;
+        tx.onabort = () => reject(tx.error);
+      });
+      const scan = await chrome.runtime.sendMessage({ type: 'AGENT_COLLECTOR_CONTROL', provider: 'claude', action: 'scan' });
+      return { scan, projection: await store.getAgentProjection('claude', 1) };
+    });
+    expect(repaired.scan.data.providers.claude.bytesRead).toBe(0);
+    expect(repaired.projection.projectionVersion).toBe(1);
+    expect(repaired.projection.turns).toEqual(claude.projection.turns);
     const second = await page.evaluate(async () => {
       const store = await import(chrome.runtime.getURL('src/storage/agent-activity-store.js'));
       const scan = await chrome.runtime.sendMessage({ type: 'AGENT_COLLECTOR_CONTROL', provider: 'codex', action: 'scan' });
