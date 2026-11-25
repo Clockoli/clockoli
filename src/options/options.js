@@ -3471,7 +3471,7 @@ function renderAgent(provider) {
   const count = key => safeAgentCount(status?.[key]);
   const code = typeof status?.errorCode === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(status.errorCode)
     ? status.errorCode : 'none';
-  diagnostics.textContent = `Files visited: ${count('filesVisited')} · Advanced: ${count('filesAdvanced')} · Bytes read: ${count('bytesRead')} · Backlog: ${status?.backlog ? 'yes' : 'no'} · Blocked: ${count('blockedFiles')} · Runs: ${count('runNumber')} · Error code: ${code}`;
+  diagnostics.textContent = `Files visited: ${count('filesVisited')} · Advanced: ${count('filesAdvanced')} · Bytes read: ${count('bytesRead')} · Backlog: ${status?.backlog ? 'yes' : 'no'} · Blocked: ${count('blockedFiles')} · Archived: ${count('archivedFiles')} (incomplete: ${count('archivedIncompleteFiles')}, older parser: ${count('archivedOlderParserFiles')}) · Runs: ${count('runNumber')} · Error code: ${code}`;
 }
 
 async function refreshAgentStatus() {
