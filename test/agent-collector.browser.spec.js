@@ -13,7 +13,7 @@ async function open(profile) {
   await page.goto(`chrome-extension://${new URL(worker.url()).host}/src/options/options.html`);
   return { context, page, worker };
 }
-test('MV3 collector imports, replays, appends, replaces, deletes, and survives browser restart', async () => {
+test('MV3 collector imports, replays, appends, replaces, archives missing sources, and survives browser restart', async () => {
   await mkdir(scratch, { recursive: true });
   const profile = await mkdtemp(join(scratch, 'clockoli-agent-collector-'));
   let browser;
@@ -107,11 +107,46 @@ test('MV3 collector imports, replays, appends, replaces, deletes, and survives b
       await folder.removeEntry('sample.jsonl');
       const scan = await chrome.runtime.sendMessage({ type: 'AGENT_COLLECTOR_CONTROL', provider: 'codex', action: 'scan' });
       return { scan, files: (await store.listAgentFiles('codex', 1)).length,
-        turns: (await store.getAgentProjection('codex', 1)).turns.length };
+        turns: (await store.getAgentProjection('codex', 1)).turns.length,
+        archived: (await store.listAgentFiles('codex', 1))[0].sourceMissing };
     });
-    expect(removed.scan.data.coverage.codex.turns.discovered).toBe(0);
-    expect(removed.files).toBe(0);
-    expect(removed.turns).toBe(0);
+    expect(removed.scan.data.coverage.codex.turns.discovered).toBe(1);
+    expect(removed.scan.data.coverage.codex.time.agentMs).toBe(5000);
+    expect(removed.scan.data.coverage.codex.scan.archivedFiles).toBe(1);
+    expect(removed.files).toBe(1);
+    expect(removed.turns).toBe(1);
+    expect(removed.archived).toBe(true);
+    const returned = await browser.page.evaluate(async () => {
+      const store = await import(chrome.runtime.getURL('src/storage/agent-activity-store.js'));
+      const root = await navigator.storage.getDirectory();
+      const folder = await root.getDirectoryHandle('fixture');
+      const file = await folder.getFileHandle('sample.jsonl', { create: true });
+      const writable = await file.createWritable();
+      await writable.write([
+        { timestamp: '2026-01-02T00:00:00.000Z', type: 'session_meta', payload: { id: 'replacement-session' } },
+        { timestamp: '2026-01-02T00:00:01.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: 'replacement-turn' } },
+        { timestamp: '2026-01-02T00:00:06.000Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 'replacement-turn' } },
+      ].map(row => JSON.stringify(row)).join('\n') + '\n');
+      await writable.close();
+      const scan = await chrome.runtime.sendMessage({ type: 'AGENT_COLLECTOR_CONTROL', provider: 'codex', action: 'scan' });
+      return { scan, keys: (await store.getAgentProjection('codex', 1)).turns.map(turn => turn.key) };
+    });
+    expect(returned.scan.data.coverage.codex.scan.archivedFiles).toBe(0);
+    expect(returned.scan.data.coverage.codex.time.agentMs).toBe(5000);
+    expect(returned.keys).toEqual(replaced.replacementKeys);
+    const forgotten = await browser.page.evaluate(async () => {
+      const store = await import(chrome.runtime.getURL('src/storage/agent-activity-store.js'));
+      const root = await navigator.storage.getDirectory();
+      const folder = await root.getDirectoryHandle('fixture');
+      await folder.removeEntry('sample.jsonl');
+      await chrome.runtime.sendMessage({ type: 'AGENT_COLLECTOR_CONTROL', provider: 'codex', action: 'scan' });
+      const response = await chrome.runtime.sendMessage({ type: 'AGENT_COLLECTOR_CONTROL', provider: 'codex', action: 'forget' });
+      return { response, files: await store.listAgentFiles('codex', 1),
+        projection: await store.getAgentProjection('codex', 1) };
+    });
+    expect(forgotten.response.ok).toBe(true);
+    expect(forgotten.files).toEqual([]);
+    expect(forgotten.projection).toBeNull();
   } finally {
     await browser?.context.close().catch(() => {});
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
