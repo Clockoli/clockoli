@@ -273,30 +273,33 @@ export class ChromeStore {
     await this.backend.replaceAllEntries([]);
   }
 
-  // Only discard data that can be fetched again. The recent/summary projections
-  // of an unsynced queue are needed for rebasing edits and detecting overlaps.
+  // Only discard downloaded history and presentation caches. Recent records
+  // and weekly entries are also the local overlap/rebase working set, even
+  // when there are no pending writes. Retain them until an authoritative
+  // refresh replaces them; invalidate summary display and passive-pull ETags.
   // dayRangeIntervals is a durable overlap guard, not a downloaded cache.
   async clearLocalCache() {
     const caches = ['reportCache', 'pageSnapshots', 'taskMetadataCache', EXCHANGE_RATE_CACHE];
-    const keys = ['dataVersion', DESTINATION_REGISTRY, DESTINATION_STATES, 'recentCache', 'summaryCache',
-      'pendingWrites', 'taskSearchCache', CONFIGURATION_GENERATION, ...caches];
+    // Do not deserialize potentially huge history blobs just to delete them.
+    const keys = ['dataVersion', DESTINATION_STATES, 'recentCache', 'summaryCache',
+      'pendingWrites', 'taskSearchCache', CONFIGURATION_GENERATION];
     return this.backend.mutateMany(keys, values => {
       const version = values.dataVersion ?? 0;
       if (!Number.isSafeInteger(version) || version < 0 || version > 5) throw storageFormatError('Unsupported local data version.');
       let retained = 0;
       const clearProjection = state => {
-        if (state.pendingWrites?.length || state.recentCache?.some(entry => entry?._pending)) {
-          retained += 1;
-          // Preserve the local view, but force the next passive pull to verify
-          // the branch again once the pending queue has been synchronized.
-          const summary = state.summaryCache;
-          if (summary && Object.hasOwn(summary, 'silentPull')) {
-            const { silentPull, ...rest } = summary;
-            return { ...state, summaryCache: rest };
-          }
-          return state;
+        if (!state || typeof state !== 'object' || Array.isArray(state)) {
+          throw storageFormatError('Invalid local tracking state.');
         }
-        return { ...state, recentCache: [], summaryCache: null };
+        const pending = Boolean(state.pendingWrites?.length || state.recentCache?.some(entry => entry?._pending));
+        if (pending) retained += 1;
+        const summary = state.summaryCache;
+        if (!summary) return state;
+        const { silentPull, ...rest } = summary;
+        // Pending work keeps its local summary; otherwise show no cached totals
+        // until the next successful read. In both cases keep the week entries
+        // for immediate local overlap checks, not as a report snapshot.
+        return { ...state, summaryCache: pending ? rest : { ...rest, reportDate: null } };
       };
       const set = {};
       if (version === 5) {

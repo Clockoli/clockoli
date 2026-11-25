@@ -2670,8 +2670,8 @@ $('clear-cache').addEventListener('click', async () => {
     const result = await send({ type: 'CLEAR_LOCAL_CACHE' });
     const retained = result.retainedPendingDestinations > 0;
     formFeedback('clear-cache-feedback', retained
-      ? 'Cache cleared. Local views needed for pending changes were kept. Reload open Clockoli pages to fetch fresh data.'
-      : 'Cache cleared. Reload open Clockoli pages to fetch fresh data.', 'success');
+      ? 'Cache cleared. Pending changes and their local views were kept. Reload open Clockoli pages to fetch fresh data.'
+      : 'Cache cleared. Reload open Clockoli pages to fetch fresh data. Recent tracking data is kept until refreshed.', 'success');
     mergeSelection.source = ''; mergeSelection.target = '';
     clearMergePairs(); renderMergeTasks([]);
     void refreshMergeTasks();

@@ -56,7 +56,9 @@ export function assertMessageAllowed(type, sender, extensionOrigin) {
   const allowed = context.kind === 'extension' ? EXTENSION_MESSAGES
     : context.kind === 'content' ? CONTENT_MESSAGES
       : context.kind === 'clockify' ? CLOCKIFY_MESSAGES : new Set();
-  if (!allowed.has(type)) throw new Error(`Message ${type} is not allowed from this sender`);
+  if (!allowed.has(type) || (type === 'CLEAR_LOCAL_CACHE' && sender?.url !== extensionOrigin + 'src/options/options.html')) {
+    throw new Error(`Message ${type} is not allowed from this sender`);
+  }
   return context.kind;
 }
 

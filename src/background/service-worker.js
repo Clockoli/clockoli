@@ -620,8 +620,8 @@ async function loadTasks(message, sender) {
   finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
 }
 
-async function searchTasks(sender, query = '', { refresh = false, includeImported = false } = {}) {
-  const loadEpoch = await loadCoordinator.beginLoad();
+async function searchTasks(sender, query = '', { refresh = false, includeImported = false, waitForConfiguration = true } = {}) {
+  const loadEpoch = await loadCoordinator.beginLoad({ wait: waitForConfiguration });
   await store.ensureDataVersion(5); loadCoordinator.assertCurrent(loadEpoch);
   const snapshot = await configuredSnapshot({ localOnly: true }); loadCoordinator.assertCurrent(loadEpoch);
   const { auth } = snapshot, destinations = selectReadDestinations(snapshot);
@@ -1826,6 +1826,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (changesConfiguration) {
     try {
       assertMessageAllowed(message.type, sender, chrome.runtime.getURL(''));
+      if (message.type === 'CLEAR_LOCAL_CACHE' && Object.keys(message).length !== 1) throw new Error('Invalid cache clear request.');
       operation = acceptanceExecutor.run(() => loadCoordinator.save(() => cancelReports(), () => handle(message, sender)));
     } catch (error) { operation = Promise.reject(error); }
   } else {
@@ -1957,7 +1958,9 @@ async function refreshTaskSearchAfterSync({ retry = false } = {}) {
     // The alarm is one-shot. A successful foreground rebuild already made the
     // cache clean; do not re-read GitHub when its scheduled wakeup arrives.
     if (retry && await store.isTaskSearchDirty?.() === false) return;
-    const result = await searchTasks(null, '', { refresh: true });
+    // A direct completed write may hold the mutation executor. Its durable
+    // refresh alarm can retry if a cache/configuration transaction is queued.
+    const result = await searchTasks(null, '', { refresh: true, waitForConfiguration: false });
     const pending = await store.getTrackingSnapshot();
     const complete = result.configured && !result.partial && !result.conflicts?.length
       && !hasCompletedPending(pending) && !directCompletedWrites
