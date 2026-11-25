@@ -291,24 +291,24 @@ export class GitHubClient {
         });
       } catch { /* Diagnostics must never affect GitHub operations. */ }
     };
-    const requestWithToken = async token => {
+    const requestWithToken = async (token, requestPath = path, requestOptions = options) => {
       await this.rateLimitGate?.ready();
       const controller = new AbortController();
-      const parent = options.signal;
+      const parent = requestOptions.signal;
       const abortFromParent = () => controller.abort(parent.reason);
       if (parent?.aborted) abortFromParent();
       else parent?.addEventListener('abort', abortFromParent, { once: true });
       const timeout = setTimeout(() => controller.abort(new DOMException('GitHub request timed out', 'TimeoutError')), this.requestTimeoutMs);
       try {
-        const response = await this.fetchImpl(`https://api.github.com${path}`, {
-          ...options, signal: controller.signal,
+        const response = await this.fetchImpl(`https://api.github.com${requestPath}`, {
+          ...requestOptions, signal: controller.signal,
           cache: 'no-store',
           headers: {
             Accept: 'application/vnd.github+json',
             Authorization: `Bearer ${token}`,
             'X-GitHub-Api-Version': '2022-11-28',
-            ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-            ...options.headers,
+            ...(requestOptions.body ? { 'Content-Type': 'application/json' } : {}),
+            ...requestOptions.headers,
           },
         });
         let body = null;
@@ -332,7 +332,22 @@ export class GitHubClient {
     try { ({ response, body } = await requestWithToken(token)); }
     catch (error) { report('network_error'); throw error; }
     if (response.status === 401 && this.credentialProvider) {
-      token = await this.credentialProvider.getAccessToken({ forceRefresh: true, rejectedToken: token });
+      try {
+        token = await this.credentialProvider.getAccessToken({ forceRefresh: true, rejectedToken: token });
+      } catch (error) {
+        if (error?.code === 'auth_expired' && path !== '/user') {
+          // Some resource endpoints return 401 for missing repository or App
+          // permissions even though the user access token is still accepted.
+          const identity = await requestWithToken(token, '/user', { signal: options.signal }).catch(() => null);
+          if (identity?.response.ok && Number.isSafeInteger(identity.body?.id) && identity.body.id > 0) {
+            report(401);
+            // The metadata reader already treats GraphQL 401 specially.
+            if (path === '/graphql') throw new GitHubAuthenticationError();
+            throw new GitHubPermissionError();
+          }
+        }
+        throw error;
+      }
       try { ({ response, body } = await requestWithToken(token)); }
       catch (error) { report('network_error'); throw error; }
     }
@@ -694,23 +709,31 @@ export class GitHubClient {
     return (await this.listRepositoryEntries(options)).filter(item => item.type === 'blob').map(item => item.path).sort();
   }
 
-  async listTextFilesSnapshot(prefix = '', { etag = '', signal, includeActive = '' } = {}) {
+  async listTextFilesSnapshot(prefix = '', { etag = '', signal, includeActive = '', includePaths = [], headSha = null } = {}) {
     if (typeof prefix !== 'string' || prefix.startsWith('/') || prefix.includes('..') || prefix.includes('\\')) throw new Error('Invalid GitHub content prefix');
     if (prefix) encodePath(prefix.endsWith('/') ? prefix.slice(0, -1) : prefix);
     if (includeActive) encodePath(includeActive);
+    if (!Array.isArray(includePaths)) throw new Error('Invalid additional snapshot paths');
+    const extraPaths = new Set(includePaths);
+    for (const path of extraPaths) encodePath(path);
+    if (headSha !== null && !/^[0-9a-f]{40}$/i.test(headSha)) throw new Error('Invalid Git commit SHA');
     const base = `/repos/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.repo)}`;
-    const refResponse = await this.requestDetailed(`${base}/git/ref/heads/${encodeURIComponent(this.branch)}`, {
-      signal,
-      headers: etag ? { 'If-None-Match': etag } : {},
-    }, { allowNotModified: true });
-    const snapshotEtag = refResponse.headers?.get('etag') || etag || '';
-    if (refResponse.notModified) return { notModified: true, etag: snapshotEtag };
-    const commit = await this.request(`${base}/git/commits/${encodeURIComponent(refResponse.body?.object?.sha)}`, { signal });
+    let snapshotEtag = '';
+    if (!headSha) {
+      const refResponse = await this.requestDetailed(`${base}/git/ref/heads/${encodeURIComponent(this.branch)}`, {
+        signal,
+        headers: etag ? { 'If-None-Match': etag } : {},
+      }, { allowNotModified: true });
+      snapshotEtag = refResponse.headers?.get('etag') || etag || '';
+      if (refResponse.notModified) return { notModified: true, etag: snapshotEtag };
+      headSha = refResponse.body?.object?.sha;
+    }
+    const commit = await this.request(`${base}/git/commits/${encodeURIComponent(headSha)}`, { signal });
     const tree = await this.request(`${base}/git/trees/${encodeURIComponent(commit.tree?.sha)}?recursive=1`, { signal });
     if (tree.truncated) throw new GitHubApiError('Repository tree is too large to generate reports', 422);
-    const files = (tree.tree ?? []).filter(item => item.type === 'blob' && ((item.path.startsWith(prefix) && item.path.endsWith('.jsonl')) || (includeActive && item.path === includeActive)))
+    const files = (tree.tree ?? []).filter(item => item.type === 'blob' && ((item.path.startsWith(prefix) && item.path.endsWith('.jsonl')) || (includeActive && item.path === includeActive) || extraPaths.has(item.path)))
       .map(({ path, sha, size }) => ({ path, sha, ...(Number.isSafeInteger(size) && size >= 0 ? { size } : {}) })).sort((a, b) => a.path.localeCompare(b.path));
-    return { notModified: false, etag: snapshotEtag, headSha: refResponse.body?.object?.sha || '', files };
+    return { notModified: false, etag: snapshotEtag, headSha: headSha || '', files };
   }
 
   async listTextFiles(prefix = '') {

@@ -143,6 +143,7 @@ function serializeError(error, message) {
     message: error?.message || 'Unexpected error',
     code: error?.name === 'AbortError' ? 'aborted' : error?.code || 'error',
     status: error?.status || 0,
+    ...(error?.authReason ? { authReason: error.authReason } : {}),
     ...(error?.retryAt ? { retryAt: error.retryAt } : {}),
     recovery: READ_RETRY_MESSAGES.has(message?.type) ? 'read-retry' : 'mutation-recovery',
   };
@@ -285,7 +286,7 @@ async function contextForDestination(destinationId, { localOnly = false, persist
     if (!user) throw new Error('Refresh the GitHub connection to load your tracking identity.');
     if (persistUser) await destinationStore.patchState({ user });
   }
-  const reports = new ReportService({ github, cache: store });
+  const reports = new ReportService({ github, cache: store, cacheGeneration: snapshot.generation });
   return {
     config, destinationId,
     reports,
@@ -350,9 +351,21 @@ function broadcastLocalPreferencesChanged(revision) {
 
 async function loadExchangeRates(message) {
   const payload = message.payload || {};
+  const epoch = await loadCoordinator.beginLoad();
+  const generation = await store.getConfigurationGeneration();
+  loadCoordinator.assertCurrent(epoch);
   emitReportProgress(payload.requestId, { label: 'Loading exchange rates from Frankfurter…', value: 85 });
-  const service = new ExchangeRateService({ cache: store });
+  const service = new ExchangeRateService({ cache: {
+    getExchangeRateCache: () => store.getExchangeRateCache(),
+    saveExchangeRateCache: async value => {
+      loadCoordinator.assertCurrent(epoch);
+      if (!await store.saveExchangeRateCache(value, generation)) {
+        throw new DOMException('Exchange rate load was superseded by a local data change.', 'AbortError');
+      }
+    },
+  } });
   const result = await service.ratesForDates(payload);
+  loadCoordinator.assertCurrent(epoch);
   emitReportProgress(payload.requestId, { label: 'Applying exchange rates…', value: 95 });
   return result;
 }
@@ -380,7 +393,7 @@ async function loadReport(message) {
       currentUsers[destination.id] = await destinationUser(destination, auth);
       const branch = destination.branch || 'main';
       const reports = new ReportService({
-        github: githubForConfig(destination), cache: store,
+        github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
       return reports.loadRepositoryRange(message.payload || {}, {
@@ -441,7 +454,7 @@ async function loadTaskParticipants(message, sender, extensionOrigin) {
       const tracker = await trackerForDestination(destination.id, { localOnly: true });
       await tracker.getState({ refresh: true, signal });
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
-      const records = await new ReportService({ github: githubForConfig(destination), cache: store })
+      const records = await new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation })
         .loadRepositoryTask(taskUrl, { defaultBranch: destination.defaultBranch || destination.branch || 'main', signal });
       timerStates.set(destination.id, await tracker.getState());
       return records;
@@ -491,7 +504,7 @@ async function loadTimes(message, sender) {
       if (!user) throw Object.assign(new Error('Tracking identity is unavailable.'), { code: 'identity_unavailable' });
       currentUsers[destination.id] = user;
       const reports = new ReportService({
-        github: githubForConfig(destination), cache: store,
+        github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
       const recent = await reports.loadUserRange(readRange, user, { includeStorageMetadata: true, signal }, {
@@ -529,7 +542,45 @@ async function loadTimes(message, sender) {
   finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
 }
 
+async function loadMergeTasks(message, sender) {
+  const payload = message.payload || {};
+  const loadEpoch = await loadCoordinator.beginLoad();
+  await store.ensureDataVersion(5);
+  const snapshot = await configuredSnapshot({ localOnly: true });
+  loadCoordinator.assertCurrent(loadEpoch);
+  const { auth } = snapshot, destinations = selectReadDestinations(snapshot, payload);
+  if (!auth || destinations.length !== 1) throw new Error('Choose one time repository before merging tasks.');
+  const destination = destinations[0];
+  if (payload.selectedUsers !== undefined && (!Array.isArray(payload.selectedUsers)
+      || payload.selectedUsers.some(user => typeof user !== 'string'))) throw new Error('Invalid people selection.');
+  const loadKey = `all:merge-tasks:${sender?.documentId ?? sender?.tab?.id ?? sender?.url ?? 'extension'}`;
+  const previous = reportLoads.get(loadKey);
+  previous?.controller.abort();
+  const controller = new AbortController();
+  const promise = (async () => {
+    await previous?.promise.catch(() => {});
+    controller.signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
+    const currentUser = await destinationUser(destination, auth);
+    const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
+      onProgress: progress => emitReportProgress(payload.requestId, { ...progress, destinationId: destination.id }) });
+    const result = await reports.loadMergeTaskCatalog(payload, {
+      defaultBranch: destination.defaultBranch || destination.branch || 'main',
+      currentUser, selectedUsers: payload.selectedUsers, signal: controller.signal,
+    });
+    controller.signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
+    const local = await store.destinationStore(destination.id).getState();
+    controller.signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
+    return { ...result, configured: true, currentUsers: { [destination.id]: currentUser },
+      pendingCount: local.pendingWrites?.length || 0,
+      tasks: result.tasks.map(task => ({ ...task, destinationIds: [destination.id] })) };
+  })();
+  reportLoads.set(loadKey, { controller, promise });
+  try { return await promise; }
+  finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
+}
+
 async function loadTasks(message, sender) {
+  if (message.payload?.mergePreview === true) return loadMergeTasks(message, sender);
   const startedAt = Date.now();
   const loadEpoch = await loadCoordinator.beginLoad();
   await store.ensureDataVersion(5);
@@ -557,7 +608,7 @@ async function loadTasks(message, sender) {
       await tracker.getState({ refresh: true, signal });
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
       const reports = new ReportService({
-        github: githubForConfig(destination), cache: store,
+        github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
       const records = message.payload?.includeAllUsers
@@ -613,8 +664,8 @@ async function loadTasks(message, sender) {
   finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
 }
 
-async function searchTasks(sender, query = '', { refresh = false, includeImported = false } = {}) {
-  const loadEpoch = await loadCoordinator.beginLoad();
+async function searchTasks(sender, query = '', { refresh = false, includeImported = false, waitForConfiguration = true } = {}) {
+  const loadEpoch = await loadCoordinator.beginLoad({ wait: waitForConfiguration });
   await store.ensureDataVersion(5); loadCoordinator.assertCurrent(loadEpoch);
   const snapshot = await configuredSnapshot({ localOnly: true }); loadCoordinator.assertCurrent(loadEpoch);
   const { auth } = snapshot, destinations = selectReadDestinations(snapshot);
@@ -658,7 +709,7 @@ async function searchTasks(sender, query = '', { refresh = false, includeImporte
       readStatus: cached.readStatus, partial: false, conflicts: [], fallback: false }
       : await loadDestinationRecords(destinations, async (destination, signal) => {
         signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
-        const reports = new ReportService({ github: githubForConfig(destination), cache: store, concurrency: 10 });
+        const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation, concurrency: 10 });
         const catalog = await reports.loadRepositoryTaskCatalog({
           defaultBranch: destination.defaultBranch || destination.branch || 'main', signal, budgets,
         });
@@ -705,7 +756,7 @@ async function searchTasks(sender, query = '', { refresh = false, includeImporte
     }
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
-      const reports = new ReportService({ github: githubForConfig(destination), cache: store, concurrency: 2 });
+      const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation, concurrency: 2 });
       const records = await reports.loadRepositoryRange({ startDate: '0001-01-01', endDate: '9999-12-31' }, {
         defaultBranch: destination.defaultBranch || destination.branch || 'main', signal, includeStorageMetadata: true,
         budgets, preserveDuplicateIds: true,
@@ -1044,10 +1095,15 @@ async function replaceFullLocalData(operation) {
   // A passive GitHub pull is not on the mutation executor. Finish any pull
   // before wiping storage, and stop new pulls and syncs until the reload.
   globalThis.clockoliLocalDataTransitioning = true;
+  const brokers = [currentCredentialProvider, pendingCredentialProvider];
   try {
+    // Read-only GitHub requests can refresh credentials outside the mutation
+    // executor. Freeze new refreshes and let active ones persist before restore.
+    await Promise.all(brokers.map(broker => broker.pauseForLocalDataChange()));
     if (pendingPull) await pendingPull.catch(() => {});
     return await operation();
   } catch (error) {
+    for (const broker of brokers) broker.resumeAfterLocalDataChange();
     globalThis.clockoliLocalDataTransitioning = false;
     requestPendingSync();
     throw error;
@@ -1451,6 +1507,23 @@ async function handle(message, sender) {
     return result;
   }
   if (message.type === 'RESERVE_INVOICE_NUMBER') return store.reserveInvoiceNumber();
+  if (message.type === 'CLEAR_LOCAL_CACHE') {
+    if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) throw new Error('Only Settings can clear the local cache.');
+    if (Object.keys(message).length !== 1) throw new Error('Invalid cache clear request.');
+    // The configuration load coordinator has already cancelled tracked reads,
+    // and the two executors serialize this with local accepts and Git writes.
+    // A passive pull runs outside the executor; let it finish before clearing.
+    globalThis.clockoliLocalDataTransitioning = true;
+    try {
+      if (pendingPull) await pendingPull.catch(() => {});
+      const result = await store.clearLocalCache();
+      destinationValidationCache.clear();
+      return result;
+    } finally {
+      globalThis.clockoliLocalDataTransitioning = false;
+      requestPendingSync();
+    }
+  }
   if (['EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA'].includes(message.type)) {
     if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) {
       throw new Error('Only Settings can manage full local backups.');
@@ -1748,7 +1821,7 @@ async function handle(message, sender) {
               const branch = byLogin.get(user.toLowerCase());
               if (!branch) throw new Error(`Clockoli storage for ${user} is no longer available. Reload Settings.`);
               const detachedStore = { getState: async () => ({ pendingWrites: [], recentCache: [] }), patchState: async () => {} };
-              return { user: branch.login, tracker: new TrackerService({ github: branch.github, store: detachedStore, user: branch.login, actorId: `github:${branch.id}`, actorName: branch.login, recentDays: destination.recentDays || 7 }) };
+              return { user: branch.login, tracker: new TrackerService({ github: branch.github, store: detachedStore, reports: new ReportService({ github: branch.github, cache: store, cacheGeneration: snapshot.generation }), user: branch.login, actorId: `github:${branch.id}`, actorName: branch.login, recentDays: destination.recentDays || 7 }) };
             });
             for (const { tracker } of targets) {
               const result = await tracker.mergeTasks(request);
@@ -1913,11 +1986,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const reportReadOnly = ['LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
   const localStateRead = ['GET_STATE', 'GET_PAGE_STATE'].includes(message?.type) && !message?.refresh;
   const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'GET_ACTIVE_START_CONFLICT', 'GET_PENDING_COMPLETION_CONFLICT', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS'].includes(message?.type);
-  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER'].includes(message?.type);
+  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CLEAR_LOCAL_CACHE', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER'].includes(message?.type);
   let operation;
   if (changesConfiguration) {
     try {
       assertMessageAllowed(message.type, sender, chrome.runtime.getURL(''));
+      if (message.type === 'CLEAR_LOCAL_CACHE' && Object.keys(message).length !== 1) throw new Error('Invalid cache clear request.');
       operation = acceptanceExecutor.run(() => loadCoordinator.save(() => cancelReports(), () => handle(message, sender)));
     } catch (error) { operation = Promise.reject(error); }
   } else {
@@ -2049,7 +2123,9 @@ async function refreshTaskSearchAfterSync({ retry = false } = {}) {
     // The alarm is one-shot. A successful foreground rebuild already made the
     // cache clean; do not re-read GitHub when its scheduled wakeup arrives.
     if (retry && await store.isTaskSearchDirty?.() === false) return;
-    const result = await searchTasks(null, '', { refresh: true });
+    // A direct completed write may hold the mutation executor. Its durable
+    // refresh alarm can retry if a cache/configuration transaction is queued.
+    const result = await searchTasks(null, '', { refresh: true, waitForConfiguration: false });
     const pending = await store.getTrackingSnapshot();
     const complete = result.configured && !result.partial && !result.conflicts?.length
       && !hasCompletedPending(pending) && !directCompletedWrites

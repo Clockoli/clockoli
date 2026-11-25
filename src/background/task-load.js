@@ -56,8 +56,11 @@ export class ConfigurationLoadCoordinator {
 
   current() { return this.epoch; }
 
-  async beginLoad() {
+  async beginLoad({ wait = true } = {}) {
     while (this.saving) {
+      // A caller already holding the mutation executor must never await a
+      // configuration/cache transaction queued on that same executor.
+      if (!wait) throw supersededError();
       const saving = this.saving;
       await saving.catch(() => {});
       if (this.saving === saving) this.saving = null;

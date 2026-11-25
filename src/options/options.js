@@ -1124,6 +1124,11 @@ function renderState() {
     $('recent-days').value = state.config.recentDays || 7;
   }
   $('connected-account').textContent = state.auth?.githubLogin ? `@${state.auth.githubLogin}` : 'Personal access token';
+  const savedLogins = [...new Set((state?.destinations ?? []).map(destination => destination.storageLogin).filter(Boolean))];
+  $('full-backup-account').textContent = state?.auth?.githubLogin ? `@${state.auth.githubLogin}`
+    : savedLogins.length === 1 ? `@${savedLogins[0]}${state?.auth ? ' (stored repository username)' : ' (signed out)'}`
+      : savedLogins.length > 1 ? `Multiple saved users: ${savedLogins.map(login => `@${login}`).join(', ')}`
+        : state?.auth?.mode === 'pat' ? 'Username unavailable (PAT)' : 'No GitHub user saved';
   $('save-display').disabled = destinations.length === 0;
   setLink('revoke', state.authorizationSettingsUrl);
   $('revoke-action').hidden = state.auth?.mode !== 'github_app';
@@ -2147,6 +2152,7 @@ const mergeSelection = { source: '', target: '' };
 let mergePairs = [];
 let mergePeople = new Set();
 let mergeAvailableUsers = [];
+let mergeLoadSequence = 0, mergeLoadId = '', mergePreviewLoading = false, mergeWriting = false, mergePendingCount = 0;
 function mergePersonAvatar(user) {
   const avatar = document.createElement('span'); avatar.className = 'merge-person-avatar';
   avatar.textContent = user[0]?.toUpperCase() || '?';
@@ -2186,8 +2192,10 @@ function renderMergeDestinationOptions() {
   }
   const next = destinations.some(destination => destination.id === previous) ? previous : fallback;
   select.value = next;
-  select.disabled = destinations.length < 2;
+  select.disabled = mergeWriting || destinations.length < 2;
   if (previous && next !== previous) {
+    mergeLoadSequence += 1; mergeLoadId = ''; mergePreviewLoading = false;
+    $('merge-task-progress').hidden = true;
     mergeSelection.source = ''; mergeSelection.target = ''; clearMergePairs();
     mergePeople = new Set(); mergeAvailableUsers = []; renderMergePeople([]); renderMergeTasks([]);
   }
@@ -2205,7 +2213,7 @@ function filterMergePeople() {
 }
 function updateMergePeopleState(users = mergeAvailableUsers) {
   const allSelected = Boolean(users.length) && users.every(user => mergePeople.has(user));
-  $('merge-people-all').disabled = !users.length;
+  $('merge-people-all').disabled = mergeWriting || !users.length;
   $('merge-people-all').setAttribute('aria-pressed', String(allSelected));
   $('merge-people-all').setAttribute('aria-label', allSelected ? 'Clear all people' : 'Select all people');
   updateMergePeopleAvatars();
@@ -2217,7 +2225,7 @@ function renderMergePeople(users = []) {
   for (const user of users) {
     const label = document.createElement('label'), input = document.createElement('input');
     label.dataset.user = user;
-    input.type = 'checkbox'; input.value = user; input.checked = mergePeople.has(user); input.addEventListener('change', () => {
+    input.type = 'checkbox'; input.value = user; input.checked = mergePeople.has(user); input.disabled = mergeWriting; input.addEventListener('change', () => {
       if (input.checked) mergePeople.add(user); else mergePeople.delete(user);
       clearMergePairs(); updateMergePeopleState(); void refreshMergeTasks();
     });
@@ -2240,7 +2248,7 @@ function renderMergeTaskList(side) {
     const url = document.createElement('span'); url.className = 'merge-task-url'; url.textContent = task.taskUrl;
     row.append(title, url); row.addEventListener('click', () => selectMergeTask(side, task.taskUrl)); list.append(row);
   }
-  if (!list.children.length) { const empty = document.createElement('p'); empty.className = 'help'; empty.textContent = 'No matching tasks.'; list.append(empty); }
+  if (!list.children.length) { const empty = document.createElement('p'); empty.className = 'help'; empty.textContent = mergePreviewLoading ? 'Loading tasks…' : 'No matching tasks.'; list.append(empty); }
 }
 function clearMergePairs() {
   if (!mergePairs.length) return;
@@ -2266,7 +2274,7 @@ function renderMergeQueue() {
   }
   $('merge-queue-count').textContent = `${mergePairs.length} ${mergePairs.length === 1 ? 'pair' : 'pairs'}`;
   $('merge-queue-empty').hidden = Boolean(mergePairs.length);
-  $('merge-tasks-submit').disabled = !mergePairs.length;
+  $('merge-tasks-submit').disabled = mergePreviewLoading || mergeWriting || mergePendingCount > 0 || !mergePairs.length;
 }
 function renderMergeTasks(tasks) {
   const destinationId = $('merge-task-destination').value;
@@ -2284,6 +2292,7 @@ function renderMergeTasks(tasks) {
   return unavailable;
 }
 function selectMergeTask(side, taskUrl) {
+  if (mergePreviewLoading || mergeWriting || mergePendingCount) return;
   if (!mergeTasksVisible(side).some(task => task.taskUrl === taskUrl)) return;
   mergeSelection[side] = taskUrl; renderMergeTaskList(side);
   const other = side === 'source' ? 'target' : 'source';
@@ -2293,32 +2302,64 @@ function selectMergeTask(side, taskUrl) {
   mergePairs.push({ source, target }); mergeSelection.source = ''; mergeSelection.target = '';
   renderMergeTaskList('source'); renderMergeTaskList('target'); renderMergeQueue();
 }
+function showMergeProgress(label, value = null) {
+  $('merge-task-progress').hidden = false;
+  $('merge-task-progress-label').textContent = label;
+  const progress = $('merge-task-progress-value');
+  if (value === null) progress.removeAttribute('value');
+  else progress.value = Math.max(progress.value || 0, Math.min(100, Math.max(0, Number(value) || 0)));
+}
+chrome.runtime.onMessage.addListener(message => {
+  if (message?.type === 'REPORT_PROGRESS' && mergePreviewLoading && message.requestId === mergeLoadId) {
+    showMergeProgress(message.label || 'Loading tasks…', message.value ?? null);
+  }
+});
 async function refreshMergeTasks() {
+  const sequence = ++mergeLoadSequence;
+  mergeLoadId = ''; mergePreviewLoading = false; mergePendingCount = 0;
+  $('merge-task-progress').hidden = true;
   if ($('merge-tasks').hidden) return;
+  clearMergePairs();
   if (!mergePeople.size && mergeAvailableUsers.length) {
     renderMergeTasks([]); $('merge-tasks-feedback').textContent = 'Select at least one person to show tasks.'; return;
   }
   const range = taskPeriodRange($('merge-task-period').value, currentDateValue());
+  mergeLoadId = `merge-tasks-${Date.now()}-${sequence}`;
+  mergePreviewLoading = true;
+  $('merge-task-progress-value').removeAttribute('value');
+  showMergeProgress('Loading tasks…');
+  $('merge-tasks-feedback').textContent = '';
+  renderMergeTasks([]);
   try {
     const destinationId = $('merge-task-destination').value;
     if (!destinationId) throw new Error('Choose a time repository before merging tasks.');
-    const payload = { ...range, destinationIds: [destinationId], includeAllUsers: true, requestId: `merge-tasks-${Date.now()}` };
+    const payload = { ...range, destinationIds: [destinationId], mergePreview: true, requestId: mergeLoadId };
     if (mergePeople.size) payload.selectedUsers = [...mergePeople];
     const result = await send({ type: 'LOAD_TASKS', payload });
-    const currentUsers = Object.values(result.currentUsers || {}).filter(Boolean);
-    const users = result.availableUsers || currentUsers;
-    if (!mergePeople.size) mergePeople = new Set(currentUsers);
-    renderMergePeople(users);
-    if (result.partial || result.conflicts?.length) {
-      renderMergeTasks([]); $('merge-tasks-feedback').textContent = 'Some time repositories could not be loaded completely. Reload Settings before merging tasks.'; return;
-    }
+    if (sequence !== mergeLoadSequence || destinationId !== $('merge-task-destination').value) return;
+    mergePeople = new Set(result.selectedUsers || []);
+    renderMergePeople(result.availableUsers || []);
+    mergePendingCount = result.pendingCount || 0;
+    mergePreviewLoading = false;
     const unavailable = renderMergeTasks(result.tasks || []);
     const imported = mergeTasks.filter(task => !isMergeTarget(task)).length;
-    $('merge-tasks-feedback').textContent = unavailable
-      ? `${unavailable} invalid task ${unavailable === 1 ? 'identity was' : 'identities were'} excluded.`
-      : imported ? 'Imported task identities can be replaced with a tracked URL; replacement tasks must have a URL.'
-        : mergeTasks.length ? '' : 'No tasks match the selected people and period.';
-  } catch (error) { renderMergeTasks([]); $('merge-tasks-feedback').textContent = error.message; }
+    $('merge-tasks-feedback').textContent = mergePendingCount
+      ? 'Sync pending changes before merging tasks.'
+      : unavailable ? `${unavailable} invalid task ${unavailable === 1 ? 'identity was' : 'identities were'} excluded.`
+        : imported ? 'Imported task identities can be replaced with a tracked URL; replacement tasks must have a URL.'
+          : mergeTasks.length ? '' : 'No tasks match the selected people and period.';
+  } catch (error) {
+    if (sequence !== mergeLoadSequence) return;
+    mergePreviewLoading = false;
+    renderMergeTasks([]);
+    $('merge-tasks-feedback').textContent = error.message || 'Could not load merge tasks.';
+  } finally {
+    if (sequence === mergeLoadSequence) {
+      mergePreviewLoading = false; mergeLoadId = '';
+      $('merge-task-progress').hidden = true;
+      renderMergeQueue();
+    }
+  }
 }
 
 function ratesPayload() {
@@ -2384,11 +2425,13 @@ function invoicingPayload() {
   });
 }
 
+const RESTORE_AUTH_DIAGNOSTIC = 'clockoli.restore-auth-diagnostic';
+
 function localStorageSnapshot() {
   return Object.fromEntries(Array.from({ length: localStorage.length }, (_, index) => {
     const key = localStorage.key(index);
     return [key, localStorage.getItem(key)];
-  }));
+  }).filter(([key]) => key !== RESTORE_AUTH_DIAGNOSTIC));
 }
 
 function replaceLocalStorage(values) {
@@ -2396,9 +2439,22 @@ function replaceLocalStorage(values) {
   for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value);
 }
 
-function fullBackupPassword() {
-  const password = $('full-backup-password').value;
-  if (password.length < 8) throw new Error('Enter a backup password of at least 8 characters.');
+function fullBackupPassword(confirmExport = false) {
+  const passwordInput = $('full-backup-password');
+  const confirmationInput = $('full-backup-password-confirm');
+  const password = passwordInput.value;
+  const invalid = !password || password.length < 8 ? passwordInput
+    : confirmExport && confirmationInput.value !== password ? confirmationInput : null;
+  if (invalid) {
+    const reason = !password ? 'Enter your backup password.'
+      : password.length < 8 ? 'Use a password of at least 8 characters.'
+        : !confirmationInput.value ? 'Confirm your backup password.' : 'Passwords do not match.';
+    invalid.setAttribute('aria-invalid', 'true');
+    invalid.focus();
+    formFeedback('full-backup-password-feedback', reason, 'error');
+    throw Object.assign(new Error(reason), { code: 'invalid_backup_password' });
+  }
+  formFeedback('full-backup-password-feedback', '');
   return password;
 }
 
@@ -2641,6 +2697,27 @@ $('disconnect').addEventListener('click', async () => {
   try { stopRepositoryMonitoring(); await send({ type: 'DISCONNECT_GITHUB_APP' }); setupCancelled = false; showOnboarding = true; await refreshState(); message('Disconnected locally. GitHub authorization was not revoked.', 'success'); }
   catch (error) { message(error.message, 'error'); }
   finally { $('disconnect').disabled = false; }
+});
+
+$('clear-cache').addEventListener('click', async () => {
+  const button = $('clear-cache');
+  if (button.disabled) return;
+  button.disabled = true;
+  formFeedback('clear-cache-feedback', 'Clearing cache…');
+  try {
+    const result = await send({ type: 'CLEAR_LOCAL_CACHE' });
+    const retained = result.retainedPendingDestinations > 0;
+    formFeedback('clear-cache-feedback', retained
+      ? 'Cache cleared. Pending changes and their local views were kept. Reload open Clockoli pages to fetch fresh data.'
+      : 'Cache cleared. Reload open Clockoli pages to fetch fresh data. Recent tracking data is kept until refreshed.', 'success');
+    mergeSelection.source = ''; mergeSelection.target = '';
+    clearMergePairs(); renderMergeTasks([]);
+    void refreshMergeTasks();
+  } catch (error) {
+    formFeedback('clear-cache-feedback', error.message || 'Could not clear the cache.', 'error');
+  } finally {
+    button.disabled = false;
+  }
 });
 
 $('clear-local').addEventListener('click', async () => {
@@ -3146,18 +3223,36 @@ for (const [form, feedback] of [['display-form', 'display-feedback'], ['billing-
   $(form).addEventListener('input', () => formFeedback(feedback, ''));
 }
 for (const id of ['seller-address', 'invoice-notes']) wireAutoGrow($(id));
+for (const id of ['full-backup-password', 'full-backup-password-confirm']) {
+  $(id).addEventListener('input', () => {
+    for (const field of ['full-backup-password', 'full-backup-password-confirm']) $(field).removeAttribute('aria-invalid');
+    formFeedback('full-backup-password-feedback', '');
+  });
+}
 $('export-full-local-backup').addEventListener('click', async () => {
   const button = $('export-full-local-backup');
   button.disabled = true;
   try {
     const result = await send({
-      type: 'EXPORT_FULL_LOCAL_BACKUP', password: fullBackupPassword(),
+      type: 'EXPORT_FULL_LOCAL_BACKUP', password: fullBackupPassword(true),
       localStorage: localStorageSnapshot(),
     });
     downloadText(result.text, `clockoli-full-backup-${new Date().toISOString().slice(0, 10)}.json`);
+    $('full-backup-password').value = '';
+    $('full-backup-password-confirm').value = '';
     message('Encrypted full local backup exported. Keep the file and password safe.', 'success');
-  } catch (error) { message(error.message || 'Could not export full backup.', 'error'); }
-  finally { $('full-backup-password').value = ''; button.disabled = false; }
+  } catch (error) {
+    if (error.code !== 'invalid_backup_password') message(error.message || 'Could not export full backup.', 'error');
+  } finally { button.disabled = false; }
+});
+
+$('restore-full-local-backup').addEventListener('click', () => {
+  try {
+    fullBackupPassword();
+    $('import-full-local-backup-file').click();
+  } catch (error) {
+    if (error.code !== 'invalid_backup_password') message(error.message || 'Could not select a full backup.', 'error');
+  }
 });
 
 $('import-full-local-backup-file').addEventListener('change', async () => {
@@ -3167,12 +3262,15 @@ $('import-full-local-backup-file').addEventListener('change', async () => {
   try {
     const password = fullBackupPassword();
     if (file.size > 64 * 1024 * 1024) throw new Error('Full backup file is too large.');
-    if (!window.confirm('Replace ALL current local Clockoli data and GitHub sign-in with this backup? Any local changes not in the file will be lost. GitHub repositories are not changed.')) return;
+    if (!window.confirm('Replace all current local Clockoli data with this backup? The current GitHub sign-in is kept if it belongs to the same account and uses the same sign-in method. Other local changes not in the file will be lost. GitHub repositories are not changed.')) return;
     const restored = await send({ type: 'IMPORT_FULL_LOCAL_BACKUP', text: await file.text(), password });
-    try { replaceLocalStorage(restored.localStorage); }
-    finally { reloadAfterLocalDataChange(); }
-  } catch (error) { message(error.message || 'Could not restore full backup.', 'error'); }
-  finally { input.value = ''; input.disabled = false; $('full-backup-password').value = ''; }
+    try {
+      replaceLocalStorage(restored.localStorage);
+      localStorage.setItem(RESTORE_AUTH_DIAGNOSTIC, restored.authRestore || 'unknown');
+    } finally { reloadAfterLocalDataChange(); }
+  } catch (error) {
+    if (error.code !== 'invalid_backup_password') message(error.message || 'Could not restore full backup.', 'error');
+  } finally { input.value = ''; input.disabled = false; $('full-backup-password').value = ''; }
 });
 
 $('export-settings').addEventListener('click', async () => {
@@ -3237,13 +3335,18 @@ $('merge-task-destination').addEventListener('change', async () => {
 });
 $('merge-people-all').addEventListener('click', event => {
   event.stopPropagation(); setMergePeopleOpen(true);
+  if (mergeWriting) return;
   const allSelected = mergeAvailableUsers.length > 0 && mergeAvailableUsers.every(user => mergePeople.has(user));
   allSelected ? mergePeople.clear() : mergeAvailableUsers.forEach(user => mergePeople.add(user));
   clearMergePairs(); renderMergePeople(mergeAvailableUsers); void refreshMergeTasks();
 });
 $('merge-tasks-submit').addEventListener('click', async () => {
-  if (!mergePairs.length) return;
-  const button = $('merge-tasks-submit'); button.disabled = true; formFeedback('merge-tasks-feedback', 'Merging tasks…');
+  if (!mergePairs.length || mergePreviewLoading || mergeWriting || mergePendingCount) return;
+  mergeWriting = true;
+  const button = $('merge-tasks-submit'); button.disabled = true;
+  $('merge-task-period').disabled = true; $('merge-task-destination').disabled = true;
+  renderMergePeople(mergeAvailableUsers);
+  formFeedback('merge-tasks-feedback', 'Merging tasks…');
   try {
     const range = taskPeriodRange($('merge-task-period').value, currentDateValue());
     const pairs = mergePairs.map(pair => ({ sourceTaskUrl: pair.source.taskUrl, targetTaskUrl: pair.target.taskUrl, targetTaskTitle: pair.target.title || '' }));
@@ -3254,7 +3357,13 @@ $('merge-tasks-submit').addEventListener('click', async () => {
   } catch (error) {
     if (error.code === 'partial_task_merge') await refreshMergeTasks().catch(() => {});
     formFeedback('merge-tasks-feedback', error.message || 'Could not merge tasks.', 'error');
-  } finally { renderMergeQueue(); }
+  } finally {
+    mergeWriting = false;
+    $('merge-task-period').disabled = false;
+    $('merge-task-destination').disabled = configuredDestinations().length < 2;
+    renderMergePeople(mergeAvailableUsers);
+    renderMergeQueue();
+  }
 });
 
 $('settings-form').addEventListener('submit', async event => {
@@ -3271,7 +3380,12 @@ $('settings-form').addEventListener('submit', async event => {
   finally { $('save').disabled = false; }
 });
 
-function showSignInRequired() {
+function showSignInRequired(cause) {
+  const decision = localStorage.getItem(RESTORE_AUTH_DIAGNOSTIC);
+  const diagnostic = $('restore-auth-diagnostic');
+  const reason = cause?.authReason || 'auth_expired';
+  diagnostic.hidden = !decision;
+  diagnostic.textContent = decision ? `Backup sign-in: ${decision}. GitHub renewal: ${reason}.` : '';
   if (authExpired) return;
   authExpired = true;
   authRecoveryKnown = `${state?.auth?.accessTokenExpiresAt || ''}:${state?.auth?.refreshTokenExpiresAt || ''}`;
@@ -3281,6 +3395,7 @@ function showSignInRequired() {
 }
 
 function clearSignInRequired() {
+  localStorage.removeItem(RESTORE_AUTH_DIAGNOSTIC);
   if (!authExpired) return;
   authExpired = false;
   authRecoveryKnown = '';

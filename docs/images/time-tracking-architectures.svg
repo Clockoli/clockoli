@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 300" width="900" height="300" role="img" aria-labelledby="title description">
+  <title id="title">Three approaches to time tracking</title>
+  <desc id="description">SaaS uses a vendor's application server and database. Self-hosted uses your own server and database. Clockoli connects your browser directly to your GitHub repository.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; text-anchor: middle; fill: #24292f; }
+    .heading { font-size: 20px; font-weight: 700; }
+    .example { font-size: 13px; fill: #57606a; }
+    .label { font-size: 16px; font-weight: 500; }
+    .footer { font-size: 14px; font-weight: 600; fill: #57606a; }
+    .panel { fill: #f6f8fa; stroke: #d0d7de; stroke-width: 1.2; }
+    .node { fill: #ffffff; stroke: #afb8c1; stroke-width: 1.3; }
+    .arrow { fill: none; stroke: #6e7781; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .clockoli .panel { fill: #f0faef; stroke: #65a85a; stroke-width: 1.6; }
+    .clockoli .node { fill: #ffffff; stroke: #65a85a; }
+    .clockoli .repo { fill: #ddf4d7; stroke: #65a85a; }
+    .clockoli .heading, .clockoli .footer { fill: #216e39; }
+    .clockoli .arrow { stroke: #3d9246; }
+    .clockoli .example { fill: #356b3c; }
+  </style>
+  <g transform="translate(3 3)">
+    <rect class="panel" width="288" height="294" rx="12"/>
+    <text class="heading" x="144" y="29">SaaS</text>
+    <text class="example" x="144" y="48">Toggl Track, Clockify</text>
+    <rect class="node" x="38" y="65" width="212" height="42" rx="7"/>
+    <text class="label" x="144" y="91">Your browser</text>
+    <path class="arrow" d="M144 113 V128 M139 123 L144 128 L149 123"/>
+    <rect class="node" x="38" y="134" width="212" height="42" rx="7"/>
+    <text class="label" x="144" y="160">Vendor's server</text>
+    <path class="arrow" d="M144 182 V197 M139 192 L144 197 L149 192"/>
+    <rect class="node" x="38" y="203" width="212" height="42" rx="7"/>
+    <text class="label" x="144" y="229">Vendor's database</text>
+    <text class="footer" x="144" y="272">Vendor controls storage</text>
+  </g>
+  <g transform="translate(306 3)">
+    <rect class="panel" width="288" height="294" rx="12"/>
+    <text class="heading" x="144" y="29">Self-hosted</text>
+    <text class="example" x="144" y="48">Kimai, solidtime</text>
+    <rect class="node" x="38" y="65" width="212" height="42" rx="7"/>
+    <text class="label" x="144" y="91">Your browser</text>
+    <path class="arrow" d="M144 113 V128 M139 123 L144 128 L149 123"/>
+    <rect class="node" x="38" y="134" width="212" height="42" rx="7"/>
+    <text class="label" x="144" y="160">Your server</text>
+    <path class="arrow" d="M144 182 V197 M139 192 L144 197 L149 192"/>
+    <rect class="node" x="38" y="203" width="212" height="42" rx="7"/>
+    <text class="label" x="144" y="229">Your database</text>
+    <text class="footer" x="144" y="272">Maintain your own stack</text>
+  </g>
+  <g class="clockoli" transform="translate(609 3)">
+    <rect class="panel" width="288" height="294" rx="12"/>
+    <text class="heading" x="144" y="29">Git-native</text>
+    <text class="example" x="144" y="48">Clockoli</text>
+    <rect class="node" x="38" y="65" width="212" height="42" rx="7"/>
+    <text class="label" x="144" y="91">Your browser</text>
+    <path class="arrow" d="M144 113 V197 M139 192 L144 197 L149 192"/>
+    <text class="example" x="201" y="158">Direct API</text>
+    <rect class="node repo" x="38" y="203" width="212" height="42" rx="7"/>
+    <text class="label" x="144" y="229">Your GitHub repo</text>
+    <text class="footer" x="144" y="272">No app server to run</text>
+  </g>
+</svg>

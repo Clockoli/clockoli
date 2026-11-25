@@ -80,10 +80,20 @@ function assertNoCompletedOverlap(updated, entries) {
     throw error;
   }
 }
-function assertNoRunningCompletedOverlap(active, entries) {
-  const start = new Date(active.startedAt).getTime();
-  if (entries.some(entry => new Date(entry.endedAt).getTime() > start)) {
-    throw new TrackerConflictError('Timer start would overlap another time entry. Choose a start after that entry ends.');
+function runningCompletedOverlap(active, entries, through) {
+  const start = timerStartedAt(active), end = new Date(through).getTime();
+  if (start >= end) return null;
+  return entries.find(entry => {
+    const otherStart = new Date(entry.startedAt).getTime(), otherEnd = new Date(entry.endedAt).getTime();
+    return otherStart < otherEnd && otherStart < end && otherEnd > start;
+  }) ?? null;
+}
+function assertNoRunningCompletedOverlap(active, entries, through) {
+  const conflicting = runningCompletedOverlap(active, entries, through);
+  if (conflicting) {
+    const error = new TrackerConflictError('Timer start would overlap another time entry. Choose a start after that entry ends.');
+    error.conflictWith = conflicting;
+    throw error;
   }
 }
 function isNewerTimer(candidate, current) { return timerStartedAt(candidate) > timerStartedAt(current); }
@@ -570,8 +580,9 @@ function updateDayRangeIntervals(previous, updates = [], removals = []) {
   return [...known.values()];
 }
 function knownLocalIntervals(state) {
-  return overlayPendingEntries([...(state.summaryCache?.weekEntries ?? []), ...(state.recentCache ?? []),
-    ...(state.dayRangeIntervals ?? [])], state.pendingWrites ?? []);
+  // The day-range index is an occupancy hint, not an authoritative record.
+  return overlayPendingEntries([...(state.dayRangeIntervals ?? []), ...(state.summaryCache?.weekEntries ?? []),
+    ...(state.recentCache ?? [])], state.pendingWrites ?? []);
 }
 
 function replaceCachedFiles(cache, replacements, touchedPaths = replacements.map(entry => entry._path)) {
@@ -779,7 +790,7 @@ export class TrackerService {
     const { operation, pendingActive } = this.prepareQueuedStart(taskUrl, taskTitle, description, { startedAt, overlapGuards, overlapHeadSha, requireNoOverlap, billable });
     await this.mutateState(current => {
       if (current.activeCache) throw new Error(`A timer is already tracking ${taskLabel(current.activeCache)}`);
-      if (requireNoOverlap) assertNoRunningCompletedOverlap(pendingActive, knownLocalIntervals(current));
+      if (requireNoOverlap) assertNoRunningCompletedOverlap(pendingActive, knownLocalIntervals(current), this.clock());
       return { pendingWrites: [...(current.pendingWrites ?? []), operation], activeCache: pendingActive };
     });
     return pendingActive;
@@ -3213,8 +3224,25 @@ export class TrackerService {
       throw new TrackerConflictError('The active timer changed before its edit was queued. Reload before trying again.');
     }
     const proposed = applyActiveEdits(current, { startedAt, description, billable }, queuedAt);
-    const overlap = proposed.startedAt !== current.startedAt
-      ? await this.readEditOverlapFiles([{ ...proposed, endedAt: queuedAt.toISOString() }]) : null;
+    const changedStart = proposed.startedAt !== current.startedAt;
+    const localProjection = state => [state.recentCache, state.summaryCache, state.dayRangeIntervals, state.pendingWrites];
+    let verified = null;
+    if (changedStart) {
+      // Pending changes are authoritative. Reject a real locally queued overlap
+      // immediately; a free local interval needs no GitHub request to enqueue.
+      assertNoRunningCompletedOverlap(proposed, overlayPendingEntries([], snapshot.pendingWrites ?? []), queuedAt);
+      if (runningCompletedOverlap(proposed, knownLocalIntervals(snapshot), queuedAt)) {
+        // A cached record may have been shortened or deleted already. Only
+        // re-read on an apparent cached conflict, and project pending changes
+        // onto that fresh history instead of concatenating stale versions.
+        try {
+          verified = await this.readEditOverlapFiles([{ ...proposed, endedAt: queuedAt.toISOString() }]);
+        } catch (error) {
+          if (!isRetryableReadFailure(error)) throw error;
+          assertNoRunningCompletedOverlap(proposed, knownLocalIntervals(snapshot), queuedAt);
+        }
+      }
+    }
     return this.mutateState(state => {
       const active = state.activeCache;
       if (!active || active.id !== original?.id || active.startedAt !== original?.startedAt) throw new TrackerConflictError('The active timer changed before its edit was queued. Reload before trying again.');
@@ -3225,9 +3253,11 @@ export class TrackerService {
       };
       const updated = applyActiveEdits(active, edits, queuedAt);
       const pendingWrites = [...(state.pendingWrites ?? [])];
-      if (overlap) {
-        const known = knownLocalIntervals({ ...state, pendingWrites });
-        assertNoRunningCompletedOverlap(updated, [...overlap.files.flatMap(file => file.entries), ...known]);
+      if (changedStart) {
+        const known = verified && sameValue(localProjection(state), localProjection(snapshot))
+          ? overlayPendingEntries(verified.files.flatMap(file => file.entries), pendingWrites)
+          : knownLocalIntervals(state);
+        assertNoRunningCompletedOverlap(updated, known, queuedAt);
       }
       const existing = trailingSupersedable(pendingWrites, operation => operation.operation === 'editActiveStart'
         && operation.original?.id === active.id);
@@ -3339,7 +3369,7 @@ export class TrackerService {
     const path = activeRecordPath(this.user);
     const overlap = updated.startedAt !== active.startedAt
       ? await this.readEditOverlapFiles([{ ...updated, endedAt: now.toISOString() }]) : null;
-    if (overlap) assertNoRunningCompletedOverlap(updated, overlap.files.flatMap(file => file.entries));
+    if (overlap) assertNoRunningCompletedOverlap(updated, overlap.files.flatMap(file => file.entries), now);
     try {
       const result = overlap
         ? await this.github.updateTextsAtomic([{ path, sha: active._sha, text: serializeActiveRecord(updated) }],
@@ -3442,10 +3472,25 @@ export class TrackerService {
     }
     const state = await this.store.getState();
     if ((state.pendingWrites ?? []).length) throw new Error('Sync pending changes before merging tasks.');
+    entryDateParts(startDate); entryDateParts(endDate);
+    if (startDate > endDate) throw new Error('Task merge end date must not precede start date');
+    const activePath = activeRecordPath(this.user);
+    const snapshot = await this.github.listTextFilesSnapshot('times/', { includeActive: activePath, includePaths: [TASK_INDEX_PATH] });
     const files = new Map();
-    for (const month of monthsInRange(startDate, endDate)) {
-      const path = monthlyRecordsPath(this.user, `${month}-01`);
-      files.set(path, await this.readMonthly(path));
+    const monthly = (snapshot.files ?? []).flatMap(file => {
+      try {
+        const month = monthFromPath(file.path, this.user);
+        return month >= startDate.slice(0, 7) && month <= endDate.slice(0, 7) ? [{ ...file, month }] : [];
+      } catch { return []; }
+    });
+    for (let offset = 0; offset < monthly.length; offset += 6) {
+      const loaded = await Promise.all(monthly.slice(offset, offset + 6).map(async file => {
+        const cached = await this.reports?.cachedMonthly(file.path, file.sha);
+        if (cached) return { ...cached, month: file.month };
+        const blob = await this.github.getBlobText(file.path, file.sha);
+        return { ...file, entries: parseMonthlyRecords(blob.text, { user: this.user, month: file.month, path: file.path, sha: file.sha }) };
+      }));
+      for (const file of loaded) files.set(file.path, file);
     }
     const removed = [], added = [], touched = [];
     for (const file of files.values()) {
@@ -3458,19 +3503,30 @@ export class TrackerService {
       });
       if (changed) touched.push(file);
     }
-    const active = await this.readRemoteActive();
+    const activeFile = snapshot.files.find(file => file.path === activePath);
+    const active = activeFile ? parseActiveRecord((await this.github.getBlobText(activePath, activeFile.sha)).text, {
+      user: this.user, path: activePath, sha: activeFile.sha,
+    }) : null;
     const activeReplacement = active ? replacements.get(taskUrlOf(active)) : null;
     const mergeActive = Boolean(active && active.entryDate >= startDate && active.entryDate <= endDate && activeReplacement);
     const updatedActive = mergeActive
       ? withTaskIdentityHistory(applyActiveEdits(active, activeReplacement, this.clock()), active) : active;
     if (!touched.length && !mergeActive) return { mergedEntries: 0, mergedActive: false };
-    const activePath = activeRecordPath(this.user);
     const changes = touched.map(file => ({ path: file.path, sha: file.sha, text: serializeMonthlyRecords(file.entries) }));
     if (mergeActive) changes.push({ path: activePath, sha: active._sha, text: serializeActiveRecord(updatedActive) });
     try {
+      const index = snapshot.files.find(file => file.path === TASK_INDEX_PATH);
+      if (!index) throw new Error('The mandatory Clockoli task index is missing.');
+      const expectedHeadSha = snapshot.headSha || null;
       const result = removed.length
-        ? await this.updateCompletedRecords(changes, `time: merge tasks ${this.user}`, { remove: removed, add: added })
-        : await this.github.updateTextsAtomic(changes, `timer: merge active task ${this.user}`);
+        ? await this.updateCompletedRecords(changes, `time: merge tasks ${this.user}`, {
+          remove: removed, add: added, expectedHeadSha,
+          indexFile: { path: TASK_INDEX_PATH, sha: index.sha, index: parseTaskIndex(
+            (await this.github.getBlobText(TASK_INDEX_PATH, index.sha)).text, { user: this.user }) },
+        })
+        : await this.github.updateTextsAtomic(changes, `timer: merge active task ${this.user}`, {
+          guards: [{ path: TASK_INDEX_PATH, sha: index.sha }], expectedHeadSha,
+        });
       const replacements = touched.flatMap(file => parseMonthlyRecords(serializeMonthlyRecords(file.entries), {
         user: this.user, month: file.month, path: file.path, sha: result.blobShas[file.path],
       }));

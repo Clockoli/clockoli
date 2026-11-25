@@ -3681,6 +3681,9 @@
     const section = (timesMode ? shadow : shadow)?.querySelector('.popup-timeline-section');
     if (!section) return false;
     section.querySelector('.timeline-edit-error')?.remove();
+    // Active-start edits already report the error in the Activity notice.
+    // Do not duplicate it or imply that the visible week contains an overlap.
+    if (/^Timer start would overlap another time entry\./i.test(error.message)) return true;
     const warning = el('div', undefined, 'timeline-edit-error error');
     warning.setAttribute('role', 'alert');
     warning.append(el('strong', 'Time entry was not moved.'), el('div', error.message));

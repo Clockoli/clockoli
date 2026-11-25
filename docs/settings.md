@@ -102,11 +102,13 @@ See [Settings backup exclusions](data-and-privacy.md#settings-backup-exclusions)
 
 #### Full local backup
 
-**Export all local data** downloads a password-encrypted JSON backup containing the complete extension-local IndexedDB database and extension-page browser preferences. This includes the saved GitHub username, GitHub access/refresh tokens or PAT, active timers, pending writes, conflict state, cached records, billing and other local settings. Choose a password of at least eight characters. Store the file and password securely; anyone with both can use the saved GitHub credentials.
+The **GitHub user in local data** label shows the GitHub username saved in this browser, including one restored from another backup. If you have signed out, Clockoli can still show the username recorded in a connected time repository. The label is not a new verification against GitHub.
 
-**Restore all local data** replaces the entire local database and extension-page browser preferences with the selected encrypted backup. The existing GitHub account, settings, and unsynced work in this browser are replaced, not merged. Clockoli validates and decrypts the file before changing its IndexedDB database, then reloads the extension. It does not upload the backup to GitHub or change repository data. A restore link is also available during first-time setup, before connecting GitHub.
+**Export all local data** downloads a password-encrypted JSON backup containing the complete extension-local IndexedDB database and extension-page browser preferences. This includes the saved GitHub username, GitHub access/refresh tokens or PAT, active timers, pending writes, conflict state, cached records, billing and other local settings. Enter a password of at least eight characters and repeat it in the confirmation field; the two values must match before the file is exported. Store the file and password securely; anyone with both can use the saved GitHub credentials.
 
-This is different from the credential-free **Backup & restore** settings feature above. GitHub access in a restored backup is subject to any token expiration or revocation that happened after exporting it.
+**Restore all local data** requires the backup password in the first field, but not the confirmation field. If the password is missing, the file picker stays closed and focus moves to the highlighted password field. Restoring replaces the entire local database and extension-page browser preferences with the selected encrypted backup. Settings and unsynced work in this browser are replaced, not merged. If the current and backed-up GitHub sign-ins have the same verified GitHub user ID and sign-in method, Clockoli keeps the current credentials unless they are known to be expired. Otherwise it restores the backed-up sign-in; credentials from different accounts or sign-in methods are never mixed. Clockoli validates and decrypts the file before changing its IndexedDB database, then reloads the extension. It does not upload the backup to GitHub or change repository data. A restore link is also available during first-time setup, before connecting GitHub.
+
+This is different from the credential-free **Backup & restore** settings feature above. If the backup's GitHub credentials are needed (for example, on a new browser), GitHub access is subject to expiration, revocation and token rotation since the export. A previously used refresh token cannot renew access again; you may need to reconnect. Restoring does not require network access.
 
 #### Diagnostics
 
@@ -118,6 +120,7 @@ A single-repository alternative if the GitHub App cannot be used. See [PAT setup
 
 #### Recovery and access
 
+- **Clear cache** removes downloaded report files, task indexes, task metadata, saved report/task views, and exchange rates so Clockoli reads fresh data. Your GitHub sign-in, connected repositories, settings, running timer and pending changes remain intact. Recent tracking records, weekly intervals and locally recorded overlap guards are kept as a working set until a successful refresh replaces them; they are needed to prevent overlapping time and safely apply edits, even when there are no pending writes. Cached totals and passive refresh markers are invalidated (pending local views stay available). Reload already open Clockoli pages to fetch fresh data. The first load may take longer; no GitHub data is changed.
 - **Reset to defaults** removes the entire local database and browser preferences, including credentials, saved username, running timers, and **unsynced work**. This cannot be undone without a backup. Reconnect to GitHub afterward to use the account's real username.
 - **Revoke GitHub sign-in** opens GitHub settings to revoke Clockoli's user authorization. It does not uninstall the GitHub App or delete repository records.
 

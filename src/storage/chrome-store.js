@@ -55,6 +55,30 @@ function generationValue(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
+function restoreAuthDecision(current, saved) {
+  if (!current?.accessToken) return 'backup-no-current-sign-in';
+  if (!saved?.accessToken) return 'backup-no-saved-sign-in';
+  if (current.mode !== saved.mode) return 'backup-different-sign-in-method';
+  if (!Number.isSafeInteger(current.githubUserId) || current.githubUserId <= 0
+      || !Number.isSafeInteger(saved.githubUserId) || saved.githubUserId <= 0) {
+    // An identical nonempty credential is proof of the same session even in
+    // a legacy snapshot without a verified numeric identity. Never use login
+    // strings alone to associate credentials with another account.
+    if (current.accessToken !== saved.accessToken
+        && !(current.mode === 'github_app' && current.refreshToken
+          && current.refreshToken === saved.refreshToken)) return 'backup-unverified-identity';
+  } else if (current.githubUserId !== saved.githubUserId) return 'backup-different-account';
+  if (current.mode === 'pat') return 'kept-current';
+  if (current.mode !== 'github_app') return 'backup-unsupported-sign-in-method';
+  const now = Date.now();
+  // A token with a future access expiry is usable even inside the proactive
+  // refresh window. Restore itself must not force a network request.
+  return (typeof current.refreshToken === 'string' && Boolean(current.refreshToken)
+      && Number(current.refreshTokenExpiresAt) > now)
+    || Number(current.accessTokenExpiresAt) > now
+    ? 'kept-current' : 'backup-current-expired';
+}
+
 function storageFormatError(message) {
   return Object.assign(new Error(message), { code: 'incompatible_storage_format' });
 }
@@ -182,11 +206,16 @@ export class IndexedDbBackend {
     return keys.map((key, index) => [key, values[index]]);
   }
 
-  async replaceAllEntries(entries) {
+  async replaceAllEntries(entries, { readKeys = [], prepare } = {}) {
     const database = await this.open();
     const transaction = database.transaction('values', 'readwrite');
     const done = transactionDone(transaction);
     const objectStore = transaction.objectStore('values');
+    // Read the current values and replace the snapshot in the same transaction.
+    if (prepare) {
+      const pairs = await Promise.all(readKeys.map(async key => [key, await requestResult(objectStore.get(key))]));
+      entries = prepare(entries, Object.fromEntries(pairs));
+    }
     objectStore.clear();
     for (const [key, value] of entries) objectStore.put(value, key);
     await done;
@@ -264,13 +293,94 @@ export class ChromeStore {
 
   async importFullLocalBackup(text, password) {
     const backup = await decryptFullBackup(text, password);
-    await this.backend.replaceAllEntries(backup.entries);
+    let githubLogin = backup.githubLogin;
+    let authRestore;
+    await this.backend.replaceAllEntries(backup.entries, {
+      readKeys: [AUTH, AUTH_GENERATION, PENDING_AUTH_GENERATION],
+      prepare: (entries, current) => {
+        const restored = new Map(entries);
+        const savedAuth = restored.get(AUTH);
+        const liveAuth = current[AUTH];
+        // GitHub invalidates both old tokens when a user token is refreshed.
+        // Never roll back the current session for a verified matching account.
+        // Do not mix authentication modes: the restored repository configuration
+        // may depend on the access model used in the backup.
+        authRestore = restoreAuthDecision(liveAuth, savedAuth);
+        if (authRestore !== 'kept-current') return entries;
+        const generation = Math.max(generationValue(current[AUTH_GENERATION]),
+          generationValue(restored.get(AUTH_GENERATION))) + 1;
+        restored.set(AUTH, { ...liveAuth, generation });
+        restored.set(AUTH_GENERATION, generation);
+        restored.delete('token');
+        // Do not resume a historical sign-in flow or let an old candidate
+        // supersede the live account's credentials after the worker restarts.
+        if (restored.has(PENDING_AUTH) || restored.has(DEVICE_ATTEMPT)
+            || restored.has(PENDING_AUTH_GENERATION) || current[PENDING_AUTH_GENERATION] !== undefined) {
+          restored.delete(PENDING_AUTH);
+          restored.delete(DEVICE_ATTEMPT);
+          restored.set(PENDING_AUTH_GENERATION, Math.max(generationValue(current[PENDING_AUTH_GENERATION]),
+            generationValue(restored.get(PENDING_AUTH_GENERATION))) + 1);
+        }
+        githubLogin = liveAuth.githubLogin || githubLogin;
+        return [...restored];
+      },
+    });
     // Credentials and the full database remain within this privileged context.
-    return { localStorage: backup.localStorage, githubLogin: backup.githubLogin };
+    return { localStorage: backup.localStorage, githubLogin, authRestore };
   }
 
   async resetFullLocalData() {
     await this.backend.replaceAllEntries([]);
+  }
+
+  // Only discard downloaded history and presentation caches. Recent records
+  // and weekly entries are also the local overlap/rebase working set, even
+  // when there are no pending writes. Retain them until an authoritative
+  // refresh replaces them; invalidate summary display and passive-pull ETags.
+  // dayRangeIntervals is a durable overlap guard, not a downloaded cache.
+  async clearLocalCache() {
+    const caches = ['reportCache', 'pageSnapshots', 'taskMetadataCache', EXCHANGE_RATE_CACHE];
+    // Do not deserialize potentially huge history blobs just to delete them.
+    const keys = ['dataVersion', DESTINATION_STATES, 'recentCache', 'summaryCache',
+      'pendingWrites', 'taskSearchCache', CONFIGURATION_GENERATION];
+    return this.backend.mutateMany(keys, values => {
+      const version = values.dataVersion ?? 0;
+      if (!Number.isSafeInteger(version) || version < 0 || version > 5) throw storageFormatError('Unsupported local data version.');
+      let retained = 0;
+      const clearProjection = state => {
+        if (!state || typeof state !== 'object' || Array.isArray(state)) {
+          throw storageFormatError('Invalid local tracking state.');
+        }
+        const pending = Boolean(state.pendingWrites?.length || state.recentCache?.some(entry => entry?._pending));
+        if (pending) retained += 1;
+        const summary = state.summaryCache;
+        if (!summary) return state;
+        const { silentPull, ...rest } = summary;
+        // Pending work keeps its local summary; otherwise show no cached totals
+        // until the next successful read. In both cases keep the week entries
+        // for immediate local overlap checks, not as a report snapshot.
+        return { ...state, summaryCache: pending ? rest : { ...rest, reportDate: null } };
+      };
+      const set = {};
+      if (version === 5) {
+        const states = values[DESTINATION_STATES];
+        if (!states || states.version !== 1 || !states.entries || typeof states.entries !== 'object'
+            || Array.isArray(states.entries)) throw storageFormatError('Clockoli local data version 5 is incomplete or invalid.');
+        set[DESTINATION_STATES] = { ...states, entries: Object.fromEntries(
+          Object.entries(states.entries).map(([id, state]) => [id, clearProjection(state)]),
+        ) };
+      } else {
+        const projected = clearProjection(values);
+        if (Object.hasOwn(values, 'recentCache')) set.recentCache = projected.recentCache;
+        if (Object.hasOwn(values, 'summaryCache')) set.summaryCache = projected.summaryCache;
+      }
+      // Preserve a monotonic revision, even though the search payload is gone.
+      // Invalidate generations so a previously started read cannot publish an
+      // old page snapshot, task index or task metadata after this transaction.
+      set.taskSearchCache = { revision: (values.taskSearchCache?.revision ?? 0) + 1, dirty: retained > 0 };
+      set[CONFIGURATION_GENERATION] = generationValue(values[CONFIGURATION_GENERATION]) + 1;
+      return { delete: caches, set, result: { cleared: true, retainedPendingDestinations: retained } };
+    });
   }
 
   // Repository identifiers are unverified intent, never evidence of GitHub access.
@@ -885,8 +995,11 @@ export class ChromeStore {
     return reportCache?.version === 2 && reportCache.entries?.[repositoryKey] || null;
   }
 
-  async saveReportCache(value) {
-    await this.backend.mutateMany(['reportCache'], current => {
+  async saveReportCache(value, expectedGeneration = null) {
+    return this.backend.mutateMany(['reportCache', CONFIGURATION_GENERATION], current => {
+      if (expectedGeneration !== null && generationValue(current[CONFIGURATION_GENERATION]) !== expectedGeneration) {
+        return { result: false };
+      }
       const existing = current.reportCache?.version === 2 && current.reportCache.entries
         ? current.reportCache.entries
         : current.reportCache?.repositoryKey ? { [current.reportCache.repositoryKey]: current.reportCache } : {};
@@ -992,8 +1105,11 @@ export class ChromeStore {
     return values[EXCHANGE_RATE_CACHE] ?? null;
   }
 
-  async saveExchangeRateCache(value) {
-    await this.backend.mutateMany([EXCHANGE_RATE_CACHE], current => {
+  async saveExchangeRateCache(value, expectedGeneration = null) {
+    return this.backend.mutateMany([EXCHANGE_RATE_CACHE, CONFIGURATION_GENERATION], current => {
+      if (expectedGeneration !== null && generationValue(current[CONFIGURATION_GENERATION]) !== expectedGeneration) {
+        return { result: false };
+      }
       const existing = current[EXCHANGE_RATE_CACHE];
       const entries = existing?.version === value.version && existing.entries && typeof existing.entries === 'object'
         ? { ...existing.entries } : {};
