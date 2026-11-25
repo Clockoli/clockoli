@@ -12,6 +12,7 @@
     "test": "npm run test:clockoli && npm run test:timeline",
     "test:clockoli": "node --test test/*.test.js",
     "test:browser": "playwright test test/basic-browser.functional.spec.js --workers=1",
+    "test:browser:agents": "playwright test test/agent-activity-store.browser.spec.js test/agent-backfill.browser.spec.js test/agent-collector.browser.spec.js test/agent-fsa.browser.spec.js test/agent-reindex.browser.spec.js test/agent-settings.browser.spec.js test/agent-worker-restart.browser.spec.js --workers=1 --timeout=60000",
     "test:private": "node scripts/run-private-tests.js",
     "test:coverage": "c8 --all --include='src/**/*.js' --exclude='src/content/task-timeline-component.js' --reporter=text --reporter=json-summary node --test test/*.test.js",
     "test:timeline": "node scripts/verify-timeline-build.js && npm run test:all --workspace task-timeline-component-clockoli",
