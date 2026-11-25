@@ -8,7 +8,7 @@ const state = { entries: [], repositories: [], currentUsers: {}, groups: [], tea
   mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(), teamIdentity: null,
   teamLoading: false, teamIncomplete: true, teamYears: new Map(),
   formBusy: false, cancelEntry: null, cancelEntries: null, deletionBusy: false,
-  myTimeOffDates: new Set(),
+  myTimeOffDates: new Set(), myEntriesByKey: new Map(),
   selectedUser: '', userCandidates: [], suggestionIndex: -1 };
 const form = $('time-off-form');
 const selectedDates = new Set();
@@ -60,14 +60,10 @@ const labelForRange = (start, end) => start === end ? dateLabel(start) : dateLab
 function selectedMyEntries() {
   const repository = $('time-off-repository-filter').value;
   const selectedUser = state.selectedUser.toLowerCase();
-  const unique = new Map();
-  for (const entry of state.entries) {
-    if (!selectedDates.has(entry.entryDate) || !entry.isTimeOff || !isOwnEntry(entry)
-        || (repository && entry.destinationId !== repository)
-        || (selectedUser && selectedUser !== entry.user.toLowerCase())) continue;
-    unique.set(entry.destinationId + '\\u0000' + entry.id, entry);
-  }
-  return [...unique.values()];
+  return [...state.myEntriesByKey.values()].filter(entry =>
+    selectedDates.has(entry.entryDate)
+    && (!repository || entry.destinationId === repository)
+    && (!selectedUser || selectedUser === entry.user.toLowerCase()));
 }
 // Adding PTO is date-based: selecting a day with my existing PTO can be used
 // for deletion, but must never count towards another Add operation. Check all
@@ -142,8 +138,10 @@ function deleteIconAction(title, action) {
   return button;
 }
 function renderMy() {
-  state.myTimeOffDates = new Set(state.entries
-    .filter(entry => entry.isTimeOff && isOwnEntry(entry)).map(entry => entry.entryDate));
+  state.myEntriesByKey = new Map(state.entries
+    .filter(entry => entry.isTimeOff && isOwnEntry(entry))
+    .map(entry => [entry.destinationId + '\\u0000' + entry.id, entry]));
+  state.myTimeOffDates = new Set([...state.myEntriesByKey.values()].map(entry => entry.entryDate));
   state.groups = groupTimeOffRecords(state.entries);
   const host = $('upcoming-time-off');
   host.replaceChildren();
@@ -386,8 +384,7 @@ function renderInspector() {
       if (entry.description) copy.append(make('p', 'time-off-person-note', entry.description));
       const actions = make('div', 'time-off-person-actions');
       actions.append(make('span', 'time-off-person-hours', duration(entry.durationSeconds)));
-      const ownEntry = state.entries.find(item => item.id === entry.id
-        && item.destinationId === entry.destinationId && isOwnEntry(item));
+      const ownEntry = state.myEntriesByKey.get(entry.destinationId + '\\u0000' + entry.id);
       if (ownEntry) {
         const remove = deleteIconAction('Delete my time off on ' + dateLabel(entry.entryDate),
           () => openDeleteEntry(ownEntry));
