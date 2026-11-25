@@ -120,6 +120,7 @@ A single-repository alternative if the GitHub App cannot be used. See [PAT setup
 
 #### Recovery and access
 
+- **Clear cache** removes downloaded report files, task indexes, task metadata, saved report/task views, and exchange rates so Clockoli reads fresh data. Your GitHub sign-in, connected repositories, settings, running timer and pending changes remain intact. Recent tracking records, weekly intervals and locally recorded overlap guards are kept as a working set until a successful refresh replaces them; they are needed to prevent overlapping time and safely apply edits, even when there are no pending writes. Cached totals and passive refresh markers are invalidated (pending local views stay available). Reload already open Clockoli pages to fetch fresh data. The first load may take longer; no GitHub data is changed.
 - **Reset to defaults** removes the entire local database and browser preferences, including credentials, saved username, running timers, and **unsynced work**. This cannot be undone without a backup. Reconnect to GitHub afterward to use the account's real username.
 - **Revoke GitHub sign-in** opens GitHub settings to revoke Clockoli's user authorization. It does not uninstall the GitHub App or delete repository records.
 

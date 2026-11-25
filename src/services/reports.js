@@ -332,9 +332,10 @@ function mergeRecordSummaries(records, startDate, endDate) {
 }
 
 export class ReportService {
-  constructor({ github, cache = null, concurrency = 6, onProgress = null, requestLimiter = null }) {
+  constructor({ github, cache = null, concurrency = 6, onProgress = null, requestLimiter = null, cacheGeneration = null }) {
     this.github = github;
     this.cache = cache;
+    this.cacheGeneration = cacheGeneration;
     this.onProgress = typeof onProgress === 'function' ? onProgress : () => {};
     this.concurrency = Math.min(12, Math.max(1, Number(concurrency) || 6));
     this.requestLimiter = requestLimiter ?? new RequestLimiter(this.concurrency);
@@ -353,7 +354,8 @@ export class ReportService {
   }
 
   async saveCache(value) {
-    await this.cache?.saveReportCache?.(value);
+    const saved = await this.cache?.saveReportCache?.(value, this.cacheGeneration);
+    if (saved === false) throw new DOMException('History load was superseded by a local data change.', 'AbortError');
   }
 
   async loadRepositoryRange(range, { defaultBranch = null, signal, includeStorageMetadata = false, preserveDuplicateIds = false, budgets = {} } = {}) {
@@ -382,7 +384,7 @@ export class ReportService {
       signal?.throwIfAborted();
       const chunk = await settleConcurrent(users.slice(offset, offset + this.concurrency), signal, (user, branchSignal) => (
         new ReportService({
-          github: user.github, cache: this.cache, concurrency: this.concurrency,
+          github: user.github, cache: this.cache, cacheGeneration: this.cacheGeneration, concurrency: this.concurrency,
           onProgress: this.onProgress, requestLimiter: this.requestLimiter,
         }).loadUserRange(range, user.login, { signal: branchSignal, includeStorageMetadata, resourceBudget }, budgets)
       ));
@@ -404,7 +406,7 @@ export class ReportService {
       && candidate.login.toLowerCase() === validatedUser.toLowerCase());
     if (!mappedUser) return this.loadUserRange(range, validatedUser, { signal, includeStorageMetadata }, budgets);
     return new ReportService({
-      github: mappedUser.github, cache: this.cache, concurrency: this.concurrency,
+      github: mappedUser.github, cache: this.cache, cacheGeneration: this.cacheGeneration, concurrency: this.concurrency,
       onProgress: this.onProgress, requestLimiter: this.requestLimiter,
     }).loadUserRange(range, mappedUser.login, { signal, includeStorageMetadata }, budgets);
   }
@@ -428,7 +430,7 @@ export class ReportService {
           value: 15 + Math.round(80 * completed / Math.max(1, selected.length)),
         });
         try {
-          const service = new ReportService({ github: user.github, cache: this.cache,
+          const service = new ReportService({ github: user.github, cache: this.cache, cacheGeneration: this.cacheGeneration,
             concurrency: this.concurrency, requestLimiter: this.requestLimiter });
           const summaries = await service.loadUserMergeTasks({ startDate, endDate }, user, { signal: branchSignal, progress });
           completed += 1;
@@ -549,7 +551,7 @@ export class ReportService {
     for (let offset = 0; offset < users.length; offset += this.concurrency) {
       signal?.throwIfAborted();
       const loaded = await settleConcurrent(users.slice(offset, offset + this.concurrency), signal, async (user, branchSignal) => {
-        const service = new ReportService({ github: user.github, cache: this.cache,
+        const service = new ReportService({ github: user.github, cache: this.cache, cacheGeneration: this.cacheGeneration,
           concurrency: this.concurrency, requestLimiter: this.requestLimiter });
         const key = user.github.repositoryKey || 'repository';
         const cache = await service.readCache(key), previous = cache.catalog;
