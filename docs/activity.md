@@ -24,6 +24,16 @@ The summary shows:
 
 Pending local changes appear in Activity before they reach GitHub. Reports uses committed GitHub data instead; see [Sync and offline work](sync.md).
 
+## AI Workflow
+
+When you connect Codex or Claude Code in [Settings](settings.md#local-agent-activity), Activity also shows an optional, collapsible **AI Workflow** panel. Choose Today, Last 7 days, Last 30 days or All time, and select a provider. These local calendar filters are independent of the human Activity week. Each turn belongs to its completion date (or last known start); undated observations appear only in All time.
+
+The panel shows measured turn time, included and observed turn counts, median duration, and a distribution of turn counts and durations. The **Focus window** threshold (5, 15 or 30 minutes) divides eligible turns into short and long windows. The short-turn time share is the sum of durations below that threshold divided by the sum of all included durations; when the denominator is zero the share is unavailable. Durations at the threshold count as long.
+
+Turns with measured or observed lifecycle duration over 60 minutes are listed separately and excluded from the index. Open, unknown and estimated durations are not included. A provider-reported duration may have no verified start/end interval; the panel identifies such observations. The panel warns when collection is incomplete, paused, or needs access.
+
+This is a description of the observed AI interaction rhythm, not continuous AI computation, a guarantee of uninterrupted focus, or proof of human waiting. Parallel turn durations may overlap. Agent observations are local and are not attributed to specific tasks, added to the human timer, sent to GitHub, or used in invoices.
+
 ## Timeline and Calendar
 
 Both views display time entries, including work that crosses midnight. An interval contributes time to each day it touches. The running timer appears in the current week.
