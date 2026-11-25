@@ -8,6 +8,7 @@ const state = { entries: [], repositories: [], currentUsers: {}, groups: [], tea
   mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(), teamIdentity: null,
   teamLoading: false, teamIncomplete: true, teamYears: new Map(),
   formBusy: false, cancelEntry: null, cancelEntries: null, deletionBusy: false,
+  myTimeOffDates: new Set(),
   selectedUser: '', userCandidates: [], suggestionIndex: -1 };
 const form = $('time-off-form');
 const selectedDates = new Set();
@@ -72,9 +73,7 @@ function selectedMyEntries() {
 // for deletion, but must never count towards another Add operation. Check all
 // my time repositories, not only the currently displayed repository or user.
 function datesToAdd() {
-  const occupied = new Set(state.entries.filter(entry => entry.isTimeOff && isOwnEntry(entry))
-    .map(entry => entry.entryDate));
-  return [...selectedDates].filter(date => !occupied.has(date)).sort();
+  return [...selectedDates].filter(date => !state.myTimeOffDates.has(date)).sort();
 }
 function updateAddButton() {
   const count = datesToAdd().length, configured = availableRepositories().length > 0;
@@ -144,6 +143,8 @@ function deleteIconAction(title, action) {
   return button;
 }
 function renderMy() {
+  state.myTimeOffDates = new Set(state.entries
+    .filter(entry => entry.isTimeOff && isOwnEntry(entry)).map(entry => entry.entryDate));
   state.groups = groupTimeOffRecords(state.entries);
   const host = $('upcoming-time-off');
   host.replaceChildren();
@@ -345,7 +346,7 @@ function renderYear() {
       cell.setAttribute('aria-label', dateLabel(date) + ': ' + count
         + (count === 1 ? ' person away' : ' people away')
         + (group?.own ? ', my time off' : '')
-        + (selectedDates.has(date) ? ', selected to add time off' : ''));
+        + (selectedDates.has(date) ? ', selected for a time off action' : ''));
       cell.addEventListener('mouseenter', () => {
         if (!pinDayUntilLeave) selectDay(date);
       });
@@ -539,7 +540,6 @@ function fillTaskOptions() {
   select.value = tasks.includes(previous) ? previous : tasks[0] || '';
   $('edit-task-field').hidden = tasks.length === 1;
 }
-const chosenDates = () => [...selectedDates].sort();
 const validHours = n => Number.isFinite(n) && n >= 0 && n <= 24 && Number.isSafeInteger(n * 3600);
 const weekend = date => [0, 6].includes(dateAt(date).getUTCDay());
 function updateSelectedCells(old) {
@@ -549,8 +549,8 @@ function updateSelectedCells(old) {
     const picked = selectedDates.has(date);
     cell.classList.toggle('pick', picked);
     cell.setAttribute('aria-pressed', String(picked));
-    cell.setAttribute('aria-label', cell.getAttribute('aria-label').replace(/, selected to add time off$/, '')
-      + (picked ? ', selected to add time off' : ''));
+    cell.setAttribute('aria-label', cell.getAttribute('aria-label').replace(/, selected for a time off action$/, '')
+      + (picked ? ', selected for a time off action' : ''));
   }
   updateAddButton();
 }
