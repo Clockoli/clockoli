@@ -423,7 +423,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
     start.value = timeValue(entry ? new Date(entry.startedAt) : now);
     defaultDate = date.value; defaultStart = start.value;
     startEdited = false; dateEdited = false; endDateManuallyEdited = false;
-    end.value = entry && !runningEdit ? timeValue(new Date(entry.endedAt)) : '';
+    end.value = entry && !runningEdit && !entry._requireExplicitEnd ? timeValue(new Date(entry.endedAt)) : '';
     endDate.value = entry && !runningEdit ? dateValue(new Date(entry.endedAt)) : date.value;
     editStartInstant = entry && !runningEdit ? new Date(entry.startedAt) : null;
     editEndInstant = entry && !runningEdit ? new Date(entry.endedAt) : null;
