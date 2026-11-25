@@ -400,7 +400,8 @@ function repositoryMetadata(destination) {
   const metadata = document.createElement('dl'); metadata.className = 'repository-metadata';
   const rows = [
     ['Default branch', destination.defaultBranch || destination.branch || 'main'],
-    ['Your branch', destination.storageBranch || destination.personalBranch || (destination.storageLogin ? `clockoli/users/${destination.storageLogin}` : '')],
+    [destination.restoredStorageUserId ? 'Restored storage branch' : 'Your branch', destination.branch || destination.storageBranch || destination.personalBranch || ''],
+    ...(destination.restoredStorageUserId ? [['Storage user', `@${destination.storageLogin}`]] : []),
     ['Last checked', destination.lastVerifiedAt || destination.lastCheckedAt
       ? new Date(destination.lastVerifiedAt || destination.lastCheckedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'Not checked yet'],
   ];
@@ -1125,7 +1126,9 @@ function renderState() {
   }
   $('connected-account').textContent = state.auth?.githubLogin ? `@${state.auth.githubLogin}` : 'Personal access token';
   const savedLogins = [...new Set((state?.destinations ?? []).map(destination => destination.storageLogin).filter(Boolean))];
-  $('full-backup-account').textContent = state?.auth?.githubLogin ? `@${state.auth.githubLogin}`
+  $('full-backup-account').textContent = (state?.destinations ?? []).some(destination => destination.restoredStorageUserId)
+    ? `${savedLogins.map(login => `@${login}`).join(', ')} (signed in as @${state.auth?.githubLogin || 'unknown'})`
+    : state?.auth?.githubLogin ? `@${state.auth.githubLogin}`
     : savedLogins.length === 1 ? `@${savedLogins[0]}${state?.auth ? ' (stored repository username)' : ' (signed out)'}`
       : savedLogins.length > 1 ? `Multiple saved users: ${savedLogins.map(login => `@${login}`).join(', ')}`
         : state?.auth?.mode === 'pat' ? 'Username unavailable (PAT)' : 'No GitHub user saved';
@@ -3262,7 +3265,7 @@ $('import-full-local-backup-file').addEventListener('change', async () => {
   try {
     const password = fullBackupPassword();
     if (file.size > 64 * 1024 * 1024) throw new Error('Full backup file is too large.');
-    if (!window.confirm('Replace all current local Clockoli data with this backup? The current GitHub sign-in is kept if it belongs to the same account and uses the same sign-in method. Other local changes not in the file will be lost. GitHub repositories are not changed.')) return;
+    if (!window.confirm('Replace all current local Clockoli data with this backup? Your current GitHub sign-in will be kept whenever possible. If the backup belongs to another GitHub App user, Clockoli will check your write access and use their restored time repositories and branches. Restored pending changes may sync to those branches. Other local changes not in the file will be lost if the restore succeeds.')) return;
     const restored = await send({ type: 'IMPORT_FULL_LOCAL_BACKUP', text: await file.text(), password });
     try {
       replaceLocalStorage(restored.localStorage);
