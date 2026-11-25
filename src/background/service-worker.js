@@ -1721,13 +1721,18 @@ async function handle(message, sender) {
       const keys = Object.keys(message).sort().join(',');
       if (sender?.url !== chrome.runtime.getURL('src/time-off/time-off.html')
           || !['days,description,destinationId,groupId,previous,taskTitle,taskUrl,timezone,type',
-            'days,description,destinationId,groupId,previous,singleDayDeletion,taskTitle,taskUrl,timezone,type'].includes(keys)) {
+            'days,description,destinationId,groupId,previous,singleDayDeletion,taskTitle,taskUrl,timezone,type',
+            'bulkDayDeletion,days,description,destinationId,groupId,previous,taskTitle,taskUrl,timezone,type'].includes(keys)) {
         throw new Error('Invalid time off request.');
       }
       const input = normalizeTimeOffChange(message);
       const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
-      if (!(await timeOffTaskForDestination(destinationId, input.taskUrl))) {
-        throw new Error('Select a time off task configured for this repository in Settings.');
+      const urls = input.bulkDayDeletion
+        ? [...new Set(input.previous.map(item => item.taskUrl))] : [input.taskUrl];
+      for (const url of urls) {
+        if (!(await timeOffTaskForDestination(destinationId, url))) {
+          throw new Error('Select a time off task configured for this repository in Settings.');
+        }
       }
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
       const result = await tracker.queueTimeOffChange(input);
