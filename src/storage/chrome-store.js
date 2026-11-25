@@ -935,8 +935,11 @@ export class ChromeStore {
     return reportCache?.version === 2 && reportCache.entries?.[repositoryKey] || null;
   }
 
-  async saveReportCache(value) {
-    await this.backend.mutateMany(['reportCache'], current => {
+  async saveReportCache(value, expectedGeneration = null) {
+    return this.backend.mutateMany(['reportCache', CONFIGURATION_GENERATION], current => {
+      if (expectedGeneration !== null && generationValue(current[CONFIGURATION_GENERATION]) !== expectedGeneration) {
+        return { result: false };
+      }
       const existing = current.reportCache?.version === 2 && current.reportCache.entries
         ? current.reportCache.entries
         : current.reportCache?.repositoryKey ? { [current.reportCache.repositoryKey]: current.reportCache } : {};

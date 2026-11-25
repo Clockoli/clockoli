@@ -285,7 +285,7 @@ async function contextForDestination(destinationId, { localOnly = false, persist
     if (!user) throw new Error('Refresh the GitHub connection to load your tracking identity.');
     if (persistUser) await destinationStore.patchState({ user });
   }
-  const reports = new ReportService({ github, cache: store });
+  const reports = new ReportService({ github, cache: store, cacheGeneration: snapshot.generation });
   return {
     config, destinationId,
     reports,
@@ -392,7 +392,7 @@ async function loadReport(message) {
       currentUsers[destination.id] = await destinationUser(destination, auth);
       const branch = destination.branch || 'main';
       const reports = new ReportService({
-        github: githubForConfig(destination), cache: store,
+        github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
       return reports.loadRepositoryRange(message.payload || {}, {
@@ -453,7 +453,7 @@ async function loadTaskParticipants(message, sender, extensionOrigin) {
       const tracker = await trackerForDestination(destination.id, { localOnly: true });
       await tracker.getState({ refresh: true, signal });
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
-      const records = await new ReportService({ github: githubForConfig(destination), cache: store })
+      const records = await new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation })
         .loadRepositoryTask(taskUrl, { defaultBranch: destination.defaultBranch || destination.branch || 'main', signal });
       timerStates.set(destination.id, await tracker.getState());
       return records;
@@ -503,7 +503,7 @@ async function loadTimes(message, sender) {
       if (!user) throw Object.assign(new Error('Tracking identity is unavailable.'), { code: 'identity_unavailable' });
       currentUsers[destination.id] = user;
       const reports = new ReportService({
-        github: githubForConfig(destination), cache: store,
+        github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
       const recent = await reports.loadUserRange(readRange, user, { includeStorageMetadata: true, signal }, {
@@ -564,7 +564,7 @@ async function loadTasks(message, sender) {
       await tracker.getState({ refresh: true, signal });
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
       const reports = new ReportService({
-        github: githubForConfig(destination), cache: store,
+        github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
       const records = message.payload?.includeAllUsers
@@ -665,7 +665,7 @@ async function searchTasks(sender, query = '', { refresh = false, includeImporte
       readStatus: cached.readStatus, partial: false, conflicts: [], fallback: false }
       : await loadDestinationRecords(destinations, async (destination, signal) => {
         signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
-        const reports = new ReportService({ github: githubForConfig(destination), cache: store, concurrency: 10 });
+        const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation, concurrency: 10 });
         const catalog = await reports.loadRepositoryTaskCatalog({
           defaultBranch: destination.defaultBranch || destination.branch || 'main', signal, budgets,
         });
@@ -712,7 +712,7 @@ async function searchTasks(sender, query = '', { refresh = false, includeImporte
     }
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
-      const reports = new ReportService({ github: githubForConfig(destination), cache: store, concurrency: 2 });
+      const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation, concurrency: 2 });
       const records = await reports.loadRepositoryRange({ startDate: '0001-01-01', endDate: '9999-12-31' }, {
         defaultBranch: destination.defaultBranch || destination.branch || 'main', signal, includeStorageMetadata: true,
         budgets, preserveDuplicateIds: true,

@@ -5,6 +5,7 @@ import { assertMessageAllowed } from '../src/background/message-policy.js';
 import { ConfigurationLoadCoordinator } from '../src/background/task-load.js';
 import { SerialExecutor } from '../src/background/serial-executor.js';
 import { TrackerService } from '../src/services/tracker.js';
+import { ReportService } from '../src/services/reports.js';
 
 class MemoryBackend {
   constructor(values) { this.values = structuredClone(values); }
@@ -64,6 +65,7 @@ test('Clear cache discards downloaded data, preserves setup and all accepted loc
   // A read started before the clear cannot republish the removed views.
   const scope = { generation: 7, authGeneration: 12, repositories: ['github:1'] };
   assert.equal(await store.savePageSnapshot('reports', scope, { configured: true }), false);
+  assert.equal(await store.saveReportCache({ repositoryKey: 'branch' }, 7), false);
   assert.equal(await store.saveTaskMetadataCache({ repositoryKey: 'branch' }, 7), false);
   assert.equal(await store.saveTaskSearchCache({ version: 2, scope, indexTasks: [], readStatus: [] }, scope, 9), false);
   assert.equal(await store.saveExchangeRateCache({ version: 2, entries: { rate: 1 } }, 7), false);
@@ -169,4 +171,26 @@ test('invalid tracking entries fail closed before any cache is removed', async (
   const before = structuredClone(backend.values);
   await assert.rejects(new ChromeStore(backend).clearLocalCache(), /invalid local tracking state/i);
   assert.deepEqual(backend.values, before);
+});
+
+test('a slow history request cannot recreate a cache after Clear cache', async () => {
+  const backend = new MemoryBackend({ ...caches, dataVersion: 4, configurationGeneration: 8 });
+  const store = new ChromeStore(backend);
+  let releaseSnapshot, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const snapshot = new Promise(resolve => { releaseSnapshot = resolve; });
+  const github = { repositoryKey: 'branch', async listTextFilesSnapshot() { started(); return snapshot; } };
+  const oldService = new ReportService({ github, cache: store, cacheGeneration: 8 });
+  const range = { startDate: '2026-11-01', endDate: '2026-11-25' };
+  const loading = oldService.loadRange(range);
+  await ready;
+  await store.clearLocalCache();
+  releaseSnapshot({ files: [], etag: 'stale', notModified: false });
+  await assert.rejects(loading, error => error.name === 'AbortError');
+  assert.equal(await store.getReportCache('branch'), null);
+  const fresh = new ReportService({ github: { repositoryKey: 'branch', async listTextFilesSnapshot() {
+    return { files: [], etag: 'fresh', notModified: false };
+  } }, cache: store, cacheGeneration: 9 });
+  assert.deepEqual(await fresh.loadRange(range), []);
+  assert.equal((await store.getReportCache('branch')).etag, 'fresh');
 });
