@@ -39,13 +39,13 @@ export async function verifyRestoredStorageBranch(github, config, storageUserId)
       || config.branchMode !== 'custom' || !config.storageLogin) {
     throw new Error('Restored storage branch does not match its pinned GitHub user.');
   }
-  await github.assertDestinationReachable();
+  const repository = await github.assertDestinationReachable();
   const metadata = parseUserBranchMetadata((await github.getText(USER_METADATA_PATH)).text);
   if (metadata.id !== storageUserId || metadata.login !== config.storageLogin) {
     throw new Error('Restored storage branch ownership does not match the backup.');
   }
   parseTaskIndex((await github.getText(TASK_INDEX_PATH)).text, { user: metadata.login });
-  return metadata;
+  return { metadata, repository };
 }
 
 export async function ensureUserStorageBranch(github, user, sourceBranch) {

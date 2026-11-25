@@ -339,11 +339,27 @@ export class CredentialBroker {
     }
   }
 
-  async getAccessToken({ forceRefresh = false, rejectedToken = '' } = {}) {
-    this.assertAvailable();
+  async getAccessTokenForRestore(userId, options = {}) {
+    if (!this.pausedForLocalDataChange || !Number.isSafeInteger(userId) || userId <= 0) {
+      throw new GitHubAppAuthError('GitHub restore verification is not active.', 'auth_superseded');
+    }
+    const token = await this.getAccessToken(options, userId);
+    const { auth } = await this.store.getAuthSnapshot();
+    if (!this.pausedForLocalDataChange || auth?.mode !== 'github_app'
+        || auth.githubUserId !== userId || auth.accessToken !== token) {
+      throw new GitHubAppAuthError('GitHub sign-in changed during backup verification.', 'auth_superseded');
+    }
+    return token;
+  }
+
+  async getAccessToken({ forceRefresh = false, rejectedToken = '' } = {}, restoreUserId = null) {
+    if (restoreUserId === null) this.assertAvailable();
     const snapshot = await this.store.getAuthSnapshot();
-    this.assertAvailable();
     const auth = snapshot.auth;
+    if (restoreUserId === null) this.assertAvailable();
+    else if (!this.pausedForLocalDataChange || auth?.mode !== 'github_app' || auth.githubUserId !== restoreUserId) {
+      throw new GitHubAppAuthError('GitHub sign-in changed during backup verification.', 'auth_superseded');
+    }
     if (!auth?.accessToken) throw new GitHubAppAuthError('Connect Clockoli to GitHub.', 'auth_required');
     if (auth.mode === 'pat') return auth.accessToken;
     if (auth.mode !== 'github_app') throw new GitHubAppAuthError('Clockoli authentication is invalid.', 'auth_required');
@@ -404,7 +420,8 @@ export class CredentialBroker {
     if (saved) return next.accessToken;
 
     const current = await this.store.getAuthSnapshot();
-    if (current.auth?.mode === 'github_app' && current.auth.accessToken !== auth.accessToken) return current.auth.accessToken;
+    if (current.auth?.mode === 'github_app' && current.auth.githubUserId === auth.githubUserId
+        && current.auth.accessToken !== auth.accessToken) return current.auth.accessToken;
     throw new GitHubAppAuthError('Authentication changed while GitHub credentials were refreshing.', 'auth_superseded');
   }
 }

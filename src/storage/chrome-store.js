@@ -126,7 +126,7 @@ function assertRestoreAccountCompatible(decision, current, saved) {
   if (decision === 'backup-different-sign-in-method') reason = 'The backup uses a different GitHub sign-in method.';
   if (decision === 'backup-no-saved-sign-in') reason = 'This backup does not contain a saved GitHub sign-in.';
   throw Object.assign(new Error(
-    `${reason} Current: ${liveLabel}. Backup: ${backupLabel}. Nothing was restored; your current data and sign-in are unchanged. To restore a different account, use a separate browser profile or connect the account from the backup first.`
+    `${reason} Current: ${liveLabel}. Backup: ${backupLabel}. Nothing was restored; your current data and sign-in are unchanged. Check the sign-in methods and saved storage identity, then try again.`
   ), { code: 'backup_account_mismatch' });
 }
 
@@ -365,7 +365,13 @@ export class ChromeStore {
           && current.mode === 'github_app' && saved.mode === 'github_app') {
         delegatedRegistry = delegatedRestoreRegistry(values, saved, current);
         await verifyCrossAccount(current, Object.values(delegatedRegistry.destinations));
-        verifiedAuth = current;
+        // The preflight may have legitimately rotated the current credentials.
+        // Pin the durable replacement pair, not the preflight's starting pair.
+        verifiedAuth = fullBackupAuth(await this.backend.getMany([AUTH, 'token']));
+        if (verifiedAuth?.mode !== current.mode || verifiedAuth.githubUserId !== current.githubUserId
+            || !verifiedAuth.accessToken) {
+          throw new Error('GitHub sign-in changed while verifying backup access. Nothing was restored; try again.');
+        }
       }
     }
     await this.backend.replaceAllEntries(backup.entries, {

@@ -3265,7 +3265,7 @@ $('import-full-local-backup-file').addEventListener('change', async () => {
   try {
     const password = fullBackupPassword();
     if (file.size > 64 * 1024 * 1024) throw new Error('Full backup file is too large.');
-    if (!window.confirm('Replace all current local Clockoli data with this backup? Your current GitHub sign-in will be kept. If the backup belongs to another GitHub App user, Clockoli will check your write access and use their restored time repositories and branches. Restored pending changes may sync to those branches. Other local changes not in the file will be lost if the restore succeeds.')) return;
+    if (!window.confirm('Replace all current local Clockoli data with this backup? Your current GitHub sign-in will be kept whenever possible. If the backup belongs to another GitHub App user, Clockoli will check your write access and use their restored time repositories and branches. Restored pending changes may sync to those branches. Other local changes not in the file will be lost if the restore succeeds.')) return;
     const restored = await send({ type: 'IMPORT_FULL_LOCAL_BACKUP', text: await file.text(), password });
     try {
       replaceLocalStorage(restored.localStorage);

@@ -110,9 +110,11 @@ function githubForConfig(config, { measureMigration = false, rateLimitGate = nul
 }
 
 async function verifyCrossAccountRestore(auth, destinations) {
-  // The broker is paused during restore; use only the current access token for
-  // this read-only preflight. A rejected/expired token cannot destroy the session.
-  const credentials = { token: auth.accessToken };
+  // The paused broker is reserved for this preflight. Renew the current
+  // account's token if needed, without ever using credentials from the backup.
+  const credentials = { credentialProvider: {
+    getAccessToken: options => currentCredentialProvider.getAccessTokenForRestore(auth.githubUserId, options),
+  } };
   const github = new GitHubClient(credentials);
   const identity = await github.getAuthenticatedIdentity();
   if (identity.id !== auth.githubUserId) throw new Error('The current GitHub sign-in could not be verified.');
@@ -126,6 +128,8 @@ async function verifyCrossAccountRestore(auth, destinations) {
     const branch = new GitHubClient({ ...credentials, owner: config.owner, repo: config.repo, branch: config.branch,
       branchMode: 'custom', expectedRepositoryId: config.repoId });
     await verifyRestoredStorageBranch(branch, config, config.restoredStorageUserId ?? auth.githubUserId);
+    // An installation can change independently of the repository and branch.
+    config.installationId = candidate.installationId;
   }
 }
 
@@ -275,10 +279,9 @@ async function checkCurrentRepositoryAccess(destinationId = null) {
     snapshot = await configuredSnapshot({ destinationId: selectedId });
   }
   const github = githubForConfig(snapshot.config);
-  const repository = await github.assertDestinationReachable();
-  if (snapshot.config.restoredStorageUserId) {
-    await verifyRestoredStorageBranch(github, snapshot.config, snapshot.config.restoredStorageUserId);
-  }
+  const repository = snapshot.config.restoredStorageUserId
+    ? (await verifyRestoredStorageBranch(github, snapshot.config, snapshot.config.restoredStorageUserId)).repository
+    : await github.assertDestinationReachable();
   const lastVerifiedAt = new Date().toISOString();
   await store.saveDestinationVerification(selectedId, 'access_checked', lastVerifiedAt);
   return {
@@ -312,10 +315,13 @@ async function contextForDestination(destinationId, { localOnly = false, persist
     if (persistUser) await destinationStore.patchState({ user });
   }
   const reports = new ReportService({ github, cache: store, cacheGeneration: snapshot.generation });
+  // Work-record actor identity belongs to the storage user, not the GitHub
+  // credential holder. GitHub itself authenticates the actual writer.
+  const storageUserId = config.restoredStorageUserId ?? auth.githubUserId;
   return {
     config, destinationId,
     reports,
-    tracker: new TrackerService({ github, store: destinationStore, reports, user, actorId: Number.isSafeInteger(auth.githubUserId) ? `github:${auth.githubUserId}` : `clockoli:${config.repoId}:${user}`, actorName: auth.githubLogin || user, recentDays: config.recentDays || 7 }),
+    tracker: new TrackerService({ github, store: destinationStore, reports, user, actorId: Number.isSafeInteger(storageUserId) ? `github:${storageUserId}` : `clockoli:${config.repoId}:${user}`, actorName: user, recentDays: config.recentDays || 7 }),
   };
 }
 
@@ -1078,7 +1084,7 @@ function resumeClockifyMigration(requestId = null) {
         sourceUsers: job.data.users, entries: job.data.entries, mappings: job.mappings,
         github: githubForConfig(verified.config, { measureMigration: true, rateLimitGate: gate }),
         sourceBranch: verified.config.defaultBranch,
-        destinationUser: { id: verified.auth.githubUserId, login: verified.config.storageLogin || verified.auth.githubLogin },
+        destinationUser: { id: verified.config.restoredStorageUserId ?? verified.auth.githubUserId, login: verified.config.storageLogin || verified.auth.githubLogin },
         completedOutcomes: job.outcomes,
         onOutcome: outcome => clockifyMigrationJobs.checkpoint(job.id, outcome),
         onProgress: progress => { latestProgress = progress; publish(progress); },
