@@ -7,7 +7,8 @@ const state = { entries: [], repositories: [], currentUsers: {}, groups: [], tea
   year: Number(new Date().getFullYear()), selectedDate: '', loadedTeamYear: null,
   mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(), teamIdentity: null,
   teamLoading: false, teamIncomplete: true, teamYears: new Map(),
-  formBusy: false, cancelEntry: null, selectedUser: '', userCandidates: [], suggestionIndex: -1 };
+  formBusy: false, cancelEntry: null, cancelEntries: null, deletionBusy: false,
+  selectedUser: '', userCandidates: [], suggestionIndex: -1 };
 const form = $('time-off-form');
 const selectedDates = new Set();
 let selectionAnchor = null, pinDayUntilLeave = false;
@@ -55,23 +56,46 @@ const taskName = url => {
 };
 const labelForRange = (start, end) => start === end ? dateLabel(start) : dateLabel(start) + ' – ' + dateLabel(end);
 
+function selectedMyEntries() {
+  const repository = $('time-off-repository-filter').value;
+  const selectedUser = state.selectedUser.toLowerCase();
+  const unique = new Map();
+  for (const entry of state.entries) {
+    if (!selectedDates.has(entry.entryDate) || !entry.isTimeOff || !isOwnEntry(entry)
+        || (repository && entry.destinationId !== repository)
+        || (selectedUser && selectedUser !== entry.user.toLowerCase())) continue;
+    unique.set(entry.destinationId + '\\u0000' + entry.id, entry);
+  }
+  return [...unique.values()];
+}
 function updateAddButton() {
-  const count = selectedDates.size;
-  const configured = availableRepositories().length > 0;
+  const count = selectedDates.size, configured = availableRepositories().length > 0;
   const add = $('new-time-off');
-  add.disabled = count === 0 || !configured || $('time-off-dialog').open;
-  $('year-selection-summary').textContent = count
-    ? count + (count === 1 ? ' day selected' : ' days selected') : 'Click days to select time off';
+  add.textContent = count ? 'Add time off (' + count + ' days)' : 'Add time off';
+  add.disabled = count === 0 || !configured || $('time-off-dialog').open || state.deletionBusy;
   $('add-time-off-help').title = !configured
     ? 'Configure Time off tasks under Settings → Time repositories first.'
     : !count ? 'Select one or more days in the calendar to add time off.'
       : 'Add time off for ' + count + (count === 1 ? ' selected day.' : ' selected days.');
+  const own = selectedMyEntries();
+  const deleteDays = new Set(own.map(entry => entry.entryDate)).size;
+  const remove = $('delete-selected-time-off');
+  remove.hidden = deleteDays === 0;
+  remove.textContent = 'Delete time off (' + deleteDays + ' days)';
+  remove.disabled = state.deletionBusy || Boolean(own.some(entry => entry._pending))
+    || own.length > 200 || $('time-off-cancel-dialog').open;
+  remove.title = own.some(entry => entry._pending)
+    ? 'Wait until your previous time off changes have synced.'
+    : own.length > 200 ? 'Too many entries to delete at once. Select fewer days.'
+      : 'Delete your own time off for the selected dates.';
 }
 function renderRepositories() {
   const select = $('time-off-repository-filter'), previous = select.value;
+  const repositories = availableRepositories();
   select.replaceChildren(new Option('All repositories', ''));
-  for (const repo of state.repositories) select.append(new Option(repo.label, repo.id));
-  select.value = state.repositories.some(repo => repo.id === previous) ? previous : '';
+  for (const repo of repositories) select.append(new Option(repo.label, repo.id));
+  select.value = repositories.some(repo => repo.id === previous) ? previous : '';
+  $('time-off-repository-filter-field').hidden = repositories.length <= 1;
   updateAddButton();
 }
 function currentGroups() {
