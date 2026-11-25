@@ -217,6 +217,35 @@ test('missing completion recovery validates sender, exact payload and destinatio
   ]);
 });
 
+test('saved queued Start acknowledgment requires Activity, destination and reviewed blob SHA', async () => {
+  const worker = await readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  const calls = [];
+  const context = vm.createContext({ assertMessageAllowed,
+    chrome: { runtime: { getURL: path => origin + path } }, store: {},
+    requireConfiguredDestinationId: async (_store, id) => {
+      calls.push(['destination', id]); return id;
+    },
+    trackerForDestination: async () => ({
+      confirmSavedQueuedStart: async (id, sha) => { calls.push(['confirm', id, sha]); return { confirmed: true }; },
+    }),
+    requestPendingSync: () => calls.push(['sync']),
+  });
+  vm.runInContext(worker.slice(worker.indexOf('function validConflictEntryEdits('),
+    worker.indexOf('chrome.runtime.onMessage.addListener')), context);
+  const activity = { url: origin + 'src/times/times.html' };
+  const message = { type: 'CONFIRM_SAVED_QUEUED_START', destinationId: 'github:1',
+    id: '01K3X7Q8N8F4J7R2JQZ5AKP1MD', savedSha: 'a'.repeat(40) };
+  await assert.rejects(context.handle(message, extension), /Only Activity/i);
+  await assert.rejects(context.handle(message, content), /not allowed/i);
+  for (const invalid of [{ ...message, savedSha: 'wrong' }, { ...message, extra: true }])
+    await assert.rejects(context.handle(invalid, activity), /Invalid/i);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(await context.handle(message, activity))), { confirmed: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['destination', 'github:1'], ['confirm', message.id, message.savedSha], ['sync'],
+  ]);
+});
+
 test('week reads accept only a Monday–Sunday range from the extension or a GitHub tab', () => {
   const week = { startDate: '2026-10-05', endDate: '2026-10-11' };
   assert.deepEqual(weekRangeForSender(week, content, origin), week);

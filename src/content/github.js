@@ -2232,7 +2232,14 @@
           description: value.description, billable: value.billable } };
       let result;
       try { result = await send(message); }
-      catch (error) { throw ['local', 'previous'].includes(side) ? overlapMessageError(error) : error; }
+      catch (error) {
+        if (side === 'queued-start') {
+          stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
+          syncIssuesSignature = null;
+          renderSyncIssues();
+        }
+        throw ['local', 'previous'].includes(side) ? overlapMessageError(error) : error;
+      }
       stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
       syncIssueError = ''; recentLoaded = false;
       if (!result?.resolved && !(side === 'queued-start' && result?.savedLocally)) {
@@ -2291,6 +2298,22 @@
     } catch (error) {
       syncIssueError = (side ? overlapMessageError(error) : error)?.message
         || 'Deletion could not be verified. Your pending changes remain in this browser.';
+      syncIssuesSignature = null; renderSyncIssues();
+    } finally { trigger.disabled = false; }
+  }
+
+  async function confirmSavedQueuedStart(item, recovery, trigger) {
+    trigger.disabled = true;
+    try {
+      const result = await send({ type: 'CONFIRM_SAVED_QUEUED_START',
+        destinationId: item.destinationId, id: item.id, savedSha: recovery.savedSha });
+      if (!result?.confirmed) throw new Error('GitHub did not confirm this saved time. The queued Start was kept.');
+      stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
+      syncIssueError = ''; recentLoaded = false;
+      await refreshRecent(true);
+    } catch (error) {
+      stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
+      syncIssueError = error?.message || 'Saved time could not be confirmed. The queued Start was kept.';
       syncIssuesSignature = null; renderSyncIssues();
     } finally { trigger.disabled = false; }
   }
@@ -3157,6 +3180,29 @@
             stoppedOverlapDetails.delete(overlapKey);
             syncIssuesSignature = null; renderSyncIssues();
           }));
+        container.append(box);
+        continue;
+      }
+      if (startRecovery?.alreadySaved && timesMode) {
+        box.replaceChildren(el('strong', 'This timer is already recorded on GitHub'),
+          el('p', startRecovery.reason || 'Review the saved completion before clearing the local conflict.', 'muted'));
+        if (queuedStart) box.append(queuedConflictCard('Queued Start · saved in this browser', queuedStart));
+        if (startRecovery.saved) {
+          const saved = startRecovery.saved;
+          const card = queuedConflictCard('Completed time · saved on GitHub', saved);
+          if (saved.description) card.append(el('p', saved.description));
+          card.append(el('p', saved.billable === false ? 'Non-billable' : 'Billable', 'muted'));
+          box.append(card);
+        }
+        if (startRecovery.canConfirm) {
+          box.append(button('Confirm saved time', 'primary sync-resolution-apply', (_event, trigger) =>
+            confirmSavedQueuedStart(item, startRecovery, trigger)));
+        } else {
+          box.append(button('Recheck GitHub', 'secondary', () => {
+            stoppedOverlapDetails.delete(overlapKey);
+            syncIssuesSignature = null; renderSyncIssues();
+          }));
+        }
         container.append(box);
         continue;
       }

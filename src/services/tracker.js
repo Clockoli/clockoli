@@ -2543,7 +2543,7 @@ export class TrackerService {
   // A conflicted Start may represent historical work even after a newer
   // GitHub timer has stopped. Let the user supply the actual End without
   // overwriting a running timer or silently dropping the old Start.
-  async getQueuedStartRecoveryContext(operationId) {
+  async inspectQueuedStartRecovery(operationId) {
     validateEntryId(operationId);
     const state = await this.store.getState(), queue = state.pendingWrites ?? [];
     const matches = queue.filter(item => item.id === operationId && item.operation === 'startTimer');
@@ -2553,19 +2553,72 @@ export class TrackerService {
         || !['add_time_overlap_changed', 'queued_start_remote_active'].includes(operation.conflictReason)
         || !operation.requireNoOverlap || !active) return null;
     validateActiveTimer(active);
-    const remote = await this.readRemoteActive();
-    const started = Date.parse(active.startedAt), remoteStarted = Date.parse(remote?.startedAt);
+    if (active.id !== operationId) return null;
+    const activePath = activeRecordPath(this.user);
+    const snapshotOptions = { includeActive: activePath, includePaths: [TASK_INDEX_PATH] };
+    const [snapshot, remote, index] = await Promise.all([
+      this.github.listTextFilesSnapshot('times/', snapshotOptions), this.readRemoteActive(), this.readTaskIndex(),
+    ]);
+    const fileSha = path => snapshot.files.find(file => file.path === path)?.sha ?? null;
+    if (fileSha(activePath) !== (remote?._sha ?? null) || fileSha(TASK_INDEX_PATH) !== index.sha) {
+      throw new TrackerConflictError('GitHub changed while checking the queued Start. Recheck GitHub.');
+    }
+    // Search all months: a saved completion may have been moved by an edit.
+    // Read immutable blobs from the same tree, not a mixture of branch versions.
+    const monthly = snapshot.files.flatMap(file => {
+      try { return [{ ...file, month: monthFromPath(file.path, this.user) }]; }
+      catch { return []; }
+    });
+    const entries = [];
+    for (let offset = 0; offset < monthly.length; offset += 6) {
+      const batch = await Promise.all(monthly.slice(offset, offset + 6).map(async file => {
+        const cached = await this.reports?.cachedMonthly(file.path, file.sha);
+        if (cached) return cached.entries;
+        const blob = await this.github.getBlobText(file.path, file.sha);
+        return parseMonthlyRecords(blob.text, { user: this.user, month: file.month,
+          path: file.path, sha: file.sha });
+      }));
+      entries.push(...batch.flat());
+    }
+    const savedRecords = entries.filter(entry => entry.id === active.id);
+    const indexedTasks = Object.entries(index.index.tasks).filter(([, details]) =>
+      details.recordIds.includes(active.id)).map(([task]) => task);
+    const alreadySaved = Boolean(savedRecords.length || indexedTasks.length);
+    const saved = savedRecords.length === 1 ? savedRecords[0] : null;
+    const verified = Boolean(saved && indexedTasks.length === 1
+      && indexedTasks[0] === taskUrlOf(saved) && fileSha(saved._path) === saved._sha);
     const dependent = queue.some(item => item !== operation && stoppedOverlapReferencesEntry(item, active.id));
     const unrelatedLocal = state.activeCache?._pending && state.activeCache.id !== active.id;
+    return { state, queue, operation, active, remote, snapshot, snapshotOptions, entries,
+      alreadySaved, saved, verified, dependent, unrelatedLocal };
+  }
+
+  async getQueuedStartRecoveryContext(operationId) {
+    const inspection = await this.inspectQueuedStartRecovery(operationId);
+    if (!inspection) return null;
+    const { active, remote, entries, alreadySaved, saved, verified, dependent, unrelatedLocal } = inspection;
+    const started = Date.parse(active.startedAt), remoteStarted = Date.parse(remote?.startedAt);
+    const fields = entry => entry ? { id: entry.id, taskUrl: taskUrlOf(entry), taskTitle: taskTitleOf(entry),
+      entryDate: entry.entryDate, timezone: entry.timezone, startedAt: entry.startedAt,
+      ...(entry.endedAt ? { endedAt: entry.endedAt } : {}),
+      description: entry.description || '', billable: isBillable(entry) } : null;
+    const canConfirm = verified && !dependent && !sameTimer(remote, active);
+    if (alreadySaved) return {
+      kind: 'queued_start_recovery', id: operationId, remote: fields(remote),
+      alreadySaved: true, canComplete: false, preview: null, canConfirm, saved: fields(saved),
+      ...(canConfirm ? { savedSha: saved._sha } : {}),
+      reason: !verified ? 'The saved record and GitHub task index do not agree. Your local Start has been kept.'
+        : dependent ? 'Another queued change depends on this Start. Review it before confirming saved time.'
+          : sameTimer(remote, active) ? 'This timer is also still running on GitHub. Recheck before confirming.'
+            : 'This timer already has a completed entry on GitHub. Confirm saved time to keep that entry and clear only the obsolete local Start.',
+    };
     const now = this.clock();
     const limit = Math.min(now.getTime(), remote ? remoteStarted : Infinity);
     const canComplete = (!remote || !sameTimer(remote, active) && remoteStarted > started)
       && !dependent && !unrelatedLocal && started < limit;
     let suggestedStart = active.startedAt;
     if (canComplete) {
-      const { files } = await this.readAddTimeOverlapFiles(active.entryDate, now,
-        localDateInTimezone(now, this.timezone));
-      const overlapping = files.flatMap(file => file.entries).filter(entry =>
+      const overlapping = entries.filter(entry =>
         entry.id !== active.id && Date.parse(entry.startedAt) <= started
         && Date.parse(entry.endedAt) > started);
       if (overlapping.length === 1 && Date.parse(overlapping[0].endedAt) < limit) {
@@ -2590,10 +2643,40 @@ export class TrackerService {
             : remote ? 'The GitHub timer cannot be replaced by this queued Start.' : '' };
   }
 
+  async confirmSavedQueuedStart(operationId, savedSha) {
+    const inspection = await this.inspectQueuedStartRecovery(operationId);
+    if (!inspection?.verified || inspection.saved._sha !== savedSha
+        || inspection.dependent || sameTimer(inspection.remote, inspection.active)) {
+      throw new TrackerConflictError('The saved time could not be verified or has changed. The queued Start was kept. Recheck GitHub.');
+    }
+    const { state, queue, operation, active, remote, saved, snapshot, snapshotOptions } = inspection;
+    const fresh = await this.github.listTextFilesSnapshot('times/', snapshotOptions);
+    if (snapshot.headSha !== fresh.headSha || !sameValue(snapshot.files, fresh.files)) {
+      throw new TrackerConflictError('GitHub changed during confirmation. The queued Start was kept.');
+    }
+    await this.mutateState(latest => {
+      if (!sameValue(latest.pendingWrites, queue) || !sameValue(latest.activeCache, state.activeCache)) {
+        throw new TrackerConflictError('The local queue changed during confirmation. The queued Start was kept.');
+      }
+      return {
+        pendingWrites: queue.filter(item => item !== operation),
+        ...(latest.activeCache?.id === active.id ? { activeCache: remote } : {}),
+        recentCache: [saved, ...(latest.recentCache ?? []).filter(entry => entry.id !== saved.id)]
+          .sort(newestFirst).slice(0, 50),
+        ...(latest.summaryCache?.weekEntries ? { summaryCache: { ...latest.summaryCache,
+          weekEntries: latest.summaryCache.weekEntries.map(entry => entry.id === saved.id ? saved : entry) } } : {}),
+        ...(latest.dayRangeIntervals ? { dayRangeIntervals: updateDayRangeIntervals(latest.dayRangeIntervals, [saved]) } : {}),
+      };
+    });
+    return { confirmed: true };
+  }
+
   async saveQueuedStartAsCompletedTime(operationId, edits) {
     const context = await this.getQueuedStartRecoveryContext(operationId);
     if (!context?.canComplete) {
-      throw new TrackerConflictError(context?.reason || 'This queued Start is not eligible for completed-time recovery.');
+      throw new TrackerConflictError(context?.alreadySaved
+        ? 'This timer already has a record on GitHub. Close the editor and recheck the conflict to review the saved time.'
+        : context?.reason || 'This queued Start is not eligible for completed-time recovery.');
     }
     const state = await this.store.getState(), queue = state.pendingWrites ?? [];
     const operation = queue.find(item => item.id === operationId && item.operation === 'startTimer');

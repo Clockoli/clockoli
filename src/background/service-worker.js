@@ -1892,15 +1892,19 @@ async function handle(message, sender) {
       return { ...result, destinationId: destinationIds[0] };
     }
     case 'GET_QUEUED_START_RECOVERY':
-    case 'SAVE_QUEUED_START_AS_TIME': {
+    case 'SAVE_QUEUED_START_AS_TIME':
+    case 'CONFIRM_SAVED_QUEUED_START': {
       if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) {
         throw new Error('Only Activity can recover queued Start time.');
       }
       const expected = message.type === 'SAVE_QUEUED_START_AS_TIME'
-        ? 'destinationId,edits,id,type' : 'destinationId,id,type';
+        ? 'destinationId,edits,id,type' : message.type === 'CONFIRM_SAVED_QUEUED_START'
+          ? 'destinationId,id,savedSha,type' : 'destinationId,id,type';
       if (Object.keys(message).sort().join(',') !== expected
           || typeof message.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)
-          || (message.type === 'SAVE_QUEUED_START_AS_TIME' && !validConflictEntryEdits(message.edits))) {
+          || (message.type === 'SAVE_QUEUED_START_AS_TIME' && !validConflictEntryEdits(message.edits))
+          || (message.type === 'CONFIRM_SAVED_QUEUED_START'
+            && (typeof message.savedSha !== 'string' || !/^[a-f0-9]{40}$/.test(message.savedSha)))) {
         throw new Error('Invalid queued Start recovery request.');
       }
       const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
@@ -1909,7 +1913,9 @@ async function handle(message, sender) {
       if (message.type === 'GET_QUEUED_START_RECOVERY') {
         return tracker.getQueuedStartRecoveryContext(message.id);
       }
-      const result = await tracker.saveQueuedStartAsCompletedTime(message.id, message.edits);
+      const result = message.type === 'CONFIRM_SAVED_QUEUED_START'
+        ? await tracker.confirmSavedQueuedStart(message.id, message.savedSha)
+        : await tracker.saveQueuedStartAsCompletedTime(message.id, message.edits);
       requestPendingSync();
       return result;
     }
