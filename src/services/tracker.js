@@ -2834,7 +2834,7 @@ export class TrackerService {
         id: createUlid(queuedAt.getTime() + (state.pendingWrites?.length ?? 0) + 2),
         operation: 'timeOffChange', status: 'pending', stage: 'timeOffChange',
         groupId, previousGroupId: change.groupId, singleDayDeletion: change.singleDayDeletion,
-        taskUrl: change.taskUrl,
+        bulkDayDeletion: change.bulkDayDeletion, taskUrl: change.taskUrl,
         previous: structuredClone(change.previous), entries: entries.map(stripInternal),
         autoDates, queuedAt: queuedAt.toISOString(), lastError: '',
       }];
@@ -2861,6 +2861,11 @@ export class TrackerService {
     if (operation.singleDayDeletion && (previous.length !== 1 || proposed.length)) {
       throw new TrackerConflictError('A one-day deletion must target exactly one original PTO record.', 'time_off_invalid');
     }
+    if (operation.bulkDayDeletion && (operation.singleDayDeletion || !previous.length
+        || previous.length > 200 || proposed.length || previous.some(item =>
+          !item.taskUrl || !('groupId' in item)))) {
+      throw new TrackerConflictError('Invalid multi-day PTO deletion.', 'time_off_invalid');
+    }
     const anchor = proposed.length ? proposed : previous.map(item => ({ ...item, entryDate: item.date }));
     if (!anchor.length) throw new TrackerConflictError('Empty time off change.', 'time_off_invalid');
     const overlap = await this.readEditOverlapFiles(anchor);
@@ -2878,10 +2883,12 @@ export class TrackerService {
       if (!current) continue;
       if (current.entryDate !== item.date || current.startedAt !== item.startedAt
           || current.endedAt !== item.endedAt || current.updatedAt !== item.updatedAt
-          || taskUrlOf(current) !== operation.taskUrl
-          || (operation.previousGroupId
-            ? timeOffGroupId(current) !== operation.previousGroupId
-            : timeOffGroupId(current) !== null)) {
+          || taskUrlOf(current) !== (operation.bulkDayDeletion ? item.taskUrl : operation.taskUrl)
+          || (operation.bulkDayDeletion
+            ? timeOffGroupId(current) !== item.groupId
+            : operation.previousGroupId
+              ? timeOffGroupId(current) !== operation.previousGroupId
+              : timeOffGroupId(current) !== null)) {
         throw new TrackerConflictError('Time off changed on GitHub. Reload before editing.', 'time_off_changed');
       }
       originals.push(current);
@@ -2904,7 +2911,7 @@ export class TrackerService {
       throw new TrackerConflictError('Time off record ID already exists on GitHub.', 'time_off_changed');
     }
     // Do not accidentally erase other dates from the same group if the editor loaded only part of it.
-    if (operation.previousGroupId && !operation.singleDayDeletion) {
+    if (operation.previousGroupId && !operation.singleDayDeletion && !operation.bulkDayDeletion) {
       const unexpected = [...files.values()].flatMap(file => file.entries).filter(entry =>
         timeOffGroupId(entry) === operation.previousGroupId
         && !alreadyIds.has(entry.id)
