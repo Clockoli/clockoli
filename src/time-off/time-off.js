@@ -537,7 +537,7 @@ function fillTaskOptions() {
   select.value = tasks.includes(previous) ? previous : tasks[0] || '';
   $('edit-task-field').hidden = tasks.length === 1;
 }
-const validHours = n => Number.isFinite(n) && n >= 0 && n <= 24 && Number.isSafeInteger(n * 3600);
+const validHours = n => Number.isFinite(n) && n > 0 && n <= 24 && Number.isSafeInteger(n * 3600);
 const weekend = date => [0, 6].includes(dateAt(date).getUTCDay());
 function updateSelectedCells(old) {
   for (const date of new Set([...old, ...selectedDates])) {
@@ -601,7 +601,7 @@ async function saveForm(event) {
   if (state.formBusy) return;
   const raw = $('edit-hours').value.trim(), hours = raw ? Number(raw) : NaN;
   if (!validHours(hours) || $('edit-hours').validity.stepMismatch) {
-    setFormError('Enter valid hours per day (0–24, in 15-minute increments).');
+    setFormError('Enter valid hours per day (0.25–24, in 15-minute increments).');
     return;
   }
   let days;
