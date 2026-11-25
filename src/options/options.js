@@ -2661,6 +2661,27 @@ $('disconnect').addEventListener('click', async () => {
   finally { $('disconnect').disabled = false; }
 });
 
+$('clear-cache').addEventListener('click', async () => {
+  const button = $('clear-cache');
+  if (button.disabled) return;
+  button.disabled = true;
+  formFeedback('clear-cache-feedback', 'Clearing cache…');
+  try {
+    const result = await send({ type: 'CLEAR_LOCAL_CACHE' });
+    const retained = result.retainedPendingDestinations > 0;
+    formFeedback('clear-cache-feedback', retained
+      ? 'Cache cleared. Pending changes and their local views were kept. Reload open Clockoli pages to fetch fresh data.'
+      : 'Cache cleared. Reload open Clockoli pages to fetch fresh data. Recent tracking data is kept until refreshed.', 'success');
+    mergeSelection.source = ''; mergeSelection.target = '';
+    clearMergePairs(); renderMergeTasks([]);
+    void refreshMergeTasks();
+  } catch (error) {
+    formFeedback('clear-cache-feedback', error.message || 'Could not clear the cache.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
 $('clear-local').addEventListener('click', async () => {
   if (!window.confirm('Reset to defaults? This permanently deletes all local settings, GitHub credentials, cached data, running timers and unsynced work. You will need to sign in again with your real GitHub account. GitHub repository data is not deleted.')) return;
   $('clear-local').disabled = true;

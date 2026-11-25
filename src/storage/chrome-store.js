@@ -273,6 +273,56 @@ export class ChromeStore {
     await this.backend.replaceAllEntries([]);
   }
 
+  // Only discard downloaded history and presentation caches. Recent records
+  // and weekly entries are also the local overlap/rebase working set, even
+  // when there are no pending writes. Retain them until an authoritative
+  // refresh replaces them; invalidate summary display and passive-pull ETags.
+  // dayRangeIntervals is a durable overlap guard, not a downloaded cache.
+  async clearLocalCache() {
+    const caches = ['reportCache', 'pageSnapshots', 'taskMetadataCache', EXCHANGE_RATE_CACHE];
+    // Do not deserialize potentially huge history blobs just to delete them.
+    const keys = ['dataVersion', DESTINATION_STATES, 'recentCache', 'summaryCache',
+      'pendingWrites', 'taskSearchCache', CONFIGURATION_GENERATION];
+    return this.backend.mutateMany(keys, values => {
+      const version = values.dataVersion ?? 0;
+      if (!Number.isSafeInteger(version) || version < 0 || version > 5) throw storageFormatError('Unsupported local data version.');
+      let retained = 0;
+      const clearProjection = state => {
+        if (!state || typeof state !== 'object' || Array.isArray(state)) {
+          throw storageFormatError('Invalid local tracking state.');
+        }
+        const pending = Boolean(state.pendingWrites?.length || state.recentCache?.some(entry => entry?._pending));
+        if (pending) retained += 1;
+        const summary = state.summaryCache;
+        if (!summary) return state;
+        const { silentPull, ...rest } = summary;
+        // Pending work keeps its local summary; otherwise show no cached totals
+        // until the next successful read. In both cases keep the week entries
+        // for immediate local overlap checks, not as a report snapshot.
+        return { ...state, summaryCache: pending ? rest : { ...rest, reportDate: null } };
+      };
+      const set = {};
+      if (version === 5) {
+        const states = values[DESTINATION_STATES];
+        if (!states || states.version !== 1 || !states.entries || typeof states.entries !== 'object'
+            || Array.isArray(states.entries)) throw storageFormatError('Clockoli local data version 5 is incomplete or invalid.');
+        set[DESTINATION_STATES] = { ...states, entries: Object.fromEntries(
+          Object.entries(states.entries).map(([id, state]) => [id, clearProjection(state)]),
+        ) };
+      } else {
+        const projected = clearProjection(values);
+        if (Object.hasOwn(values, 'recentCache')) set.recentCache = projected.recentCache;
+        if (Object.hasOwn(values, 'summaryCache')) set.summaryCache = projected.summaryCache;
+      }
+      // Preserve a monotonic revision, even though the search payload is gone.
+      // Invalidate generations so a previously started read cannot publish an
+      // old page snapshot, task index or task metadata after this transaction.
+      set.taskSearchCache = { revision: (values.taskSearchCache?.revision ?? 0) + 1, dirty: retained > 0 };
+      set[CONFIGURATION_GENERATION] = generationValue(values[CONFIGURATION_GENERATION]) + 1;
+      return { delete: caches, set, result: { cleared: true, retainedPendingDestinations: retained } };
+    });
+  }
+
   // Repository identifiers are unverified intent, never evidence of GitHub access.
   async getJoinInvitation() {
     const saved = (await this.backend.getMany([JOIN_INVITATION]))[JOIN_INVITATION];
@@ -885,8 +935,11 @@ export class ChromeStore {
     return reportCache?.version === 2 && reportCache.entries?.[repositoryKey] || null;
   }
 
-  async saveReportCache(value) {
-    await this.backend.mutateMany(['reportCache'], current => {
+  async saveReportCache(value, expectedGeneration = null) {
+    return this.backend.mutateMany(['reportCache', CONFIGURATION_GENERATION], current => {
+      if (expectedGeneration !== null && generationValue(current[CONFIGURATION_GENERATION]) !== expectedGeneration) {
+        return { result: false };
+      }
       const existing = current.reportCache?.version === 2 && current.reportCache.entries
         ? current.reportCache.entries
         : current.reportCache?.repositoryKey ? { [current.reportCache.repositoryKey]: current.reportCache } : {};
@@ -992,8 +1045,11 @@ export class ChromeStore {
     return values[EXCHANGE_RATE_CACHE] ?? null;
   }
 
-  async saveExchangeRateCache(value) {
-    await this.backend.mutateMany([EXCHANGE_RATE_CACHE], current => {
+  async saveExchangeRateCache(value, expectedGeneration = null) {
+    return this.backend.mutateMany([EXCHANGE_RATE_CACHE, CONFIGURATION_GENERATION], current => {
+      if (expectedGeneration !== null && generationValue(current[CONFIGURATION_GENERATION]) !== expectedGeneration) {
+        return { result: false };
+      }
       const existing = current[EXCHANGE_RATE_CACHE];
       const entries = existing?.version === value.version && existing.entries && typeof existing.entries === 'object'
         ? { ...existing.entries } : {};
