@@ -636,7 +636,8 @@ async function saveForm(event) {
     closeForm();
     renderMy(); renderYear(); renderInspector();
     notice('Saved locally. Your team will see it after GitHub synchronization.');
-    void loadMine({ quiet: true });
+    // The local queue response already contains the optimistic change; do not
+    // re-read GitHub simply because a user added or deleted PTO.
   } catch (error) { setFormError(error.message || 'Could not add time off.'); }
   finally { state.formBusy = false; updateAddButton(); }
 }
@@ -729,11 +730,13 @@ async function confirmCancel() {
     renderMy(); renderYear(); renderInspector();
     notice((new Set(entries.map(entry => entry.entryDate)).size)
       + ' time off day(s) deleted locally. Changes will sync to GitHub.');
-    void loadMine({ quiet: true });
+    // The local queue response already contains the optimistic change; do not
+    // re-read GitHub simply because a user added or deleted PTO.
   } catch (error) {
     if (completed) {
       renderMy(); renderYear(); renderInspector();
-      void loadMine({ quiet: true });
+      // The local queue response already contains the optimistic change; do not
+    // re-read GitHub simply because a user added or deleted PTO.
     }
     $('time-off-cancel-error').textContent = (completed ? completed
       + ' entry/entries queued for deletion. Remaining repository failed: ' : '')
