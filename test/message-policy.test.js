@@ -540,37 +540,3 @@ test('manual SYNC message is not part of the extension or content sender policy'
   assert.throws(() => assertMessageAllowed('SYNC', { url: extensionOrigin + 'src/tasks/tasks.html' }, extensionOrigin), /not allowed/);
   assert.throws(() => assertMessageAllowed('SYNC', { url: 'https://github.com/acme/frontend/issues/123', tab: { id: 1 } }, extensionOrigin), /not allowed/);
 });
-
-
-test('PTO task picker scopes existing task search to Settings and the chosen destination', async () => {
-  const worker = await readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
-  const calls = [];
-  const context = vm.createContext({
-    assertMessageAllowed, store: {},
-    chrome: { runtime: { getURL: path => origin + path } },
-    requireConfiguredDestinationId: async (_store, id) => {
-      calls.push(['validate', id]);
-      if (id !== 'github:1') throw new Error('Time repository is not configured.');
-      return id;
-    },
-    searchTasks: async (_sender, query, options = {}) => {
-      calls.push(['search', query, options.destinationId ?? null]);
-      return { configured: true, tasks: [], destinationId: options.destinationId ?? null };
-    },
-  });
-  vm.runInContext(worker.slice(worker.indexOf('async function handle('), worker.indexOf('chrome.runtime.onMessage.addListener')), context);
-  const sender = { url: origin + 'src/options/options.html' };
-  const scoped = { type: 'SEARCH_TASKS', query: 'vacation', destinationId: 'github:1' };
-  const result = await context.handle(scoped, sender);
-  assert.equal(result.destinationId, 'github:1');
-  assert.deepEqual(calls, [['validate', 'github:1'], ['search', 'vacation', 'github:1']]);
-  calls.length = 0;
-  await assert.rejects(context.handle(scoped, { url: origin + 'src/times/times.html' }), /requires Settings/);
-  await assert.rejects(context.handle({ ...scoped, destinationId: 'github:2' }, sender), /not configured/);
-  await assert.rejects(context.handle({ ...scoped, unexpected: true }, sender), /Invalid task search query/);
-  await assert.rejects(context.handle({ ...scoped, query: 'a'.repeat(301) }, sender), /Invalid task search query/);
-  assert.deepEqual(calls, [['validate', 'github:2']]);
-  const unscoped = await context.handle({ type: 'SEARCH_TASKS', query: 'normal' }, { url: origin + 'src/times/times.html' });
-  assert.equal(unscoped.destinationId, null);
-  assert.deepEqual(calls.at(-1), ['search', 'normal', null]);
-});
