@@ -2217,6 +2217,7 @@
       return;
     }
     form.openEdit({ ...record, destinationId: item.destinationId,
+      ...(side === 'queued-start' ? { _requireExplicitEnd: true } : {}),
       description: record.description || '', metadata: { billable: record.billable !== false } }, async value => {
       if (!/^https?:\/\//i.test(value.taskUrl) && value.destinationId !== item.destinationId) {
         throw new Error('The selected imported task belongs to a different time repository.');
