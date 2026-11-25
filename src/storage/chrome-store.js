@@ -55,6 +55,20 @@ function generationValue(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
+function canPreserveRestoreAuth(current, saved) {
+  if (!current || !saved || !Number.isSafeInteger(current.githubUserId)
+      || current.githubUserId <= 0 || current.githubUserId !== saved.githubUserId
+      || current.mode !== saved.mode || typeof current.accessToken !== 'string' || !current.accessToken) return false;
+  if (current.mode === 'pat') return true;
+  if (current.mode !== 'github_app') return false;
+  const now = Date.now();
+  // Restore works offline. Prefer the current session unless its access and
+  // renewal capabilities are already known to be unusable.
+  return (typeof current.refreshToken === 'string' && Boolean(current.refreshToken)
+      && Number(current.refreshTokenExpiresAt) > now)
+    || Number(current.accessTokenExpiresAt) - now > 5 * 60 * 1000;
+}
+
 function storageFormatError(message) {
   return Object.assign(new Error(message), { code: 'incompatible_storage_format' });
 }
@@ -182,11 +196,16 @@ export class IndexedDbBackend {
     return keys.map((key, index) => [key, values[index]]);
   }
 
-  async replaceAllEntries(entries) {
+  async replaceAllEntries(entries, { readKeys = [], prepare } = {}) {
     const database = await this.open();
     const transaction = database.transaction('values', 'readwrite');
     const done = transactionDone(transaction);
     const objectStore = transaction.objectStore('values');
+    // Read the current values and replace the snapshot in the same transaction.
+    if (prepare) {
+      const pairs = await Promise.all(readKeys.map(async key => [key, await requestResult(objectStore.get(key))]));
+      entries = prepare(entries, Object.fromEntries(pairs));
+    }
     objectStore.clear();
     for (const [key, value] of entries) objectStore.put(value, key);
     await done;
@@ -264,9 +283,29 @@ export class ChromeStore {
 
   async importFullLocalBackup(text, password) {
     const backup = await decryptFullBackup(text, password);
-    await this.backend.replaceAllEntries(backup.entries);
+    let githubLogin = backup.githubLogin;
+    await this.backend.replaceAllEntries(backup.entries, {
+      readKeys: [AUTH, AUTH_GENERATION],
+      prepare: (entries, current) => {
+        const restored = new Map(entries);
+        const savedAuth = restored.get(AUTH);
+        const liveAuth = current[AUTH];
+        // GitHub invalidates both old tokens when a user token is refreshed.
+        // Never roll back the current session for a verified matching account.
+        // Do not mix authentication modes: the restored repository configuration
+        // may depend on the access model used in the backup.
+        if (!canPreserveRestoreAuth(liveAuth, savedAuth)) return entries;
+        const generation = Math.max(generationValue(current[AUTH_GENERATION]),
+          generationValue(restored.get(AUTH_GENERATION))) + 1;
+        restored.set(AUTH, { ...liveAuth, generation });
+        restored.set(AUTH_GENERATION, generation);
+        restored.delete('token');
+        githubLogin = liveAuth.githubLogin || githubLogin;
+        return [...restored];
+      },
+    });
     // Credentials and the full database remain within this privileged context.
-    return { localStorage: backup.localStorage, githubLogin: backup.githubLogin };
+    return { localStorage: backup.localStorage, githubLogin };
   }
 
   async resetFullLocalData() {

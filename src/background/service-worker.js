@@ -1034,10 +1034,15 @@ async function replaceFullLocalData(operation) {
   // A passive GitHub pull is not on the mutation executor. Finish any pull
   // before wiping storage, and stop new pulls and syncs until the reload.
   globalThis.clockoliLocalDataTransitioning = true;
+  const brokers = [currentCredentialProvider, pendingCredentialProvider];
   try {
+    // Read-only GitHub requests can refresh credentials outside the mutation
+    // executor. Freeze new refreshes and let active ones persist before restore.
+    await Promise.all(brokers.map(broker => broker.pauseForLocalDataChange()));
     if (pendingPull) await pendingPull.catch(() => {});
     return await operation();
   } catch (error) {
+    for (const broker of brokers) broker.resumeAfterLocalDataChange();
     globalThis.clockoliLocalDataTransitioning = false;
     requestPendingSync();
     throw error;

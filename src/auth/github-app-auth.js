@@ -319,10 +319,30 @@ export class CredentialBroker {
     this.now = now;
     this.refreshWindowMs = refreshWindowMs;
     this.refreshPromise = null;
+    this.pausedForLocalDataChange = false;
+  }
+
+  async pauseForLocalDataChange() {
+    this.pausedForLocalDataChange = true;
+    // A refresh token is single-use. Let a refresh that has already started
+    // persist the replacement pair before a backup can replace the database.
+    await this.refreshPromise?.catch(() => {});
+  }
+
+  resumeAfterLocalDataChange() {
+    this.pausedForLocalDataChange = false;
+  }
+
+  assertAvailable() {
+    if (this.pausedForLocalDataChange) {
+      throw new GitHubAppAuthError('Clockoli is reloading after a local data change.', 'auth_superseded');
+    }
   }
 
   async getAccessToken({ forceRefresh = false, rejectedToken = '' } = {}) {
+    this.assertAvailable();
     const snapshot = await this.store.getAuthSnapshot();
+    this.assertAvailable();
     const auth = snapshot.auth;
     if (!auth?.accessToken) throw new GitHubAppAuthError('Connect Clockoli to GitHub.', 'auth_required');
     if (auth.mode === 'pat') return auth.accessToken;
