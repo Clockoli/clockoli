@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { agentCollectorRequest, assertMessageAllowed } from '../src/background/message-policy.js';
+import { agentCollectorRequest, agentWorkflowRequest, assertMessageAllowed } from '../src/background/message-policy.js';
 const origin = 'chrome-extension://collector-test/';
 const settings = { url: `${origin}src/options/options.html` };
 const activity = { url: `${origin}src/times/times.html` };
@@ -29,4 +29,19 @@ test('agent collector control accepts only exact known actions/providers and Set
     assert.throws(() => agentCollectorRequest(bad, settings, origin));
   }
   assert.throws(() => agentCollectorRequest(request, content, origin));
+});
+
+test('workflow summary is read-only, Activity-only and accepts only exact filter enums', () => {
+  const request = { type: 'AGENT_WORKFLOW_SUMMARY', period: '7d', provider: 'codex', thresholdMinutes: 15 };
+  assert.deepEqual(agentWorkflowRequest(request, activity, origin),
+    { period: '7d', provider: 'codex', thresholdMinutes: 15 });
+  for (const sender of [settings, content, { url: origin + 'src/times/times.html/extra' }]) {
+    assert.throws(() => agentWorkflowRequest(request, sender, origin));
+  }
+  for (const bad of [{ ...request, period: 'arbitrary' }, { ...request, provider: 'unknown' },
+    { ...request, thresholdMinutes: 0 }, { ...request, thresholdMinutes: '15' },
+    { ...request, path: '/private' }]) {
+    assert.throws(() => agentWorkflowRequest(bad, activity, origin));
+  }
+  assert.throws(() => assertMessageAllowed('AGENT_WORKFLOW_SUMMARY', content, origin));
 });
