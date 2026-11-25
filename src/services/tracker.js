@@ -2645,7 +2645,7 @@ export class TrackerService {
     });
     const remaining = await this.syncPending({ canSync: async () =>
       (await this.store.getState()).pendingWrites.some(item => item.id === addition.id) });
-    return { resolved: !remaining.some(item => item.id === addition.id) };
+    return { savedLocally: true, resolved: !remaining.some(item => item.id === addition.id) };
   }
 
   async resolvePendingConflict(id, action = '') {
