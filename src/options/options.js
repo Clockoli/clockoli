@@ -2389,11 +2389,13 @@ function invoicingPayload() {
   });
 }
 
+const RESTORE_AUTH_DIAGNOSTIC = 'clockoli.restore-auth-diagnostic';
+
 function localStorageSnapshot() {
   return Object.fromEntries(Array.from({ length: localStorage.length }, (_, index) => {
     const key = localStorage.key(index);
     return [key, localStorage.getItem(key)];
-  }));
+  }).filter(([key]) => key !== RESTORE_AUTH_DIAGNOSTIC));
 }
 
 function replaceLocalStorage(values) {
@@ -3226,8 +3228,10 @@ $('import-full-local-backup-file').addEventListener('change', async () => {
     if (file.size > 64 * 1024 * 1024) throw new Error('Full backup file is too large.');
     if (!window.confirm('Replace all current local Clockoli data with this backup? The current GitHub sign-in is kept if it belongs to the same account and uses the same sign-in method. Other local changes not in the file will be lost. GitHub repositories are not changed.')) return;
     const restored = await send({ type: 'IMPORT_FULL_LOCAL_BACKUP', text: await file.text(), password });
-    try { replaceLocalStorage(restored.localStorage); }
-    finally { reloadAfterLocalDataChange(); }
+    try {
+      replaceLocalStorage(restored.localStorage);
+      localStorage.setItem(RESTORE_AUTH_DIAGNOSTIC, restored.authRestore || 'unknown');
+    } finally { reloadAfterLocalDataChange(); }
   } catch (error) {
     if (error.code !== 'invalid_backup_password') message(error.message || 'Could not restore full backup.', 'error');
   } finally { input.value = ''; input.disabled = false; $('full-backup-password').value = ''; }
@@ -3329,7 +3333,12 @@ $('settings-form').addEventListener('submit', async event => {
   finally { $('save').disabled = false; }
 });
 
-function showSignInRequired() {
+function showSignInRequired(cause) {
+  const decision = localStorage.getItem(RESTORE_AUTH_DIAGNOSTIC);
+  const diagnostic = $('restore-auth-diagnostic');
+  const reason = cause?.authReason || 'auth_expired';
+  diagnostic.hidden = !decision;
+  diagnostic.textContent = decision ? `Backup sign-in: ${decision}. GitHub renewal: ${reason}.` : '';
   if (authExpired) return;
   authExpired = true;
   authRecoveryKnown = `${state?.auth?.accessTokenExpiresAt || ''}:${state?.auth?.refreshTokenExpiresAt || ''}`;
@@ -3339,6 +3348,7 @@ function showSignInRequired() {
 }
 
 function clearSignInRequired() {
+  localStorage.removeItem(RESTORE_AUTH_DIAGNOSTIC);
   if (!authExpired) return;
   authExpired = false;
   authRecoveryKnown = '';

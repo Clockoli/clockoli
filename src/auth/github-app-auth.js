@@ -358,7 +358,9 @@ export class CredentialBroker {
   async refresh(snapshot) {
     const auth = snapshot.auth, now = this.now();
     if (!auth?.refreshToken || Number(auth.refreshTokenExpiresAt) <= now) {
-      throw new GitHubAppAuthError('Clockoli needs to reconnect to GitHub.', 'auth_expired');
+      throw Object.assign(new GitHubAppAuthError('Clockoli needs to reconnect to GitHub.', 'auth_expired'), {
+        authReason: auth?.refreshToken ? 'refresh-token-expired' : 'refresh-token-missing',
+      });
     }
     const clientId = requireClientId(this.clientId);
     const response = await this.fetchImpl(TOKEN_URL, {
@@ -372,10 +374,23 @@ export class CredentialBroker {
     });
     const body = await jsonResponse(response);
     if (!response.ok || body?.error) {
+      // A delayed request can have captured a token that another caller has
+      // already consumed. Re-read the durable credentials before asking the
+      // user to sign in again, and never return another account's token.
+      const latest = (await this.store.getAuthSnapshot()).auth;
+      if (latest?.mode === 'github_app' && latest.githubUserId === auth.githubUserId
+          && latest.accessToken && latest.accessToken !== auth.accessToken
+          && Number(latest.accessTokenExpiresAt) > this.now()) return latest.accessToken;
+      if (response.status === 429 || response.status >= 500
+          || ['server_error', 'temporarily_unavailable'].includes(body?.error)) {
+        throw new GitHubAppAuthError('GitHub could not renew access temporarily. Try again later.', 'network_error', response.status);
+      }
       const error = oauthError(body, response.status);
       if (['authentication_failed', 'invalid_device_flow'].includes(error.code)) {
         error.code = 'auth_expired';
         error.message = 'Clockoli could not renew GitHub access. Reconnect GitHub in Settings.';
+        error.authReason = ['bad_refresh_token', 'incorrect_client_credentials', 'invalid_grant'].includes(body?.error)
+          ? body.error : 'renewal-rejected';
       }
       throw error;
     }

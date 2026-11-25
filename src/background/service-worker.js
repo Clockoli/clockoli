@@ -143,6 +143,7 @@ function serializeError(error, message) {
     message: error?.message || 'Unexpected error',
     code: error?.name === 'AbortError' ? 'aborted' : error?.code || 'error',
     status: error?.status || 0,
+    ...(error?.authReason ? { authReason: error.authReason } : {}),
     ...(error?.retryAt ? { retryAt: error.retryAt } : {}),
     recovery: READ_RETRY_MESSAGES.has(message?.type) ? 'read-retry' : 'mutation-recovery',
   };

@@ -115,7 +115,7 @@ export function mountRunningStatus(container, { send, onChange, onReconnect, onA
       }
     }
     if (cause?.code === 'auth_expired' && onAuthExpired) {
-      onAuthExpired();
+      onAuthExpired(cause);
       error.textContent = ''; error.hidden = true;
       return;
     }
