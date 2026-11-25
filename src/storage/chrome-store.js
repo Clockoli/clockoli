@@ -273,6 +273,53 @@ export class ChromeStore {
     await this.backend.replaceAllEntries([]);
   }
 
+  // Only discard data that can be fetched again. The recent/summary projections
+  // of an unsynced queue are needed for rebasing edits and detecting overlaps.
+  // dayRangeIntervals is a durable overlap guard, not a downloaded cache.
+  async clearLocalCache() {
+    const caches = ['reportCache', 'pageSnapshots', 'taskMetadataCache', EXCHANGE_RATE_CACHE];
+    const keys = ['dataVersion', DESTINATION_REGISTRY, DESTINATION_STATES, 'recentCache', 'summaryCache',
+      'pendingWrites', 'taskSearchCache', CONFIGURATION_GENERATION, ...caches];
+    return this.backend.mutateMany(keys, values => {
+      const version = values.dataVersion ?? 0;
+      if (!Number.isSafeInteger(version) || version < 0 || version > 5) throw storageFormatError('Unsupported local data version.');
+      let retained = 0;
+      const clearProjection = state => {
+        if (state.pendingWrites?.length || state.recentCache?.some(entry => entry?._pending)) {
+          retained += 1;
+          // Preserve the local view, but force the next passive pull to verify
+          // the branch again once the pending queue has been synchronized.
+          const summary = state.summaryCache;
+          if (summary && Object.hasOwn(summary, 'silentPull')) {
+            const { silentPull, ...rest } = summary;
+            return { ...state, summaryCache: rest };
+          }
+          return state;
+        }
+        return { ...state, recentCache: [], summaryCache: null };
+      };
+      const set = {};
+      if (version === 5) {
+        const states = values[DESTINATION_STATES];
+        if (!states || states.version !== 1 || !states.entries || typeof states.entries !== 'object'
+            || Array.isArray(states.entries)) throw storageFormatError('Clockoli local data version 5 is incomplete or invalid.');
+        set[DESTINATION_STATES] = { ...states, entries: Object.fromEntries(
+          Object.entries(states.entries).map(([id, state]) => [id, clearProjection(state)]),
+        ) };
+      } else {
+        const projected = clearProjection(values);
+        if (Object.hasOwn(values, 'recentCache')) set.recentCache = projected.recentCache;
+        if (Object.hasOwn(values, 'summaryCache')) set.summaryCache = projected.summaryCache;
+      }
+      // Preserve a monotonic revision, even though the search payload is gone.
+      // Invalidate generations so a previously started read cannot publish an
+      // old page snapshot, task index or task metadata after this transaction.
+      set.taskSearchCache = { revision: (values.taskSearchCache?.revision ?? 0) + 1, dirty: retained > 0 };
+      set[CONFIGURATION_GENERATION] = generationValue(values[CONFIGURATION_GENERATION]) + 1;
+      return { delete: caches, set, result: { cleared: true, retainedPendingDestinations: retained } };
+    });
+  }
+
   // Repository identifiers are unverified intent, never evidence of GitHub access.
   async getJoinInvitation() {
     const saved = (await this.backend.getMany([JOIN_INVITATION]))[JOIN_INVITATION];
@@ -992,8 +1039,11 @@ export class ChromeStore {
     return values[EXCHANGE_RATE_CACHE] ?? null;
   }
 
-  async saveExchangeRateCache(value) {
-    await this.backend.mutateMany([EXCHANGE_RATE_CACHE], current => {
+  async saveExchangeRateCache(value, expectedGeneration = null) {
+    return this.backend.mutateMany([EXCHANGE_RATE_CACHE, CONFIGURATION_GENERATION], current => {
+      if (expectedGeneration !== null && generationValue(current[CONFIGURATION_GENERATION]) !== expectedGeneration) {
+        return { result: false };
+      }
       const existing = current[EXCHANGE_RATE_CACHE];
       const entries = existing?.version === value.version && existing.entries && typeof existing.entries === 'object'
         ? { ...existing.entries } : {};

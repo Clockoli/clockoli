@@ -350,9 +350,21 @@ function broadcastLocalPreferencesChanged(revision) {
 
 async function loadExchangeRates(message) {
   const payload = message.payload || {};
+  const epoch = await loadCoordinator.beginLoad();
+  const generation = await store.getConfigurationGeneration();
+  loadCoordinator.assertCurrent(epoch);
   emitReportProgress(payload.requestId, { label: 'Loading exchange rates from Frankfurter…', value: 85 });
-  const service = new ExchangeRateService({ cache: store });
+  const service = new ExchangeRateService({ cache: {
+    getExchangeRateCache: () => store.getExchangeRateCache(),
+    saveExchangeRateCache: async value => {
+      loadCoordinator.assertCurrent(epoch);
+      if (!await store.saveExchangeRateCache(value, generation)) {
+        throw new DOMException('Exchange rate load was superseded by a local data change.', 'AbortError');
+      }
+    },
+  } });
   const result = await service.ratesForDates(payload);
+  loadCoordinator.assertCurrent(epoch);
   emitReportProgress(payload.requestId, { label: 'Applying exchange rates…', value: 95 });
   return result;
 }
@@ -1417,6 +1429,23 @@ async function handle(message, sender) {
     return result;
   }
   if (message.type === 'RESERVE_INVOICE_NUMBER') return store.reserveInvoiceNumber();
+  if (message.type === 'CLEAR_LOCAL_CACHE') {
+    if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) throw new Error('Only Settings can clear the local cache.');
+    if (Object.keys(message).length !== 1) throw new Error('Invalid cache clear request.');
+    // The configuration load coordinator has already cancelled tracked reads,
+    // and the two executors serialize this with local accepts and Git writes.
+    // A passive pull runs outside the executor; let it finish before clearing.
+    globalThis.clockoliLocalDataTransitioning = true;
+    try {
+      if (pendingPull) await pendingPull.catch(() => {});
+      const result = await store.clearLocalCache();
+      destinationValidationCache.clear();
+      return result;
+    } finally {
+      globalThis.clockoliLocalDataTransitioning = false;
+      requestPendingSync();
+    }
+  }
   if (['EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA'].includes(message.type)) {
     if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) {
       throw new Error('Only Settings can manage full local backups.');
@@ -1792,7 +1821,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const reportReadOnly = ['LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
   const localStateRead = ['GET_STATE', 'GET_PAGE_STATE'].includes(message?.type) && !message?.refresh;
   const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS'].includes(message?.type);
-  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER'].includes(message?.type);
+  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CLEAR_LOCAL_CACHE', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER'].includes(message?.type);
   let operation;
   if (changesConfiguration) {
     try {

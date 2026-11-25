@@ -442,7 +442,11 @@
     <section class="advanced-section danger-zone" aria-labelledby="local-data-title">
       <h2 id="local-data-title">Recovery and access</h2>
       <div class="advanced-actions-grid">
-
+        <div>
+          <button id="clear-cache" type="button" class="secondary" aria-describedby="clear-cache-help">Clear cache</button>
+          <p id="clear-cache-help" class="help">Removes downloaded data so Clockoli fetches it again. Keeps GitHub sign-in, connected repositories, settings, the running timer and unsynced work.</p>
+          <p id="clear-cache-feedback" class="form-feedback" role="status" aria-live="polite"></p>
+        </div>
         <div>
           <button id="clear-local" type="button" class="danger">Reset to defaults</button>
           <p class="help">Clears the entire local database and browser preferences, including GitHub sign-in and unsynced work. Before resetting, stop any running timer and use Sync until no pending changes remain, or export a full backup. After resetting, reconnect GitHub to use your real account. Repository data is not deleted.</p>
