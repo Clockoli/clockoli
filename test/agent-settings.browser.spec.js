@@ -35,6 +35,8 @@ test('agent Settings remains available without GitHub and rejects a wrong folder
     window.showDirectoryPicker = async () => ({ kind: 'directory', name: 'private-project-name' });
   }, async page => {
     await expect(page.locator('#authorize')).toBeVisible();
+    await expect(page.locator('#agent-settings')).toContainText('Allow on every visit');
+    await expect(page.locator('#agent-settings')).toContainText('does not guarantee persistent permission');
     await expect(page.locator('#agent-codex-select')).toBeEnabled();
     await page.locator('#agent-codex-select').click();
     await expect(page.locator('#agent-codex-feedback')).toContainText('Select the sessions folder');
