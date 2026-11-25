@@ -153,6 +153,7 @@ export async function commitAgentBatch({ provider, rootId, generation, files, pr
     }
     projectionStore.put({ provider, generation, revision: expectedProjectionRevision + 1,
       turns: projection.turns, sessions: projection.sessions,
+      projectionVersion: projection.projectionVersion ?? 0,
       unknownEvents: projection.unknownEvents || 0 }, projectionKey);
     if (activate) stateStore.put({ ...state, activeGeneration: generation }, `state:${provider}`);
     await done;
