@@ -1891,6 +1891,28 @@ async function handle(message, sender) {
       requestPendingSync();
       return { ...result, destinationId: destinationIds[0] };
     }
+    case 'GET_QUEUED_START_RECOVERY':
+    case 'SAVE_QUEUED_START_AS_TIME': {
+      if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) {
+        throw new Error('Only Activity can recover queued Start time.');
+      }
+      const expected = message.type === 'SAVE_QUEUED_START_AS_TIME'
+        ? 'destinationId,edits,id,type' : 'destinationId,id,type';
+      if (Object.keys(message).sort().join(',') !== expected
+          || typeof message.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)
+          || (message.type === 'SAVE_QUEUED_START_AS_TIME' && !validConflictEntryEdits(message.edits))) {
+        throw new Error('Invalid queued Start recovery request.');
+      }
+      const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+      const tracker = await trackerForDestination(destinationId,
+        message.type === 'GET_QUEUED_START_RECOVERY' ? { localOnly: true, persistUser: false } : {});
+      if (message.type === 'GET_QUEUED_START_RECOVERY') {
+        return tracker.getQueuedStartRecoveryContext(message.id);
+      }
+      const result = await tracker.saveQueuedStartAsCompletedTime(message.id, message.edits);
+      requestPendingSync();
+      return result;
+    }
     case 'GET_PENDING_COMPLETION_CONFLICT':
     case 'EDIT_PENDING_COMPLETION_CONFLICT':
     case 'DELETE_PENDING_COMPLETION_CONFLICT':
