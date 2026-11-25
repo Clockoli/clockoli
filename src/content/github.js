@@ -3030,7 +3030,8 @@
       const changedAddTime = item.stage === 'startNext' && item.conflictReason === 'add_time_overlap_changed';
       const blockedRemoteStart = item.stage === 'startNext' && item.conflictReason === 'queued_start_remote_active';
       const completion = changedAddTime ? relatedQueuedCompletion(item) : null;
-      const queuedStartRecovery = changedAddTime && item.operation === 'startTimer' && !completion;
+      const queuedStartRecovery = (changedAddTime || blockedRemoteStart)
+        && item.operation === 'startTimer' && !relatedQueuedCompletion(item);
       const overlapKey = `${item.destinationId}:${item.id}`;
       if ((unsaved || changedAddTime && completion || queuedStartRecovery || item.operation === 'editActiveStart')
           && timesMode && syncIssuesOpen && !stoppedOverlapDetails.has(overlapKey)) loadTimeConflict(item);
