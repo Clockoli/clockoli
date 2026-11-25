@@ -1073,6 +1073,17 @@ export class TrackerService {
       && isBillable(saved) === isBillable(expected);
   }
 
+  verifiedSavedCompletion(expected, monthly, taskIndex) {
+    const records = monthly?.entries?.filter(entry => entry.id === expected.id) ?? [];
+    const indexedTasks = Object.entries(taskIndex?.index?.tasks ?? {}).flatMap(([task, details]) =>
+      (details.recordIds ?? []).filter(id => id === expected.id).map(() => task));
+    if (records.length !== 1 || indexedTasks.length !== 1
+        || indexedTasks[0] !== taskUrlOf(expected)
+        || taskUrlOf(records[0]) !== indexedTasks[0]
+        || !this.sameEditedCompletion(records[0], expected)) return null;
+    return records[0];
+  }
+
   async completionAlreadySaved(file, operation) {
     const exact = file.entries.find(entry => sameCompletion(entry, operation));
     if (exact) {
@@ -1989,8 +2000,11 @@ export class TrackerService {
     const indexed = Object.values(index.index.tasks).some(task => task.recordIds.includes(stop.entry.id));
     const saved = await this.readEditOverlapFiles([stop.entry]);
     const alreadySaved = indexed || saved.files.some(file => file.entries.some(entry => entry.id === stop.entry.id));
+    const matchingSaved = this.verifiedSavedCompletion(stop.entry,
+      saved.files.find(file => file.path === stop.monthlyPath), index);
     const remoteSameTimer = sameTimer(remote, stop.entry);
     const available = Boolean(parts.safe && !alreadySaved && !remoteSameTimer);
+    const canConfirm = Boolean(parts.safe && matchingSaved && !remoteSameTimer);
     const fields = item => item ? ({
       id: item.id, taskUrl: taskUrlOf(item), taskTitle: taskTitleOf(item),
       entryDate: item.entryDate, timezone: item.timezone,
@@ -2001,12 +2015,65 @@ export class TrackerService {
       kind: 'pending_completion', id: operationId,
       blocked: fields(stop.entry), remote: fields(remote),
       next: fields(stop.nextActive), switching: stop.operation === 'completeTimerAndStart',
-      canEdit: available, canDelete: available,
-      reason: parts.reason || (alreadySaved
-        ? 'This timer already has a saved completion on GitHub. No local time was discarded.'
-        : remoteSameTimer ? 'This timer is still running on GitHub. Review it before changing the queued Stop.'
-          : ''),
+      canEdit: available, canDelete: available, canConfirm,
+      reason: parts.reason || (remoteSameTimer
+        ? 'This timer is still running on GitHub. Review it before changing the queued Stop.'
+        : matchingSaved
+          ? 'The completion matches GitHub. Confirm saved time to clear this local conflict.'
+          : alreadySaved
+            ? 'GitHub has a record with this ID, but the completed time does not match the queued entry or task index. Review both copies before proceeding.'
+            : ''),
     };
+  }
+
+  async confirmSavedCompletionConflict(operationId) {
+    validateEntryId(operationId);
+    const context = await this.getPendingCompletionConflictContext(operationId);
+    if (!context?.canConfirm) {
+      throw new TrackerConflictError(context?.reason || 'The saved completion could not be verified. Local time was preserved.');
+    }
+    const state = await this.store.getState(), queue = state.pendingWrites ?? [];
+    const parts = pendingCompletionConflictParts(queue, operationId, state.activeCache);
+    if (!parts?.safe) throw new TrackerConflictError('The pending completion changed. Nothing was removed.');
+    const stop = parts.stop, activePath = activeRecordPath(this.user);
+    const snapshotOptions = { includeActive: activePath, includePaths: [TASK_INDEX_PATH] };
+    const [snapshot, month, index, remote] = await Promise.all([
+      this.github.listTextFilesSnapshot('times/', snapshotOptions),
+      this.readMonthly(stop.monthlyPath), this.readTaskIndex(), this.readRemoteActive(),
+    ]);
+    const saved = this.verifiedSavedCompletion(stop.entry, month, index);
+    const fileSha = path => snapshot.files.find(file => file.path === path)?.sha ?? null;
+    if (!saved || sameTimer(remote, stop.entry)
+        || fileSha(month.path) !== month.sha
+        || fileSha(index.path) !== index.sha
+        || fileSha(activePath) !== (remote?._sha ?? null)) {
+      throw new TrackerConflictError('The saved time, index or active timer changed. Nothing was removed. Recheck GitHub.');
+    }
+    // A read-only acknowledgment still needs fresh remote and local checks:
+    // never discard a queued edit because an older snapshot contained its ID.
+    const latestSnapshot = await this.github.listTextFilesSnapshot('times/', snapshotOptions);
+    if (snapshot.headSha !== latestSnapshot.headSha
+        || [month.path, index.path, activePath].some(path =>
+          fileSha(path) !== (latestSnapshot.files.find(file => file.path === path)?.sha ?? null))) {
+      throw new TrackerConflictError('GitHub changed during confirmation. The local conflict was preserved.');
+    }
+    await this.mutateState(latest => {
+      if (!sameValue(latest.pendingWrites, queue) || !sameValue(latest.activeCache, state.activeCache)) {
+        throw new TrackerConflictError('The local queue changed during confirmation. No time was discarded.');
+      }
+      const next = structuredClone(queue), nextStart = recoveredSwitchStart(stop);
+      next.splice(parts.index, 1, ...(nextStart ? [nextStart] : []));
+      const recent = [saved, ...(latest.recentCache ?? []).filter(entry => entry.id !== saved.id)]
+        .sort(newestFirst).slice(0, 50);
+      return {
+        pendingWrites: next, recentCache: recent,
+        ...(latest.summaryCache?.weekEntries ? { summaryCache: { ...latest.summaryCache,
+          weekEntries: latest.summaryCache.weekEntries.map(entry =>
+            entry.id === saved.id ? saved : entry) } } : {}),
+        ...(latest.dayRangeIntervals ? { dayRangeIntervals: updateDayRangeIntervals(latest.dayRangeIntervals, [saved]) } : {}),
+      };
+    });
+    return { confirmed: true, ...(stop.nextActive ? { nextTimerPending: true } : {}) };
   }
 
   async editPendingCompletionConflict(operationId, edits) {
