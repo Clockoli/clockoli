@@ -122,6 +122,7 @@ const EXPECTED_RUNTIME_INVENTORY = [
   'src/tasks/tasks.css',
   'src/tasks/tasks.html',
   'src/tasks/tasks.js',
+  'src/times/agent-workflow.js',
   'src/times/times-add-time.js',
   'src/times/times.css',
   'src/times/times.html',
