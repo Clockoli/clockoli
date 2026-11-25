@@ -76,7 +76,7 @@ export function normalizeTimeOffDays(days, { allowEmpty = false } = {}) {
         || !Number.isFinite(Date.parse(date + 'T00:00:00Z'))
         || new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) !== date
         || (startTime !== undefined && (typeof startTime !== 'string' || !TIME_RE.test(startTime)))
-        || !Number.isSafeInteger(seconds) || seconds < 0 || seconds > 86400) {
+        || !Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 86400) {
       throw new Error('Invalid time off day, start time, or duration.');
     }
     // Explicit starts from older queued operations remain fixed. New PTO
@@ -135,6 +135,21 @@ export function timeOffStartInstant(date, startTime, timezone) {
   return new Date(Math.min(...instants));
 }
 
+// Some zones (for example America/Havana) move their clocks forward at local
+// midnight. Find the first valid minute, rather than assuming 00:00 exists.
+// Limit the recovery search to six hours; a skipped civil date is invalid PTO.
+function timeOffDayStart(date, timezone) {
+  for (let minute = 0; minute < 360; minute++) {
+    const time = String(Math.floor(minute / 60)).padStart(2, '0') + ':'
+      + String(minute % 60).padStart(2, '0');
+    try { return timeOffStartInstant(date, time, timezone).getTime(); }
+    catch (error) {
+      if (error?.message !== 'This start time does not exist in the selected time zone.') throw error;
+    }
+  }
+  throw new Error('This local date does not exist in the selected time zone.');
+}
+
 // Prefer the normal 09:00 workday start; if occupied, use the first
 // contiguous slot after it. Never silently place a normal PTO day overnight.
 export function findTimeOffStart(date, durationSeconds, timezone, occupied = []) {
@@ -142,9 +157,12 @@ export function findTimeOffStart(date, durationSeconds, timezone, occupied = [])
   if (!Number.isFinite(day.getTime()) || day.toISOString().slice(0, 10) !== date) {
     throw new Error('Invalid time off date.');
   }
+  if (!Number.isSafeInteger(durationSeconds) || durationSeconds <= 0 || durationSeconds > 86400) {
+    throw new Error('Time off duration must be between 1 second and 24 hours.');
+  }
   day.setUTCDate(day.getUTCDate() + 1);
-  const end = timeOffStartInstant(day.toISOString().slice(0, 10), '00:00', timezone).getTime();
-  const midnight = timeOffStartInstant(date, '00:00', timezone).getTime();
+  const end = timeOffDayStart(day.toISOString().slice(0, 10), timezone);
+  const midnight = timeOffDayStart(date, timezone);
   const normalStart = timeOffStartInstant(date, '09:00', timezone).getTime();
   const durationMs = durationSeconds * 1000;
   const earliest = durationMs <= end - normalStart ? normalStart : midnight;
