@@ -5,6 +5,7 @@ import {
 import { listAddons } from '../addons/registry.js';
 import { decryptFullBackup, encryptFullBackup } from './full-local-backup.js';
 import { validateJoinRepository } from '../domain/join-invitation.js';
+import { userStorageBranch } from '../services/user-storage-branch.js';
 const DEFAULT_STATE = Object.freeze({ activeCache: null, recentCache: [], summaryCache: null, pendingWrites: [], user: null, dataVersion: 0 });
 const DESTINATION_STATE_DEFAULT = Object.freeze({ user: null, recentCache: [], summaryCache: null, pendingWrites: [], dayRangeIntervals: [] });
 const CONFIGURATION_GENERATION = 'configurationGeneration';
@@ -77,6 +78,56 @@ function restoreAuthDecision(current, saved) {
       && Number(current.refreshTokenExpiresAt) > now)
     || Number(current.accessTokenExpiresAt) > now
     ? 'kept-current' : 'backup-current-expired';
+}
+
+function restoreAccountLabel(auth) {
+  const login = typeof auth?.githubLogin === 'string'
+    && /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(auth.githubLogin) ? `@${auth.githubLogin}` : 'unknown username';
+  const id = Number.isSafeInteger(auth?.githubUserId) && auth.githubUserId > 0
+    ? ` (GitHub user ID ${auth.githubUserId})` : ' (GitHub user ID unavailable)';
+  return login + id;
+}
+
+function fullBackupAuth(values) {
+  return values[AUTH] ?? (values.token ? { mode: 'pat', accessToken: values.token } : null);
+}
+
+function delegatedRestoreRegistry(values, saved, live) {
+  if (values.dataVersion !== 5 || !validV5Structures(values)) {
+    throw new Error('Restoring another GitHub account requires a backup with current, verified personal storage branches.');
+  }
+  const registry = structuredClone(values[DESTINATION_REGISTRY]);
+  for (const [id, config] of Object.entries(registry.destinations)) {
+    const storageUserId = config.restoredStorageUserId ?? saved.githubUserId;
+    if (id !== destinationIdForConfiguration(config) || config.storageBranchVersion !== 1
+        || config.branchMode !== 'custom' || config.authMode !== 'github_app'
+        || config.branch !== userStorageBranch(storageUserId)
+        || typeof config.storageLogin !== 'string'
+        || !/^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(config.storageLogin)) {
+      throw new Error('The backup does not identify a verified personal storage branch. Your current data was not changed.');
+    }
+    if (storageUserId !== live.githubUserId) config.restoredStorageUserId = storageUserId;
+    else delete config.restoredStorageUserId;
+  }
+  // Use the same runtime validator as Settings and Activity before committing.
+  // A backup must not install a registry that those readers will reject.
+  const destinations = normalizedRegistryDestinations(registry.destinations);
+  normalizeDefaultDestinationId(registry.defaultDestinationId, destinations);
+  normalizeProjectDefinitions(values[PROJECTS] || [], destinations);
+  return registry;
+}
+
+function assertRestoreAccountCompatible(decision, current, saved) {
+  if (!current?.accessToken || ['kept-current', 'backup-current-expired'].includes(decision)) return;
+  const liveLabel = restoreAccountLabel(current);
+  const backupLabel = saved?.accessToken ? restoreAccountLabel(saved) : 'no saved GitHub sign-in';
+  let reason = 'Clockoli cannot verify that both sign-ins belong to the same account.';
+  if (decision === 'backup-different-account') reason = 'This backup belongs to a different GitHub account.';
+  if (decision === 'backup-different-sign-in-method') reason = 'The backup uses a different GitHub sign-in method.';
+  if (decision === 'backup-no-saved-sign-in') reason = 'This backup does not contain a saved GitHub sign-in.';
+  throw Object.assign(new Error(
+    `${reason} Current: ${liveLabel}. Backup: ${backupLabel}. Nothing was restored; your current data and sign-in are unchanged. Check the sign-in methods and saved storage identity, then try again.`
+  ), { code: 'backup_account_mismatch' });
 }
 
 function storageFormatError(message) {
@@ -212,12 +263,20 @@ export class IndexedDbBackend {
     const done = transactionDone(transaction);
     const objectStore = transaction.objectStore('values');
     // Read the current values and replace the snapshot in the same transaction.
-    if (prepare) {
-      const pairs = await Promise.all(readKeys.map(async key => [key, await requestResult(objectStore.get(key))]));
-      entries = prepare(entries, Object.fromEntries(pairs));
+    // Abort on a failed compatibility check or synchronous write error, so a
+    // rejected import can never commit a partial snapshot.
+    try {
+      if (prepare) {
+        const pairs = await Promise.all(readKeys.map(async key => [key, await requestResult(objectStore.get(key))]));
+        entries = prepare(entries, Object.fromEntries(pairs));
+      }
+      objectStore.clear();
+      for (const [key, value] of entries) objectStore.put(value, key);
+    } catch (error) {
+      try { transaction.abort(); } catch { /* The transaction may have already aborted. */ }
+      await done.catch(() => {});
+      throw error;
     }
-    objectStore.clear();
-    for (const [key, value] of entries) objectStore.put(value, key);
     await done;
   }
 
@@ -291,22 +350,56 @@ export class ChromeStore {
     return encryptFullBackup({ version: 1, entries, githubLogin, localStorage }, password);
   }
 
-  async importFullLocalBackup(text, password) {
+  async importFullLocalBackup(text, password, { verifyCrossAccount } = {}) {
     const backup = await decryptFullBackup(text, password);
     let githubLogin = backup.githubLogin;
-    let authRestore;
+    let authRestore, delegatedRegistry, verifiedAuth;
+    // A cross-account restore is an explicit request to keep the current
+    // credential and operate on the backed-up user's existing branches.
+    // Verify access before replacing anything; never try the backup's token.
+    if (verifyCrossAccount) {
+      const current = fullBackupAuth(await this.backend.getMany([AUTH, 'token']));
+      const values = Object.fromEntries(backup.entries);
+      const saved = fullBackupAuth(values);
+      if (restoreAuthDecision(current, saved) === 'backup-different-account'
+          && current.mode === 'github_app' && saved.mode === 'github_app') {
+        delegatedRegistry = delegatedRestoreRegistry(values, saved, current);
+        await verifyCrossAccount(current, Object.values(delegatedRegistry.destinations));
+        // The preflight may have legitimately rotated the current credentials.
+        // Pin the durable replacement pair, not the preflight's starting pair.
+        verifiedAuth = fullBackupAuth(await this.backend.getMany([AUTH, 'token']));
+        if (verifiedAuth?.mode !== current.mode || verifiedAuth.githubUserId !== current.githubUserId
+            || !verifiedAuth.accessToken) {
+          throw new Error('GitHub sign-in changed while verifying backup access. Nothing was restored; try again.');
+        }
+      }
+    }
     await this.backend.replaceAllEntries(backup.entries, {
-      readKeys: [AUTH, AUTH_GENERATION, PENDING_AUTH_GENERATION],
+      readKeys: [AUTH, AUTH_GENERATION, PENDING_AUTH_GENERATION, CONFIGURATION_GENERATION, 'token'],
       prepare: (entries, current) => {
         const restored = new Map(entries);
-        const savedAuth = restored.get(AUTH);
-        const liveAuth = current[AUTH];
+        const savedAuth = fullBackupAuth(Object.fromEntries(entries));
+        const liveAuth = fullBackupAuth(current);
         // GitHub invalidates both old tokens when a user token is refreshed.
         // Never roll back the current session for a verified matching account.
         // Do not mix authentication modes: the restored repository configuration
         // may depend on the access model used in the backup.
         authRestore = restoreAuthDecision(liveAuth, savedAuth);
-        if (authRestore !== 'kept-current') return entries;
+        if (delegatedRegistry) {
+          if (authRestore !== 'backup-different-account' || liveAuth.githubUserId !== verifiedAuth.githubUserId
+              || liveAuth.accessToken !== verifiedAuth.accessToken || liveAuth.refreshToken !== verifiedAuth.refreshToken) {
+            throw new Error('GitHub sign-in changed while verifying backup access. Nothing was restored; try again.');
+          }
+          authRestore = 'kept-current-restored-storage';
+          restored.set(DESTINATION_REGISTRY, delegatedRegistry);
+          restored.set(CONFIGURATION_GENERATION, Math.max(generationValue(current[CONFIGURATION_GENERATION]),
+            generationValue(restored.get(CONFIGURATION_GENERATION))) + 1);
+          restored.set(REPOSITORY_VERIFICATION, Object.fromEntries(Object.keys(delegatedRegistry.destinations)
+            .map(id => [id, { status: 'access_checked', lastVerifiedAt: new Date().toISOString() }])));
+        } else {
+          assertRestoreAccountCompatible(authRestore, liveAuth, savedAuth);
+          if (authRestore !== 'kept-current') return entries;
+        }
         const generation = Math.max(generationValue(current[AUTH_GENERATION]),
           generationValue(restored.get(AUTH_GENERATION))) + 1;
         restored.set(AUTH, { ...liveAuth, generation });
@@ -593,6 +686,10 @@ export class ChromeStore {
     // storage-login changes would redirect already accepted work.
     const coordinatesChanged = existing && ['branch', 'branchMode', 'storageLogin']
       .some(key => Object.hasOwn(existingConfig, key) && (existingConfig[key] ?? null) !== (config[key] ?? null));
+    if (existingConfig?.restoredStorageUserId && (coordinatesChanged
+        || config.restoredStorageUserId !== existingConfig.restoredStorageUserId)) {
+      throw new Error('Remove the restored time repository before switching its storage user or branch.');
+    }
     if (acceptedWork && coordinatesChanged) {
       throw new Error('Cannot replace destination coordinates while it has accepted work. Finish or resolve that work first.');
     }
@@ -1561,7 +1658,7 @@ export class ChromeStore {
         if (existing) {
           // Readiness proves only these exact coordinates and this user's branch.
           // Refresh trust metadata, never replace configuration or accepted work.
-          if (config.branch === `clockoli/users/${values[AUTH].githubUserId}`
+          if (config.branch === `clockoli/users/${existing.restoredStorageUserId ?? values[AUTH].githubUserId}`
               && ['owner', 'repo', 'repoId', 'installationId', 'branch', 'branchMode', 'storageLogin', 'authMode']
                 .every(key => existing[key] === config[key])
               && !['access_checked', 'write_verified'].includes(next[REPOSITORY_VERIFICATION]?.[id]?.status)) {
