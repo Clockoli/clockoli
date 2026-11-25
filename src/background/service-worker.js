@@ -536,7 +536,45 @@ async function loadTimes(message, sender) {
   finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
 }
 
+async function loadMergeTasks(message, sender) {
+  const payload = message.payload || {};
+  const loadEpoch = await loadCoordinator.beginLoad();
+  await store.ensureDataVersion(5);
+  const snapshot = await configuredSnapshot({ localOnly: true });
+  loadCoordinator.assertCurrent(loadEpoch);
+  const { auth } = snapshot, destinations = selectReadDestinations(snapshot, payload);
+  if (!auth || destinations.length !== 1) throw new Error('Choose one time repository before merging tasks.');
+  const destination = destinations[0];
+  if (payload.selectedUsers !== undefined && (!Array.isArray(payload.selectedUsers)
+      || payload.selectedUsers.some(user => typeof user !== 'string'))) throw new Error('Invalid people selection.');
+  const loadKey = `all:merge-tasks:${sender?.documentId ?? sender?.tab?.id ?? sender?.url ?? 'extension'}`;
+  const previous = reportLoads.get(loadKey);
+  previous?.controller.abort();
+  const controller = new AbortController();
+  const promise = (async () => {
+    await previous?.promise.catch(() => {});
+    controller.signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
+    const currentUser = await destinationUser(destination, auth);
+    const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
+      onProgress: progress => emitReportProgress(payload.requestId, { ...progress, destinationId: destination.id }) });
+    const result = await reports.loadMergeTaskCatalog(payload, {
+      defaultBranch: destination.defaultBranch || destination.branch || 'main',
+      currentUser, selectedUsers: payload.selectedUsers, signal: controller.signal,
+    });
+    controller.signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
+    const local = await store.destinationStore(destination.id).getState();
+    controller.signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
+    return { ...result, configured: true, currentUsers: { [destination.id]: currentUser },
+      pendingCount: local.pendingWrites?.length || 0,
+      tasks: result.tasks.map(task => ({ ...task, destinationIds: [destination.id] })) };
+  })();
+  reportLoads.set(loadKey, { controller, promise });
+  try { return await promise; }
+  finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
+}
+
 async function loadTasks(message, sender) {
+  if (message.payload?.mergePreview === true) return loadMergeTasks(message, sender);
   const startedAt = Date.now();
   const loadEpoch = await loadCoordinator.beginLoad();
   await store.ensureDataVersion(5);
@@ -1743,7 +1781,7 @@ async function handle(message, sender) {
               const branch = byLogin.get(user.toLowerCase());
               if (!branch) throw new Error(`Clockoli storage for ${user} is no longer available. Reload Settings.`);
               const detachedStore = { getState: async () => ({ pendingWrites: [], recentCache: [] }), patchState: async () => {} };
-              return { user: branch.login, tracker: new TrackerService({ github: branch.github, store: detachedStore, user: branch.login, actorId: `github:${branch.id}`, actorName: branch.login, recentDays: destination.recentDays || 7 }) };
+              return { user: branch.login, tracker: new TrackerService({ github: branch.github, store: detachedStore, reports: new ReportService({ github: branch.github, cache: store, cacheGeneration: snapshot.generation }), user: branch.login, actorId: `github:${branch.id}`, actorName: branch.login, recentDays: destination.recentDays || 7 }) };
             });
             for (const { tracker } of targets) {
               const result = await tracker.mergeTasks(request);

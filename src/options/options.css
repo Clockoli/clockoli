@@ -145,3 +145,5 @@ select{appearance:none;padding-right:32px;background-image:url("data:image/svg+x
 .full-backup-password{max-width:360px;margin:12px 0}
 .full-backup-password input[aria-invalid="true"]{border-color:var(--fgColor-danger);box-shadow:0 0 0 1px var(--fgColor-danger)}
 #full-backup-password-feedback.error{color:var(--fgColor-danger)}
+
+#merge-task-progress-value { width: 100%; }
