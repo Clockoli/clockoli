@@ -79,6 +79,27 @@ function restoreAuthDecision(current, saved) {
     ? 'kept-current' : 'backup-current-expired';
 }
 
+function restoreAccountLabel(auth) {
+  const login = typeof auth?.githubLogin === 'string'
+    && /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(auth.githubLogin) ? `@${auth.githubLogin}` : 'unknown username';
+  const id = Number.isSafeInteger(auth?.githubUserId) && auth.githubUserId > 0
+    ? ` (GitHub user ID ${auth.githubUserId})` : ' (GitHub user ID unavailable)';
+  return login + id;
+}
+
+function assertRestoreAccountCompatible(decision, current, saved) {
+  if (!current?.accessToken || ['kept-current', 'backup-current-expired'].includes(decision)) return;
+  const liveLabel = restoreAccountLabel(current);
+  const backupLabel = saved?.accessToken ? restoreAccountLabel(saved) : 'no saved GitHub sign-in';
+  let reason = 'Clockoli cannot verify that both sign-ins belong to the same account.';
+  if (decision === 'backup-different-account') reason = 'This backup belongs to a different GitHub account.';
+  if (decision === 'backup-different-sign-in-method') reason = 'The backup uses a different GitHub sign-in method.';
+  if (decision === 'backup-no-saved-sign-in') reason = 'This backup does not contain a saved GitHub sign-in.';
+  throw Object.assign(new Error(
+    `${reason} Current: ${liveLabel}. Backup: ${backupLabel}. Nothing was restored; your current data and sign-in are unchanged. To restore a different account, use a separate browser profile or connect the account from the backup first.`
+  ), { code: 'backup_account_mismatch' });
+}
+
 function storageFormatError(message) {
   return Object.assign(new Error(message), { code: 'incompatible_storage_format' });
 }
@@ -212,12 +233,20 @@ export class IndexedDbBackend {
     const done = transactionDone(transaction);
     const objectStore = transaction.objectStore('values');
     // Read the current values and replace the snapshot in the same transaction.
-    if (prepare) {
-      const pairs = await Promise.all(readKeys.map(async key => [key, await requestResult(objectStore.get(key))]));
-      entries = prepare(entries, Object.fromEntries(pairs));
+    // Abort on a failed compatibility check or synchronous write error, so a
+    // rejected import can never commit a partial snapshot.
+    try {
+      if (prepare) {
+        const pairs = await Promise.all(readKeys.map(async key => [key, await requestResult(objectStore.get(key))]));
+        entries = prepare(entries, Object.fromEntries(pairs));
+      }
+      objectStore.clear();
+      for (const [key, value] of entries) objectStore.put(value, key);
+    } catch (error) {
+      try { transaction.abort(); } catch { /* The transaction may have already aborted. */ }
+      await done.catch(() => {});
+      throw error;
     }
-    objectStore.clear();
-    for (const [key, value] of entries) objectStore.put(value, key);
     await done;
   }
 
@@ -296,16 +325,22 @@ export class ChromeStore {
     let githubLogin = backup.githubLogin;
     let authRestore;
     await this.backend.replaceAllEntries(backup.entries, {
-      readKeys: [AUTH, AUTH_GENERATION, PENDING_AUTH_GENERATION],
+      readKeys: [AUTH, AUTH_GENERATION, PENDING_AUTH_GENERATION, 'token'],
       prepare: (entries, current) => {
         const restored = new Map(entries);
-        const savedAuth = restored.get(AUTH);
-        const liveAuth = current[AUTH];
+        const savedAuth = restored.get(AUTH) ?? (restored.get('token')
+          ? { mode: 'pat', accessToken: restored.get('token') } : null);
+        const liveAuth = current[AUTH] ?? (current.token
+          ? { mode: 'pat', accessToken: current.token } : null);
         // GitHub invalidates both old tokens when a user token is refreshed.
         // Never roll back the current session for a verified matching account.
         // Do not mix authentication modes: the restored repository configuration
         // may depend on the access model used in the backup.
         authRestore = restoreAuthDecision(liveAuth, savedAuth);
+        // Replacing another account's credentials can strand the user's
+        // working session. Do not change any local data unless the identities
+        // are compatible or the browser has no current sign-in.
+        assertRestoreAccountCompatible(authRestore, liveAuth, savedAuth);
         if (authRestore !== 'kept-current') return entries;
         const generation = Math.max(generationValue(current[AUTH_GENERATION]),
           generationValue(restored.get(AUTH_GENERATION))) + 1;
