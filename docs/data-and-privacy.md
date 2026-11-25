@@ -56,6 +56,8 @@ The browser's `tabs` permission lets the toolbar focus an already-open Clockoli 
 
 If you opt in through Settings, Clockoli reads the selected Codex and Claude Code journal folders locally and keeps directory handles, incremental cursors, and metadata-only observations in a **separate** extension-origin IndexedDB (`clockoli-agent-activity-v1`). It does not modify the source journals or send their contents to GitHub. Raw prompts, replies, tool results, and file paths are not stored as observations. Agent observations do not affect the human timer, Git-backed time records, reports, or invoices.
 
+Previously collected sanitized metadata remains local if a source journal disappears (for example, automatic log cleanup). Clockoli marks the source as missing and retains its evidence, including any known gaps. Reappearing journals are checked again without double-counting. Replacing the contents of a journal at the same path still replaces that file’s evidence. Use **Forget** or a full local reset to remove the retained history.
+
 Settings backups and encrypted full local backups exclude this separate database and its directory handles. **Forget** removes one provider's handle and observations; **Reset full local data** clears both the ordinary Clockoli state and the agent-activity database. Browser-controlled directory permission may need to be granted again when the last extension page closes or after a restart; a saved handle alone does not guarantee unattended access.
 
 ## Time-repository and branch layout
