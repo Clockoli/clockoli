@@ -1893,7 +1893,8 @@ async function handle(message, sender) {
     }
     case 'GET_PENDING_COMPLETION_CONFLICT':
     case 'EDIT_PENDING_COMPLETION_CONFLICT':
-    case 'DELETE_PENDING_COMPLETION_CONFLICT': {
+    case 'DELETE_PENDING_COMPLETION_CONFLICT':
+    case 'CONFIRM_SAVED_COMPLETION_CONFLICT': {
       if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) {
         throw new Error('Only Activity can resolve a stopped-time conflict.');
       }
@@ -1913,6 +1914,11 @@ async function handle(message, sender) {
       }
       if (message.type === 'EDIT_PENDING_COMPLETION_CONFLICT') {
         const result = await tracker.editPendingCompletionConflict(message.id, message.edits);
+        requestPendingSync();
+        return result;
+      }
+      if (message.type === 'CONFIRM_SAVED_COMPLETION_CONFLICT') {
+        const result = await tracker.confirmSavedCompletionConflict(message.id);
         requestPendingSync();
         return result;
       }
