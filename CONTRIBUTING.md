@@ -18,6 +18,7 @@ cd clockoli
 npm ci
 npm test
 npm run test:browser
+npm run test:browser:agents
 npm run check
 ```
 
@@ -151,7 +152,7 @@ npm run check
 git diff --check
 ```
 
-`npm test` runs the public Clockoli Node contracts, timeline theme, build, and package-consumer smoke checks. `npm run test:browser` opens Settings and Activity in a fresh Chromium profile. `npm run check` validates the extension and release inventory. Public CI runs all three, including on fork pull requests, without private credentials. On trusted same-repository PRs to `main` and trusted pushes to `main`, a separate job first checks for a matching branch in the internal regression suite and falls back to its `main` branch if none exists. It checks out the selected private suite with a read-only token, runs Node regressions once, and distributes Playwright tests across 20 isolated CI runners against the exact public commit. All 20 shards must pass before a release. Configure the public repository's Actions secrets `PRIVATE_TESTS_REPOSITORY` (private `owner/name` coordinates) and `PRIVATE_TESTS_READ_TOKEN` (fine-grained Contents: Read-only access limited to that repository). Never put the repository coordinates or token in public source, output, or logs. Private test output stays off the public Actions logs, so maintainers reproduce failures locally. Fork pull requests never receive the token or private tests. The public test job passing does not mean that the separate private job has passed. `npm run test:coverage` reports only public Node coverage under `src/` and excludes the generated timeline bundle.
+`npm test` runs the public Clockoli Node contracts, timeline theme, build, and package-consumer smoke checks. `npm run test:browser` opens Settings and Activity in a fresh Chromium profile. `npm run check` validates the extension and release inventory. `npm run test:browser:agents` exercises the production Agent Collector with isolated synthetic journals, IndexedDB, permission recovery, reindex and worker restart. Public CI runs all four commands, including on fork pull requests, without private credentials. Real local journals and persistent native folder grants still require manual validation. On trusted same-repository PRs to `main` and trusted pushes to `main`, a separate job first checks for a matching branch in the internal regression suite and falls back to its `main` branch if none exists. It checks out the selected private suite with a read-only token, runs Node regressions once, and distributes Playwright tests across 20 isolated CI runners against the exact public commit. All 20 shards must pass before a release. Configure the public repository's Actions secrets `PRIVATE_TESTS_REPOSITORY` (private `owner/name` coordinates) and `PRIVATE_TESTS_READ_TOKEN` (fine-grained Contents: Read-only access limited to that repository). Never put the repository coordinates or token in public source, output, or logs. Private test output stays off the public Actions logs, so maintainers reproduce failures locally. Fork pull requests never receive the token or private tests. The public test job passing does not mean that the separate private job has passed. `npm run test:coverage` reports only public Node coverage under `src/` and excludes the generated timeline bundle.
 
 ## Browser verification
 
@@ -300,4 +301,4 @@ A pull request should contain:
 - screenshots only when they clarify a visual change;
 - no unrelated formatting or refactoring.
 
-Public CI runs `npm test`, `npm run test:browser`, and `npm run check` on Node.js 22. On a trusted push to `main`, a separate job checks out and runs the private suite for that commit with a single read-only token. Fork pull requests never receive it; an external contribution is not considered privately tested until it reaches trusted `main` or a maintainer checks it locally after review. A public test job passing alone does not imply the private job passed.
+Public CI runs `npm test`, `npm run test:browser`, `npm run test:browser:agents`, and `npm run check` on Node.js 22. On a trusted push to `main`, a separate job checks out and runs the private suite for that commit with a single read-only token. Fork pull requests never receive it; an external contribution is not considered privately tested until it reaches trusted `main` or a maintainer checks it locally after review. A public test job passing alone does not imply the private job passed.
