@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { markStaleOpenAgentTurns, summarizeAgentTurns } from '../src/agents/metrics.js';
+import { markStaleOpenAgentTurns, summarizeAgentTurns, summarizeAgentWorkflow } from '../src/agents/metrics.js';
 
 const at = (second) => `2026-11-24T12:00:${String(second).padStart(2, '0')}Z`;
 const turn = (key, provider, start, end, extra = {}) => ({
@@ -140,4 +140,88 @@ test('old observed starts become stale unknown without an invented end or durati
   assert.equal(result[0].elapsedMs, null);
   assert.equal(result[1].status, 'open');
   assert.equal(older.status, 'open');
+});
+
+const workflowTurn = (key, minutes, extra = {}) => {
+  const start = Date.parse('2026-11-24T12:00:00Z');
+  return { key, provider: 'codex', status: 'completed',
+    startedAt: new Date(start).toISOString(), endedAt: new Date(start + minutes * 60000).toISOString(),
+    elapsedMs: minutes * 60000, providerDurationMs: null,
+    durationSource: 'event_interval', timingConfidence: 'high', ...extra };
+};
+
+test('workflow distribution distinguishes many short turns from a few long turns of equal total duration', () => {
+  const long = summarizeAgentWorkflow(Array.from({ length: 4 }, (_, i) => workflowTurn('long-' + i, 45)),
+    { period: 'all', provider: 'all', thresholdMinutes: 15 });
+  const short = summarizeAgentWorkflow(Array.from({ length: 60 }, (_, i) => workflowTurn('short-' + i, 3)),
+    { period: 'all', provider: 'all', thresholdMinutes: 15 });
+  assert.equal(long.eligibleMs, 10800000);
+  assert.equal(short.eligibleMs, long.eligibleMs);
+  assert.equal(long.shortSharePct, 0);
+  assert.equal(short.shortSharePct, 100);
+  assert.equal(long.longCount, 4);
+  assert.equal(short.shortCount, 60);
+  assert.equal(long.medianMs, 2700000);
+  assert.equal(short.medianMs, 180000);
+});
+
+test('workflow buckets have exact boundaries; extended, estimated, open and duplicate turns do not inflate the denominator', () => {
+  const turns = [0, 1, 5, 15, 30, 60, 61, 14400].map((minutes, i) => workflowTurn('t' + i, minutes));
+  turns.push(turns[1], workflowTurn('open', 3, { status: 'open', endedAt: null }),
+    workflowTurn('estimated', 3, { durationSource: 'estimated_window', timingConfidence: 'low' }));
+  const result = summarizeAgentWorkflow(turns, { period: 'all', provider: 'all', thresholdMinutes: 15 });
+  assert.equal(result.totalTurns, 10);
+  assert.equal(result.eligibleTurns, 6);
+  assert.equal(result.extendedTurns, 2);
+  assert.equal(result.unknownTurns, 2);
+  assert.deepEqual(result.buckets.map(b => b.count), [1, 1, 1, 1, 2]);
+  assert.equal(result.shortMs, 360000);
+  assert.equal(result.longMs, 6300000);
+  assert.equal(result.longCount, 3);
+  assert.equal(result.extendedMs, 14461 * 60000);
+  assert.equal(result.medianMs, 10 * 60000);
+  assert.equal(JSON.stringify(result).includes('t0'), false);
+});
+
+test('workflow counts provider-reported durations without inventing an interval, separates extended elapsed, and preserves unknowns', () => {
+  const reported = workflowTurn('reported', 10, { provider: 'claude', startedAt: null,
+    elapsedMs: null, providerDurationMs: 120000, durationSource: 'provider_duration', anchored: false });
+  const mismatch = workflowTurn('mismatch', 120, { provider: 'claude',
+    providerDurationMs: 180000, durationSource: 'provider_duration', anchored: false });
+  const undated = { ...reported, key: 'undated', endedAt: null };
+  const result = summarizeAgentWorkflow([reported, mismatch, undated, workflowTurn('codex', 5)],
+    { period: 'all', provider: 'claude', thresholdMinutes: 5 });
+  assert.equal(result.totalTurns, 3);
+  assert.equal(result.eligibleTurns, 2);
+  assert.equal(result.providerDurationTurns, 2);
+  assert.equal(result.extendedTurns, 1);
+  assert.equal(result.extendedMs, 180000);
+  assert.equal(result.undatedTurns, 1);
+  assert.equal(result.shortMs, 240000);
+});
+
+test('workflow periods use local calendar days and count whole turns by end or last known start', () => {
+  const now = new Date(2026, 10, 25, 12).getTime();
+  const localToday = new Date(2026, 10, 25, 0).getTime();
+  const crossing = workflowTurn('crossing', 2, {
+    startedAt: new Date(localToday - 60000).toISOString(),
+    endedAt: new Date(localToday + 60000).toISOString(),
+  });
+  const previous = workflowTurn('previous', 1, {
+    startedAt: new Date(localToday - 120000).toISOString(),
+    endedAt: new Date(localToday - 60000).toISOString(),
+  });
+  const undated = workflowTurn('undated', 1, { startedAt: null, endedAt: null });
+  const result = summarizeAgentWorkflow([crossing, previous, undated],
+    { period: 'today', provider: 'all', thresholdMinutes: 5 }, now);
+  assert.equal(result.totalTurns, 1);
+  assert.equal(result.eligibleMs, 120000);
+  assert.equal(result.undatedTurns, 1);
+  const week = summarizeAgentWorkflow([crossing, previous, undated],
+    { period: '7d', provider: 'all', thresholdMinutes: 5 }, now);
+  assert.equal(week.totalTurns, 2);
+  assert.equal(week.eligibleMs, 180000);
+  const empty = summarizeAgentWorkflow([], { period: 'today', provider: 'all', thresholdMinutes: 5 }, now);
+  assert.equal(empty.shortSharePct, null);
+  assert.equal(empty.medianMs, null);
 });
