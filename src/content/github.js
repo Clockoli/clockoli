@@ -2290,6 +2290,21 @@
     } finally { trigger.disabled = false; }
   }
 
+  async function confirmSavedCompletionConflict(item, trigger) {
+    trigger.disabled = true;
+    try {
+      const result = await send({ type: 'CONFIRM_SAVED_COMPLETION_CONFLICT',
+        destinationId: item.destinationId, id: item.id });
+      if (!result?.confirmed) throw new Error('GitHub did not confirm this completed time. Your local record remains unchanged.');
+      stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
+      syncIssueError = ''; recentLoaded = false;
+      await refreshRecent(true);
+    } catch (error) {
+      syncIssueError = error?.message || 'Saved time could not be confirmed. Your local record remains unchanged.';
+      syncIssuesSignature = null; renderSyncIssues();
+    } finally { trigger.disabled = false; }
+  }
+
   function renderTimeConflictChoices(host, item, options, { linkedCount = 2 } = {}) {
     if (!options.length) return;
     const waitingCount = Math.max(0, (pageState.pendingWrites ?? [])
@@ -2375,7 +2390,6 @@
   function renderPendingCompletionConflict(box, item, data) {
     if (data?.kind !== 'pending_completion' || !data.blocked) return false;
     const pair = el('div', undefined, 'sync-overlap-pair');
-    pair.append(el('p', 'The timer was stopped here, but its completion could not be saved because the active timer on GitHub changed. Your stopped time remains in this browser.'));
     if (data.remote) {
       const saved = el('div', undefined, 'entry-record sync-overlap-card');
       saved.append(el('span', 'Current timer on GitHub · still running', 'sync-overlap-label'),
@@ -2412,20 +2426,27 @@
       pair.append(next);
     }
     const actions = el('div', undefined, 'entry-actions sync-overlap-actions');
-    const edit = entryActionButton('Edit pending time', 'edit', (_event, trigger) =>
-      editFullTimeConflict(item, data.blocked, trigger, 'completion'));
-    edit.classList.add('sync-overlap-edit');
-    edit.disabled = !data.canEdit;
-    const remove = entryActionButton('Delete pending time', 'delete', (_event, trigger) =>
-      deleteTimeConflict(item, trigger, 'completion'));
-    remove.classList.add('sync-resolution-delete');
-    remove.disabled = !data.canDelete;
-    if (!data.canEdit || !data.canDelete) {
-      const reason = data.reason || 'The queued completion needs review before it can be changed.';
-      if (!data.canEdit) edit.title = reason;
-      if (!data.canDelete) remove.title = reason;
+    if (data.canConfirm) {
+      const confirm = button('Confirm saved time', 'primary', () =>
+        confirmSavedCompletionConflict(item, confirm));
+      confirm.classList.add('sync-resolution-apply');
+      actions.append(confirm);
+    } else {
+      const edit = entryActionButton('Edit pending time', 'edit', (_event, trigger) =>
+        editFullTimeConflict(item, data.blocked, trigger, 'completion'));
+      edit.classList.add('sync-overlap-edit');
+      edit.disabled = !data.canEdit;
+      const remove = entryActionButton('Delete pending time', 'delete', (_event, trigger) =>
+        deleteTimeConflict(item, trigger, 'completion'));
+      remove.classList.add('sync-resolution-delete');
+      remove.disabled = !data.canDelete;
+      if (!data.canEdit || !data.canDelete) {
+        const reason = data.reason || 'The queued completion needs review before it can be changed.';
+        if (!data.canEdit) edit.title = reason;
+        if (!data.canDelete) remove.title = reason;
+      }
+      actions.append(edit, remove);
     }
-    actions.append(edit, remove);
     pending.append(actions);
     pair.append(pending);
     if (data.reason) pair.append(el('p', data.reason, 'sync-overlap-unavailable'));
