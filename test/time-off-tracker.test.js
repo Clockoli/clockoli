@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TrackerService } from '../src/services/tracker.js';
 import { createUlid } from '../src/domain/ulid.js';
+import { normalizeTimeOffChange } from '../src/domain/time-off.js';
 import { buildActiveTimer, buildEntry } from '../src/domain/records.js';
 import { parseMonthlyRecords, serializeMonthlyRecords } from '../src/domain/work-records.js';
 import { applyTaskIndexChanges, emptyTaskIndex, serializeTaskIndex, TASK_INDEX_PATH } from '../src/domain/task-index.js';
@@ -306,4 +307,93 @@ test('single-day PTO deletion rejects stale remote entry and leaves the group in
   assert.equal(store.state.pendingWrites.length, 1);
   assert.equal(store.state.pendingWrites[0].status, 'conflict');
   assert.equal(savedRecords(github).length, 2);
+});
+
+
+test('selected PTO days across independent tasks and groups delete in one guarded commit', async () => {
+  const { github, tracker, store } = setup();
+  const first = await tracker.queueTimeOffChange(payload(rows([
+    '2026-12-07', '2026-12-08',
+  ])));
+  await tracker.syncPending();
+  const second = await tracker.queueTimeOffChange(payload(rows([
+    '2026-12-09', '2026-12-10',
+  ]), { taskUrl: 'https://github.com/acme/work/issues/8' }));
+  await tracker.syncPending();
+  assert.equal(github.writes.length, 2);
+  const records = savedRecords(github);
+  const removed = records.filter(entry => ['2026-12-07', '2026-12-09'].includes(entry.entryDate));
+  const retained = records.filter(entry => !removed.some(item => item.id === entry.id));
+  const previousBatch = removed.map(entry => ({
+    ...previous([entry])[0], taskUrl: entry.taskUrl,
+    groupId: entry.metadata.clockoli.timeOffGroupId,
+  }));
+  const queued = await tracker.queueTimeOffChange(payload([], {
+    groupId: null, previous: previousBatch, bulkDayDeletion: true,
+  }));
+  assert.equal(queued.pending, true);
+  assert.equal(queued.entries.length, 0);
+  assert.equal(store.state.pendingWrites.length, 1);
+  assert.equal(store.state.pendingWrites[0].bulkDayDeletion, true);
+  assert.equal(github.writes.length, 2);
+  await tracker.syncPending();
+  assert.equal(github.writes.length, 3, 'one commit removes selected dates from both groups');
+  assert.equal(store.state.pendingWrites.length, 0);
+  const durable = savedRecords(github);
+  assert.deepEqual(durable.map(entry => entry.entryDate), ['2026-12-08', '2026-12-10']);
+  const stable = entry => ({
+    id: entry.id, startedAt: entry.startedAt, endedAt: entry.endedAt,
+    taskUrl: entry.taskUrl, updatedAt: entry.updatedAt,
+    groupId: entry.metadata?.clockoli?.timeOffGroupId,
+  });
+  assert.deepEqual(durable.map(stable), retained.map(stable));
+  assert.ok(durable.some(entry => entry.metadata.clockoli.timeOffGroupId === first.groupId));
+  assert.ok(durable.some(entry => entry.metadata.clockoli.timeOffGroupId === second.groupId));
+});
+
+test('batch time off deletion cannot remove a remotely changed entry or unrelated grouped day', async () => {
+  const { github, tracker, store } = setup();
+  const batch = await tracker.queueTimeOffChange(payload(rows(['2026-12-07', '2026-12-08', '2026-12-09'])));
+  await tracker.syncPending();
+  const originals = savedRecords(github);
+  const selected = originals.slice(0, 2);
+  const marked = selected.map(entry => ({
+    ...previous([entry])[0], taskUrl: entry.taskUrl,
+    groupId: batch.groupId,
+  }));
+  await tracker.queueTimeOffChange(payload([], {
+    previous: marked, bulkDayDeletion: true,
+  }));
+  const path = 'times/2026-12/alice.jsonl';
+  const file = github.files.get(path);
+  github.files.set(path, {
+    sha: 'other-device-updated',
+    text: serializeMonthlyRecords(originals.map(entry => entry.id === selected[0].id
+      ? { ...entry, updatedAt: '2026-12-12T09:00:00.000Z' } : entry)),
+  });
+  await tracker.syncPending();
+  assert.equal(store.state.pendingWrites.length, 1);
+  assert.equal(store.state.pendingWrites[0].status, 'conflict');
+  assert.equal(github.writes.length, 1, 'no partial removal on stale remote data');
+  assert.equal(savedRecords(github).length, 3);
+  assert.ok(savedRecords(github).some(entry => entry.entryDate === '2026-12-09'));
+});
+
+test('bulk PTO deletion validates its record limit and exact task and group markers', () => {
+  const make = index => ({
+    id: createUlid(Date.parse('2026-12-07T10:00:00Z') + index),
+    date: '2026-12-07', startedAt: '2026-12-07T09:00:00Z',
+    endedAt: '2026-12-07T17:00:00Z', updatedAt: '2026-12-07T18:00:00Z',
+    taskUrl, groupId: null,
+  });
+  const many = Array.from({ length: 201 }, (_, i) => make(i));
+  assert.throws(() => normalizeTimeOffChange(payload([], {
+    previous: many, bulkDayDeletion: true,
+  })), /Invalid previous time off entries/);
+  assert.throws(() => normalizeTimeOffChange(payload([], {
+    previous: [{ ...make(0), taskUrl: '' }], bulkDayDeletion: true,
+  })), /Invalid task URL|Invalid/);
+  assert.throws(() => normalizeTimeOffChange(payload([], {
+    previous: [{ ...make(0), groupId: 'bogus' }], bulkDayDeletion: true,
+  })), /Bulk time off deletion/);
 });
