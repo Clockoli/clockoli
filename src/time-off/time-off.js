@@ -636,40 +636,108 @@ async function saveForm(event) {
 function openDeleteEntry(entry) {
   if (!isOwnEntry(entry) || entry._pending) return;
   state.cancelEntry = entry;
+  state.cancelEntries = null;
   $('time-off-cancel-title').textContent = 'Delete time off for this day?';
   $('time-off-cancel-message').textContent = 'Delete ' + duration(entry.durationSeconds)
     + ' on ' + dateLabel(entry.entryDate)
     + '? Other days in the same time off plan will stay unchanged.';
+  $('confirm-cancel-time-off').textContent = 'Delete this day';
   $('time-off-cancel-error').hidden = true;
   $('time-off-cancel-dialog').showModal();
+  updateAddButton();
+}
+function openDeleteSelected() {
+  const own = selectedMyEntries();
+  if (!own.length || own.length > 200 || own.some(entry => entry._pending)
+      || state.deletionBusy) return;
+  const days = new Set(own.map(entry => entry.entryDate));
+  const repositories = new Set(own.map(entry => entry.destinationId)).size;
+  state.cancelEntry = null;
+  state.cancelEntries = own;
+  $('time-off-cancel-title').textContent = 'Delete selected time off?';
+  $('time-off-cancel-message').textContent = 'Delete your time off on '
+    + days.size + (days.size === 1 ? ' selected day' : ' selected days')
+    + ' (' + own.length + (own.length === 1 ? ' entry' : ' entries') + ')? '
+    + 'Other days in the same plans and all teammates’ time off will be preserved.'
+    + (repositories > 1 ? ' Each of the ' + repositories
+      + ' repositories will be updated in a separate atomic commit.' : '');
+  $('confirm-cancel-time-off').textContent = 'Delete time off (' + days.size + ' days)';
+  $('time-off-cancel-error').hidden = true;
+  $('time-off-cancel-dialog').showModal();
+  updateAddButton();
+}
+function originalForDeletion(entry, includeIdentity = false) {
+  return {
+    id: entry.id, date: entry.entryDate, startedAt: entry.startedAt,
+    endedAt: entry.endedAt, updatedAt: entry.updatedAt,
+    ...(includeIdentity ? { taskUrl: entry.taskUrl, groupId: timeOffGroupId(entry) } : {}),
+  };
 }
 async function confirmCancel() {
-  const entry = state.cancelEntry, button = $('confirm-cancel-time-off');
-  if (!entry || !isOwnEntry(entry) || entry._pending) return;
+  if (state.deletionBusy) return;
+  const batch = state.cancelEntries, single = state.cancelEntry;
+  const entries = batch ?? (single ? [single] : []);
+  if (!entries.length || entries.some(entry => !isOwnEntry(entry) || entry._pending)) return;
+  const button = $('confirm-cancel-time-off');
+  state.deletionBusy = true;
   button.disabled = true;
   $('time-off-cancel-error').hidden = true;
+  updateAddButton();
+  let completed = 0;
   try {
-    await send({
-      type: 'SAVE_TIME_OFF', destinationId: entry.destinationId,
-      taskUrl: entry.taskUrl, taskTitle: entry.taskTitle || '',
-      description: entry.description || '', groupId: timeOffGroupId(entry),
-      timezone: entry.timezone ?? null, singleDayDeletion: true,
-      previous: [{ id: entry.id, date: entry.entryDate, startedAt: entry.startedAt,
-        endedAt: entry.endedAt, updatedAt: entry.updatedAt }],
-      days: [],
-    });
+    const byRepository = new Map();
+    for (const entry of entries) {
+      if (!byRepository.has(entry.destinationId)) byRepository.set(entry.destinationId, []);
+      byRepository.get(entry.destinationId).push(entry);
+    }
+    for (const [destinationId, records] of byRepository) {
+      const first = records[0], many = Boolean(batch);
+      await send({
+        type: 'SAVE_TIME_OFF', destinationId, taskUrl: first.taskUrl,
+        taskTitle: first.taskTitle || '', description: first.description || '',
+        groupId: many ? null : timeOffGroupId(first), timezone: first.timezone ?? null,
+        ...(many ? { bulkDayDeletion: true } : { singleDayDeletion: true }),
+        previous: records.map(entry => originalForDeletion(entry, many)), days: [],
+      });
+      completed += records.length;
+      const ids = new Set(records.map(entry => entry.id));
+      state.entries = state.entries.filter(entry =>
+        entry.destinationId !== destinationId || !ids.has(entry.id));
+      state.myLoadedDestinations.add(destinationId);
+      if (batch) state.cancelEntries = state.cancelEntries.filter(entry =>
+        entry.destinationId !== destinationId || !ids.has(entry.id));
+    }
     $('time-off-cancel-dialog').close();
-    state.entries = state.entries.filter(item =>
-      !(item.id === entry.id && item.destinationId === entry.destinationId));
-    state.myLoadedDestinations.add(entry.destinationId);
     state.cancelEntry = null;
+    state.cancelEntries = null;
+    // Remove successfully deleted dates from the selection, but keep other
+    // dates in case they were being selected for adding time.
+    if (batch) {
+      const remaining = new Set(state.entries.filter(entry => isOwnEntry(entry))
+        .map(entry => entry.entryDate));
+      for (const entry of entries) if (!remaining.has(entry.entryDate)) {
+        selectedDates.delete(entry.entryDate);
+      }
+      selectionAnchor = null;
+    }
     renderMy(); renderYear(); renderInspector();
-    notice('One day deleted locally. Your team will see the change after synchronization.');
+    notice((new Set(entries.map(entry => entry.entryDate)).size)
+      + ' time off day(s) deleted locally. Changes will sync to GitHub.');
     void loadMine({ quiet: true });
   } catch (error) {
-    $('time-off-cancel-error').textContent = error.message || 'Could not delete this day.';
+    if (completed) {
+      renderMy(); renderYear(); renderInspector();
+      void loadMine({ quiet: true });
+    }
+    $('time-off-cancel-error').textContent = (completed ? completed
+      + ' entry/entries queued for deletion. Remaining repository failed: ' : '')
+      + (error.message || 'Could not delete selected time off.');
     $('time-off-cancel-error').hidden = false;
-  } finally { button.disabled = false; }
+  } finally {
+    state.deletionBusy = false;
+    button.disabled = false;
+    updateAddButton();
+  }
 }
 
 $('time-off-user-search').addEventListener('focus', renderUserSuggestions);
@@ -684,6 +752,7 @@ document.addEventListener('pointerdown', event => {
 });
 $('year-grid').addEventListener('mouseleave', () => { pinDayUntilLeave = false; });
 $('new-time-off').addEventListener('click', openForm);
+$('delete-selected-time-off').addEventListener('click', openDeleteSelected);
 $('refresh-time-off').addEventListener('click', () => {
   void loadMine(); void loadTeam({ refresh: true });
 });
@@ -698,7 +767,12 @@ $('cancel-time-off-form').addEventListener('click', closeForm);
 $('time-off-dialog').addEventListener('close', updateAddButton);
 $('edit-repository').addEventListener('change', fillTaskOptions);
 form.addEventListener('submit', saveForm);
-$('keep-time-off').addEventListener('click', () => $('time-off-cancel-dialog').close());
+$('keep-time-off').addEventListener('click', () => {
+  state.cancelEntry = null;
+  state.cancelEntries = null;
+  $('time-off-cancel-dialog').close();
+});
+$('time-off-cancel-dialog').addEventListener('close', updateAddButton);
 $('confirm-cancel-time-off').addEventListener('click', confirmCancel);
 state.selectedDate = today();
 renderYear(); renderInspector();
