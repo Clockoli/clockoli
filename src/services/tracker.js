@@ -308,6 +308,20 @@ function retargetLaterEntryEdits(queue, currentIndex, savedEntries) {
       ...operation.request,
       entries: (operation.request?.entries ?? []).map(retarget),
     };
+    else if (type === 'timeOffChange' && operation.previous?.length) {
+      // New PTO can be deleted locally before its creation reaches GitHub.
+      // A remote overlap may replan its start time while syncing. Retarget
+      // the later deletion to the exact persisted record, so its optimistic
+      // cancellation survives the first commit and does not falsely conflict.
+      operation.previous = operation.previous.map(original => {
+        const saved = savedById.get(original.id);
+        return saved ? {
+          ...original,
+          date: saved.entryDate, startedAt: saved.startedAt,
+          endedAt: saved.endedAt, updatedAt: saved.updatedAt,
+        } : original;
+      });
+    }
   }
 }
 
@@ -1292,6 +1306,10 @@ export class TrackerService {
         if (operation.operation === 'timeOffChange') {
           const saved = await this.commitTimeOffChange(operation);
           const index = queue.findIndex(item => item.id === operation.id);
+          // The current sync iterates a frozen in-memory queue snapshot. Keep
+          // its dependent operations aligned with the persisted IndexedDB
+          // queue before proceeding to the next operation in the same run.
+          if (index >= 0 && saved.length) retargetLaterEntryEdits(queue, index, saved);
           if (index >= 0) queue.splice(index, 1);
           await this.persistQueueOperation(operation, {
             remove: true, savedEntries: saved,
