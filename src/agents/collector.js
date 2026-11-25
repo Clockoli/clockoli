@@ -1,6 +1,6 @@
 import { scanAgentJsonl } from './jsonl-reader.js';
 import { parseAgentRow, projectAgentTurns } from './parsers.js';
-import { markStaleOpenAgentTurns, summarizeAgentTurns } from './metrics.js';
+import { markStaleOpenAgentTurns, summarizeAgentTurns, summarizeAgentWorkflow } from './metrics.js';
 import {
   acquireAgentLease, beginAgentReindex, commitAgentBatch, forgetAgentRoot,
   getAgentHealth, getAgentProjection, getAgentRootState, getAgentSecret, getAgentState,
@@ -283,7 +283,7 @@ export async function scanAgentActivity(trigger = 'manual', onlyProvider = null)
   try { return await running; }
   finally { running = null; runningProviders = null; }
 }
-export async function getAgentCollectorStatus() {
+export async function getAgentCollectorStatus(workflow = null) {
   const providers = {}, allTurns = [], scan = {};
   for (const provider of PROVIDERS) {
     const root = await getAgentRootState(provider);
@@ -324,7 +324,15 @@ export async function getAgentCollectorStatus() {
     archivedIncompleteFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].archivedIncompleteFiles, 0),
     archivedOlderParserFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].archivedOlderParserFiles, 0),
   };
-  return { providers, coverage: summarizeAgentTurns(markStaleOpenAgentTurns(allTurns), scan) };
+  const turns = markStaleOpenAgentTurns(allTurns);
+  if (workflow) return {
+    providers: Object.fromEntries(PROVIDERS.map(provider => {
+      const { connected, paused, permission, complete } = providers[provider];
+      return [provider, { connected, paused, permission, complete }];
+    })),
+    workflow: summarizeAgentWorkflow(turns, workflow),
+  };
+  return { providers, coverage: summarizeAgentTurns(turns, scan) };
 }
 export async function controlAgentCollector(provider, action) {
   if (!PROVIDERS.includes(provider) || !['scan', 'pause', 'resume', 'forget'].includes(action)) {
