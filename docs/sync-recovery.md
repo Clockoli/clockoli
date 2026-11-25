@@ -25,7 +25,7 @@ Unlike ordinary **Add time**, conflict edits try to sync immediately. Save block
 
 For `editActiveStart`, **Undo the start-time change** restores the original Start; **Start after the saved entry** moves it past the overlap when safe. A still-running timer offers **Adjust running timer Start** (Start only). A locally stopped timer offers the full **Edit pending time** form or a guarded **Delete pending time** instead. Retrying the same rejected Start does not resolve an overlap.
 
-For a queued `startTimer`, **Start after previous entry** moves Start to the end of one overlapping entry when no other timer is running on GitHub. If a newer timer is running, **Save as completed time** opens the full editor so you can choose the earlier timer's End; the newer GitHub timer remains untouched. The completion is checked for overlaps and keeps its original ID. **Discard queued start** loses unsaved time and requires a fresh GitHub check.
+For a queued `startTimer`, **Start after previous entry** moves Start to the end of one overlapping entry when no other timer is running on GitHub. **Save as completed time** lets you choose the actual End even if the newer timer has already stopped; any running GitHub timer remains untouched. The completion is checked for overlaps and keeps its original ID. **Discard queued start** loses unsaved time and requires a fresh GitHub check.
 
 ## Interrupted Stops and task switches
 

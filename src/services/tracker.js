@@ -2540,9 +2540,9 @@ export class TrackerService {
     return { resolved: !remaining.some(item => item.id === timerId || (correctedEdit && item.id === correctedEdit.id)) };
   }
 
-  // A queued Start cannot become GitHub's active timer when a different,
-  // newer timer is already running. Offer an explicit completed-time recovery
-  // instead of overwriting the newer timer or silently dropping the old start.
+  // A conflicted Start may represent historical work even after a newer
+  // GitHub timer has stopped. Let the user supply the actual End without
+  // overwriting a running timer or silently dropping the old Start.
   async getQueuedStartRecoveryContext(operationId) {
     validateEntryId(operationId);
     const state = await this.store.getState(), queue = state.pendingWrites ?? [];
@@ -2557,21 +2557,23 @@ export class TrackerService {
     const started = Date.parse(active.startedAt), remoteStarted = Date.parse(remote?.startedAt);
     const dependent = queue.some(item => item !== operation && stoppedOverlapReferencesEntry(item, active.id));
     const unrelatedLocal = state.activeCache?._pending && state.activeCache.id !== active.id;
-    const canComplete = Boolean(remote && !sameTimer(remote, active) && remoteStarted > started
-      && !dependent && !unrelatedLocal);
+    const now = this.clock();
+    const limit = Math.min(now.getTime(), remote ? remoteStarted : Infinity);
+    const canComplete = (!remote || !sameTimer(remote, active) && remoteStarted > started)
+      && !dependent && !unrelatedLocal && started < limit;
     let suggestedStart = active.startedAt;
     if (canComplete) {
-      const { files } = await this.readAddTimeOverlapFiles(active.entryDate, this.clock(),
-        localDateInTimezone(this.clock(), this.timezone));
+      const { files } = await this.readAddTimeOverlapFiles(active.entryDate, now,
+        localDateInTimezone(now, this.timezone));
       const overlapping = files.flatMap(file => file.entries).filter(entry =>
         entry.id !== active.id && Date.parse(entry.startedAt) <= started
         && Date.parse(entry.endedAt) > started);
-      if (overlapping.length === 1 && Date.parse(overlapping[0].endedAt) < remoteStarted) {
+      if (overlapping.length === 1 && Date.parse(overlapping[0].endedAt) < limit) {
         suggestedStart = overlapping[0].endedAt;
       }
     }
     const candidate = Date.parse(suggestedStart);
-    const end = Math.min(candidate + 5 * 60_000, remoteStarted, this.clock().getTime());
+    const end = Math.min(candidate + 5 * 60_000, limit);
     const preview = canComplete && end > candidate
       ? { id: active.id, taskUrl: taskUrlOf(active), taskTitle: taskTitleOf(active),
         entryDate: localDateInTimezone(suggestedStart, active.timezone),
@@ -2606,10 +2608,13 @@ export class TrackerService {
     });
     const { entry: corrected, now } = await this.correctedOverlapEntry(initial, edits);
     const remote = await this.readRemoteActive();
-    if (!remote || sameTimer(remote, active) || remote.id !== context.remote.id
-        || remote.startedAt !== context.remote.startedAt
-        || Date.parse(corrected.endedAt) > Date.parse(remote.startedAt)) {
-      throw new TrackerConflictError('The edited time would overlap or replace the running GitHub timer. Nothing was changed.');
+    if (Boolean(remote) !== Boolean(context.remote)
+        || (remote && (sameTimer(remote, active) || remote.id !== context.remote.id
+          || remote.startedAt !== context.remote.startedAt))) {
+      throw new TrackerConflictError('The running timer on GitHub changed. Recheck before saving. Nothing was changed.');
+    }
+    if (remote && Date.parse(corrected.endedAt) > Date.parse(remote.startedAt)) {
+      throw new TrackerConflictError('The edited time would overlap the running GitHub timer. Nothing was changed.');
     }
     const [taskIndex, overlap] = await Promise.all([
       this.readTaskIndex(), this.readEditOverlapFiles([corrected]),

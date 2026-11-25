@@ -3014,6 +3014,9 @@
       const resolve = async (action, refresh) => {
         try {
           await send({ type: 'RESOLVE_PENDING', id: item.id, ...(action ? { action } : {}) });
+          if (item.operation === 'startTimer' && item.stage === 'startNext') {
+            stoppedOverlapDetails.delete(`${item.destinationId}:${item.id}`);
+          }
           syncIssueError = '';
           recentLoaded = false;
           await refreshState(refresh, true);
@@ -3021,6 +3024,9 @@
           setError(error);
           if (timesMode) {
             syncIssueError = error?.message || 'This change was not resolved. It remains stored locally; check Activity before retrying.';
+            if (item.operation === 'startTimer' && item.stage === 'startNext') {
+              stoppedOverlapDetails.delete(`${item.destinationId}:${item.id}`);
+            }
             syncIssuesSignature = null;
             renderSyncIssues();
           }
@@ -3037,8 +3043,9 @@
       if ((unsaved || changedAddTime && completion || queuedStartRecovery || item.operation === 'editActiveStart')
           && timesMode && syncIssuesOpen && !stoppedOverlapDetails.has(overlapKey)) loadTimeConflict(item);
       const overlapState = stoppedOverlapDetails.get(overlapKey);
-      const activeOnGitHub = queuedStartRecovery && overlapState?.data?.kind === 'queued_start_recovery'
-        ? overlapState.data.remote : null;
+      const startRecovery = queuedStartRecovery && overlapState?.data?.kind === 'queued_start_recovery'
+        ? overlapState.data : null;
+      const activeOnGitHub = startRecovery?.remote ?? null;
       const localPair = changedAddTime && completion ? projectedStoppedOverlap(item, completion) : null;
       const laterChanges = changedAddTime && (pageState.pendingWrites ?? []).slice((pageState.pendingWrites ?? []).indexOf(item) + 1)
         .some(other => other.destinationId === item.destinationId);
@@ -3162,7 +3169,7 @@
           { ...activeOnGitHub, entryDate: activeOnGitHub.startedAt.slice(0, 10) }));
         if (recovery.canComplete) {
           box.append(el('p', 'Choose the actual End time. Clockoli will check for overlaps before saving, without changing the running GitHub timer.', 'muted'),
-            button('Save as completed time', 'secondary wide', (_event, trigger) =>
+            button('Save as completed time', 'secondary wide sync-overlap-edit', (_event, trigger) =>
               editFullTimeConflict(item, recovery.preview, trigger, 'queued-start')));
         } else {
           box.append(el('p', recovery.reason || 'This Start cannot be recovered automatically. Your local data is unchanged.', 'muted'),
@@ -3246,6 +3253,11 @@
         box.append(button('Recheck GitHub', 'secondary wide', async () => {
           await refreshState(true, true);
         }));
+      }
+      if (startRecovery?.canComplete && timesMode) {
+        box.append(el('p', 'If this work has already ended, choose its actual End and save it as completed time instead.', 'muted'),
+          button('Save as completed time', 'secondary wide sync-overlap-edit', (_event, trigger) =>
+            editFullTimeConflict(item, startRecovery.preview, trigger, 'queued-start')));
       }
       if (changedAddTime && canAlignStart) box.append(button('Start after previous entry', 'secondary wide', async () => {
         await resolve('align_queued_start', true);
