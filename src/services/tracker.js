@@ -2683,10 +2683,25 @@ export class TrackerService {
     }
     const state = await this.store.getState();
     if ((state.pendingWrites ?? []).length) throw new Error('Sync pending changes before merging tasks.');
+    entryDateParts(startDate); entryDateParts(endDate);
+    if (startDate > endDate) throw new Error('Task merge end date must not precede start date');
+    const activePath = activeRecordPath(this.user);
+    const snapshot = await this.github.listTextFilesSnapshot('times/', { includeActive: activePath, includePaths: [TASK_INDEX_PATH] });
     const files = new Map();
-    for (const month of monthsInRange(startDate, endDate)) {
-      const path = monthlyRecordsPath(this.user, `${month}-01`);
-      files.set(path, await this.readMonthly(path));
+    const monthly = (snapshot.files ?? []).flatMap(file => {
+      try {
+        const month = monthFromPath(file.path, this.user);
+        return month >= startDate.slice(0, 7) && month <= endDate.slice(0, 7) ? [{ ...file, month }] : [];
+      } catch { return []; }
+    });
+    for (let offset = 0; offset < monthly.length; offset += 6) {
+      const loaded = await Promise.all(monthly.slice(offset, offset + 6).map(async file => {
+        const cached = await this.reports?.cachedMonthly(file.path, file.sha);
+        if (cached) return { ...cached, month: file.month };
+        const blob = await this.github.getBlobText(file.path, file.sha);
+        return { ...file, entries: parseMonthlyRecords(blob.text, { user: this.user, month: file.month, path: file.path, sha: file.sha }) };
+      }));
+      for (const file of loaded) files.set(file.path, file);
     }
     const removed = [], added = [], touched = [];
     for (const file of files.values()) {
@@ -2699,19 +2714,30 @@ export class TrackerService {
       });
       if (changed) touched.push(file);
     }
-    const active = await this.readRemoteActive();
+    const activeFile = snapshot.files.find(file => file.path === activePath);
+    const active = activeFile ? parseActiveRecord((await this.github.getBlobText(activePath, activeFile.sha)).text, {
+      user: this.user, path: activePath, sha: activeFile.sha,
+    }) : null;
     const activeReplacement = active ? replacements.get(taskUrlOf(active)) : null;
     const mergeActive = Boolean(active && active.entryDate >= startDate && active.entryDate <= endDate && activeReplacement);
     const updatedActive = mergeActive
       ? withTaskIdentityHistory(applyActiveEdits(active, activeReplacement, this.clock()), active) : active;
     if (!touched.length && !mergeActive) return { mergedEntries: 0, mergedActive: false };
-    const activePath = activeRecordPath(this.user);
     const changes = touched.map(file => ({ path: file.path, sha: file.sha, text: serializeMonthlyRecords(file.entries) }));
     if (mergeActive) changes.push({ path: activePath, sha: active._sha, text: serializeActiveRecord(updatedActive) });
     try {
+      const index = snapshot.files.find(file => file.path === TASK_INDEX_PATH);
+      if (!index) throw new Error('The mandatory Clockoli task index is missing.');
+      const expectedHeadSha = snapshot.headSha || null;
       const result = removed.length
-        ? await this.updateCompletedRecords(changes, `time: merge tasks ${this.user}`, { remove: removed, add: added })
-        : await this.github.updateTextsAtomic(changes, `timer: merge active task ${this.user}`);
+        ? await this.updateCompletedRecords(changes, `time: merge tasks ${this.user}`, {
+          remove: removed, add: added, expectedHeadSha,
+          indexFile: { path: TASK_INDEX_PATH, sha: index.sha, index: parseTaskIndex(
+            (await this.github.getBlobText(TASK_INDEX_PATH, index.sha)).text, { user: this.user }) },
+        })
+        : await this.github.updateTextsAtomic(changes, `timer: merge active task ${this.user}`, {
+          guards: [{ path: TASK_INDEX_PATH, sha: index.sha }], expectedHeadSha,
+        });
       const replacements = touched.flatMap(file => parseMonthlyRecords(serializeMonthlyRecords(file.entries), {
         user: this.user, month: file.month, path: file.path, sha: result.blobShas[file.path],
       }));
