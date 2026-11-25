@@ -166,15 +166,16 @@ export function findTimeOffStart(date, durationSeconds, timezone, occupied = [])
 
 export function normalizeTimeOffChange(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid time off change.');
-  const { taskUrl, taskTitle = '', description = '', groupId = null, previous = [], days, timezone = null, singleDayDeletion = false } = value;
+  const { taskUrl, taskTitle = '', description = '', groupId = null, previous = [], days,
+    timezone = null, singleDayDeletion = false, bulkDayDeletion = false } = value;
   const url = normalizeTaskUrl(taskUrl);
   if (typeof taskTitle !== 'string' || taskTitle.length > 500
       || typeof description !== 'string' || description.length > 2000
       || (groupId !== null && (typeof groupId !== 'string' || !GROUP_RE.test(groupId)))
-      || typeof singleDayDeletion !== 'boolean') {
+      || typeof singleDayDeletion !== 'boolean' || typeof bulkDayDeletion !== 'boolean') {
     throw new Error('Invalid time off task or group.');
   }
-  if (!Array.isArray(previous) || previous.length > 50
+  if (!Array.isArray(previous) || previous.length > (bulkDayDeletion ? 200 : 50)
       || previous.some(item => !item || typeof item.id !== 'string' || !GROUP_RE.test(item.id)
         || typeof item.date !== 'string' || !DATE_RE.test(item.date)
         || typeof item.startedAt !== 'string' || !Number.isFinite(Date.parse(item.startedAt))
@@ -187,10 +188,20 @@ export function normalizeTimeOffChange(value) {
   if (singleDayDeletion && (previous.length !== 1 || normalizedDays.length !== 0)) {
     throw new Error('Deleting one time off day requires exactly one original entry and no new entries.');
   }
-  return { taskUrl: url, taskTitle, description, groupId, singleDayDeletion, timezone: timezone === null ? null : normalizeTimezone(timezone), previous: previous.map(item => ({
-    id: item.id, date: item.date, startedAt: item.startedAt,
-    endedAt: item.endedAt, updatedAt: item.updatedAt,
-  })), days: normalizedDays };
+  if (bulkDayDeletion && (singleDayDeletion || previous.length < 1 || normalizedDays.length > 0
+      || previous.some(item => typeof item.taskUrl !== 'string'
+        || (item.groupId !== null && item.groupId !== undefined
+          && (typeof item.groupId !== 'string' || !GROUP_RE.test(item.groupId)))))) {
+    throw new Error('Bulk time off deletion needs original records with their task URLs and group IDs.');
+  }
+  return { taskUrl: url, taskTitle, description, groupId, singleDayDeletion, bulkDayDeletion,
+    timezone: timezone === null ? null : normalizeTimezone(timezone),
+    previous: previous.map(item => ({
+      id: item.id, date: item.date, startedAt: item.startedAt,
+      endedAt: item.endedAt, updatedAt: item.updatedAt,
+      ...(bulkDayDeletion ? { taskUrl: normalizeTaskUrl(item.taskUrl),
+        groupId: item.groupId ?? null } : {}),
+    })), days: normalizedDays };
 }
 
 // Grouped PTO is one UI item even though GitHub persists one normal time entry per day.
