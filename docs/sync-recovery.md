@@ -31,7 +31,7 @@ For a queued `startTimer`, **Start after previous entry** is available only when
 
 If `completeTimer` or `completeTimerAndStart` fails at `verifyActive`, `appendMonthly`, or `commitCompletion`, **Edit pending time** can recover the unsaved completion with its original ID; **Delete pending time** is a separately verified, destructive choice. A task switch keeps its next timer queued and checks it independently against GitHub.
 
-Recovery also preserves later queued switches when their timer chain can be verified; an unrelated local running timer blocks unsafe recovery. If the completion was already saved, **Recover queued next timer** first confirms it in the monthly file and task index. No recovery may overwrite a newer GitHub active timer or save the same completion twice.
+Recovery also preserves later queued switches when their timer chain can be verified; an unrelated local running timer blocks unsafe recovery. If the completion was already saved, **Confirm saved time** verifies an exact match in the monthly file and task index, then clears only the local conflict. The next timer stays queued. For a switch that already reached `clearActive` or `startNext`, **Recover queued next timer** resumes the verified next Start. No recovery may overwrite a newer GitHub active timer or save the same completion twice.
 
 ## Other queued operations
 
