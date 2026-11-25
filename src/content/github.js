@@ -2145,7 +2145,10 @@
     };
     const requestType = isPendingCompletionConflict(item)
       ? 'GET_PENDING_COMPLETION_CONFLICT'
-      : item.operation === 'editActiveStart' ? 'GET_ACTIVE_START_CONFLICT' : 'GET_STOPPED_OVERLAP';
+      : item.operation === 'editActiveStart' ? 'GET_ACTIVE_START_CONFLICT'
+        : item.operation === 'startTimer' && item.stage === 'startNext'
+          && !relatedQueuedCompletion(item) ? 'GET_QUEUED_START_RECOVERY'
+          : 'GET_STOPPED_OVERLAP';
     void send({ type: requestType, destinationId: item.destinationId, id: item.id })
       .then(data => settle({ data }))
       .catch(error => settle({ error: error.message || 'Could not load the entries.' }))
@@ -2219,6 +2222,7 @@
         throw new Error('The selected imported task belongs to a different time repository.');
       }
       const message = { type: side === 'completion' ? 'EDIT_PENDING_COMPLETION_CONFLICT'
+        : side === 'queued-start' ? 'SAVE_QUEUED_START_AS_TIME'
         : side ? 'EDIT_STOPPED_OVERLAP' : 'EDIT_ACTIVE_START_CONFLICT',
         destinationId: item.destinationId, id: item.id,
         ...(['local', 'previous'].includes(side) ? { side } : {}),
@@ -3026,16 +3030,20 @@
       const changedAddTime = item.stage === 'startNext' && item.conflictReason === 'add_time_overlap_changed';
       const blockedRemoteStart = item.stage === 'startNext' && item.conflictReason === 'queued_start_remote_active';
       const completion = changedAddTime ? relatedQueuedCompletion(item) : null;
+      const queuedStartRecovery = changedAddTime && item.operation === 'startTimer' && !completion;
       const overlapKey = `${item.destinationId}:${item.id}`;
-      if ((unsaved || changedAddTime && completion || item.operation === 'editActiveStart')
+      if ((unsaved || changedAddTime && completion || queuedStartRecovery || item.operation === 'editActiveStart')
           && timesMode && syncIssuesOpen && !stoppedOverlapDetails.has(overlapKey)) loadTimeConflict(item);
       const overlapState = stoppedOverlapDetails.get(overlapKey);
+      const activeOnGitHub = queuedStartRecovery && overlapState?.data?.kind === 'queued_start_recovery'
+        ? overlapState.data.remote : null;
       const localPair = changedAddTime && completion ? projectedStoppedOverlap(item, completion) : null;
       const laterChanges = changedAddTime && (pageState.pendingWrites ?? []).slice((pageState.pendingWrites ?? []).indexOf(item) + 1)
         .some(other => other.destinationId === item.destinationId);
       const queuedStart = item.subjects?.[0]?.proposed || completion?.subjects?.[0]?.proposed;
       const canRetryStart = Boolean(item.subjects?.[0]?.proposed);
-      const canAlignStart = changedAddTime && canRetryStart && item.operation === 'startTimer' && !laterChanges;
+      const canAlignStart = changedAddTime && canRetryStart && item.operation === 'startTimer'
+        && !laterChanges && !activeOnGitHub && (!queuedStartRecovery || overlapState?.data?.kind === 'queued_start_recovery');
       // Queues persisted before operation was projected to the page expose only
       // their stage. Keep their recovery actionable after an extension upgrade.
       const activeStartEdit = item.operation === 'editActiveStart';
@@ -3126,6 +3134,41 @@
             stoppedOverlapDetails.delete(overlapKey);
             syncIssuesSignature = null; renderSyncIssues();
           }));
+        container.append(box);
+        continue;
+      }
+      if (queuedStartRecovery && timesMode && overlapState?.loading) {
+        box.replaceChildren(el('p', 'Checking the queued Start against the current timer on GitHub…'));
+        container.append(box);
+        continue;
+      }
+      if (queuedStartRecovery && timesMode && overlapState?.error) {
+        box.append(el('p', overlapState.error, 'muted'),
+          button('Recheck GitHub', 'secondary', () => {
+            stoppedOverlapDetails.delete(overlapKey);
+            syncIssuesSignature = null; renderSyncIssues();
+          }));
+        container.append(box);
+        continue;
+      }
+      if (queuedStartRecovery && activeOnGitHub && timesMode) {
+        const recovery = overlapState.data;
+        box.replaceChildren(el('strong', 'An older timer needs to be completed'),
+          el('p', 'Another timer is already running on GitHub. The old Start cannot replace it. Choose an End for the earlier work to save it as completed time.', 'muted'));
+        if (queuedStart) box.append(queuedConflictCard('Earlier Start · saved in this browser', queuedStart));
+        box.append(queuedConflictCard('Current timer on GitHub · still running',
+          { ...activeOnGitHub, entryDate: activeOnGitHub.startedAt.slice(0, 10) }));
+        if (recovery.canComplete) {
+          box.append(el('p', 'Choose the actual End time. Clockoli will check for overlaps before saving, without changing the running GitHub timer.', 'muted'),
+            button('Save as completed time', 'secondary wide', (_event, trigger) =>
+              editFullTimeConflict(item, recovery.preview, trigger, 'queued-start')));
+        } else {
+          box.append(el('p', recovery.reason || 'This Start cannot be recovered automatically. Your local data is unchanged.', 'muted'),
+            button('Recheck GitHub', 'secondary', () => {
+              stoppedOverlapDetails.delete(overlapKey);
+              syncIssuesSignature = null; renderSyncIssues();
+            }));
+        }
         container.append(box);
         continue;
       }
