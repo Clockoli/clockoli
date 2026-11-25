@@ -158,7 +158,7 @@ select{appearance:none;padding-right:32px;background-image:url("data:image/svg+x
 .repository-time-off-suggestions{position:absolute;z-index:3;top:calc(100% + 4px);left:0;right:0;overflow-y:auto;max-height:min(220px,40vh);border:1px solid var(--borderColor-default);border-radius:6px;background:var(--bgColor-default);box-shadow:0 8px 24px rgba(0,0,0,.16)}
 .repository-time-off-suggestions[hidden]{display:none}
 .repository-time-off-option{display:block;width:100%;padding:8px 10px;border:0;border-bottom:1px solid var(--borderColor-muted);background:var(--bgColor-default);color:var(--fgColor-default);text-align:left;cursor:pointer}
-.repository-time-off-option:hover,.repository-time-off-option:focus-visible{background:var(--bgColor-muted)}
+.repository-time-off-option:hover,.repository-time-off-option:focus-visible,.repository-time-off-option.active{background:var(--bgColor-muted)}
 .repository-time-off-option:last-child{border-bottom:0}
 .repository-time-off-option strong,.repository-time-off-option span{display:block;overflow-wrap:anywhere}
 .repository-time-off-option strong{font-size:14px;font-weight:600}
