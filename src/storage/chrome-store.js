@@ -109,6 +109,11 @@ function delegatedRestoreRegistry(values, saved, live) {
     if (storageUserId !== live.githubUserId) config.restoredStorageUserId = storageUserId;
     else delete config.restoredStorageUserId;
   }
+  // Use the same runtime validator as Settings and Activity before committing.
+  // A backup must not install a registry that those readers will reject.
+  const destinations = normalizedRegistryDestinations(registry.destinations);
+  normalizeDefaultDestinationId(registry.defaultDestinationId, destinations);
+  normalizeProjectDefinitions(values[PROJECTS] || [], destinations);
   return registry;
 }
 

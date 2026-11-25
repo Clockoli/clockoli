@@ -60,7 +60,7 @@ export function normalizeDestinationId(value) {
 const DESTINATION_RUNTIME_FIELDS = new Set([
   'repoId', 'owner', 'repo', 'branch', 'ownerType', 'defaultBranch', 'branchMode',
   'storageBranchVersion', 'installationId', 'visibility', 'repositoryFormatVersion',
-  'storageLogin', 'recentDays', 'authMode', 'allowedIssueOwners',
+  'storageLogin', 'recentDays', 'authMode', 'allowedIssueOwners', 'restoredStorageUserId',
 ]);
 
 function positiveInteger(value, label) {
@@ -109,6 +109,15 @@ function normalizeDestination(rawId, raw, { referencesOnly = false } = {}) {
   if ('authMode' in raw) {
     if (!['github_app', 'pat'].includes(raw.authMode)) throw new Error(`Destination ${id} authentication mode is invalid`);
     destination.authMode = raw.authMode;
+  }
+  if ('restoredStorageUserId' in raw) {
+    const storageUserId = positiveInteger(raw.restoredStorageUserId, `Destination ${id} restored storage user ID`);
+    if (destination.storageBranchVersion !== 1 || destination.branchMode !== 'custom'
+        || destination.authMode !== 'github_app' || !destination.storageLogin
+        || destination.branch !== `clockoli/users/${storageUserId}`) {
+      throw new Error(`Destination ${id} restored storage identity does not match its personal branch`);
+    }
+    destination.restoredStorageUserId = storageUserId;
   }
   if ('allowedIssueOwners' in raw) {
     if (!Array.isArray(raw.allowedIssueOwners) || raw.allowedIssueOwners.some(owner => !LOGIN_RE.test(owner))) throw new Error(`Destination ${id} allowed issue owners are invalid`);
