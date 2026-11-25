@@ -55,6 +55,30 @@ function generationValue(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
+function restoreAuthDecision(current, saved) {
+  if (!current?.accessToken) return 'backup-no-current-sign-in';
+  if (!saved?.accessToken) return 'backup-no-saved-sign-in';
+  if (current.mode !== saved.mode) return 'backup-different-sign-in-method';
+  if (!Number.isSafeInteger(current.githubUserId) || current.githubUserId <= 0
+      || !Number.isSafeInteger(saved.githubUserId) || saved.githubUserId <= 0) {
+    // An identical nonempty credential is proof of the same session even in
+    // a legacy snapshot without a verified numeric identity. Never use login
+    // strings alone to associate credentials with another account.
+    if (current.accessToken !== saved.accessToken
+        && !(current.mode === 'github_app' && current.refreshToken
+          && current.refreshToken === saved.refreshToken)) return 'backup-unverified-identity';
+  } else if (current.githubUserId !== saved.githubUserId) return 'backup-different-account';
+  if (current.mode === 'pat') return 'kept-current';
+  if (current.mode !== 'github_app') return 'backup-unsupported-sign-in-method';
+  const now = Date.now();
+  // A token with a future access expiry is usable even inside the proactive
+  // refresh window. Restore itself must not force a network request.
+  return (typeof current.refreshToken === 'string' && Boolean(current.refreshToken)
+      && Number(current.refreshTokenExpiresAt) > now)
+    || Number(current.accessTokenExpiresAt) > now
+    ? 'kept-current' : 'backup-current-expired';
+}
+
 function storageFormatError(message) {
   return Object.assign(new Error(message), { code: 'incompatible_storage_format' });
 }
@@ -182,11 +206,16 @@ export class IndexedDbBackend {
     return keys.map((key, index) => [key, values[index]]);
   }
 
-  async replaceAllEntries(entries) {
+  async replaceAllEntries(entries, { readKeys = [], prepare } = {}) {
     const database = await this.open();
     const transaction = database.transaction('values', 'readwrite');
     const done = transactionDone(transaction);
     const objectStore = transaction.objectStore('values');
+    // Read the current values and replace the snapshot in the same transaction.
+    if (prepare) {
+      const pairs = await Promise.all(readKeys.map(async key => [key, await requestResult(objectStore.get(key))]));
+      entries = prepare(entries, Object.fromEntries(pairs));
+    }
     objectStore.clear();
     for (const [key, value] of entries) objectStore.put(value, key);
     await done;
@@ -264,9 +293,40 @@ export class ChromeStore {
 
   async importFullLocalBackup(text, password) {
     const backup = await decryptFullBackup(text, password);
-    await this.backend.replaceAllEntries(backup.entries);
+    let githubLogin = backup.githubLogin;
+    let authRestore;
+    await this.backend.replaceAllEntries(backup.entries, {
+      readKeys: [AUTH, AUTH_GENERATION, PENDING_AUTH_GENERATION],
+      prepare: (entries, current) => {
+        const restored = new Map(entries);
+        const savedAuth = restored.get(AUTH);
+        const liveAuth = current[AUTH];
+        // GitHub invalidates both old tokens when a user token is refreshed.
+        // Never roll back the current session for a verified matching account.
+        // Do not mix authentication modes: the restored repository configuration
+        // may depend on the access model used in the backup.
+        authRestore = restoreAuthDecision(liveAuth, savedAuth);
+        if (authRestore !== 'kept-current') return entries;
+        const generation = Math.max(generationValue(current[AUTH_GENERATION]),
+          generationValue(restored.get(AUTH_GENERATION))) + 1;
+        restored.set(AUTH, { ...liveAuth, generation });
+        restored.set(AUTH_GENERATION, generation);
+        restored.delete('token');
+        // Do not resume a historical sign-in flow or let an old candidate
+        // supersede the live account's credentials after the worker restarts.
+        if (restored.has(PENDING_AUTH) || restored.has(DEVICE_ATTEMPT)
+            || restored.has(PENDING_AUTH_GENERATION) || current[PENDING_AUTH_GENERATION] !== undefined) {
+          restored.delete(PENDING_AUTH);
+          restored.delete(DEVICE_ATTEMPT);
+          restored.set(PENDING_AUTH_GENERATION, Math.max(generationValue(current[PENDING_AUTH_GENERATION]),
+            generationValue(restored.get(PENDING_AUTH_GENERATION))) + 1);
+        }
+        githubLogin = liveAuth.githubLogin || githubLogin;
+        return [...restored];
+      },
+    });
     // Credentials and the full database remain within this privileged context.
-    return { localStorage: backup.localStorage, githubLogin: backup.githubLogin };
+    return { localStorage: backup.localStorage, githubLogin, authRestore };
   }
 
   async resetFullLocalData() {

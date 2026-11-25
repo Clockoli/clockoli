@@ -291,24 +291,24 @@ export class GitHubClient {
         });
       } catch { /* Diagnostics must never affect GitHub operations. */ }
     };
-    const requestWithToken = async token => {
+    const requestWithToken = async (token, requestPath = path, requestOptions = options) => {
       await this.rateLimitGate?.ready();
       const controller = new AbortController();
-      const parent = options.signal;
+      const parent = requestOptions.signal;
       const abortFromParent = () => controller.abort(parent.reason);
       if (parent?.aborted) abortFromParent();
       else parent?.addEventListener('abort', abortFromParent, { once: true });
       const timeout = setTimeout(() => controller.abort(new DOMException('GitHub request timed out', 'TimeoutError')), this.requestTimeoutMs);
       try {
-        const response = await this.fetchImpl(`https://api.github.com${path}`, {
-          ...options, signal: controller.signal,
+        const response = await this.fetchImpl(`https://api.github.com${requestPath}`, {
+          ...requestOptions, signal: controller.signal,
           cache: 'no-store',
           headers: {
             Accept: 'application/vnd.github+json',
             Authorization: `Bearer ${token}`,
             'X-GitHub-Api-Version': '2022-11-28',
-            ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-            ...options.headers,
+            ...(requestOptions.body ? { 'Content-Type': 'application/json' } : {}),
+            ...requestOptions.headers,
           },
         });
         let body = null;
@@ -332,7 +332,22 @@ export class GitHubClient {
     try { ({ response, body } = await requestWithToken(token)); }
     catch (error) { report('network_error'); throw error; }
     if (response.status === 401 && this.credentialProvider) {
-      token = await this.credentialProvider.getAccessToken({ forceRefresh: true, rejectedToken: token });
+      try {
+        token = await this.credentialProvider.getAccessToken({ forceRefresh: true, rejectedToken: token });
+      } catch (error) {
+        if (error?.code === 'auth_expired' && path !== '/user') {
+          // Some resource endpoints return 401 for missing repository or App
+          // permissions even though the user access token is still accepted.
+          const identity = await requestWithToken(token, '/user', { signal: options.signal }).catch(() => null);
+          if (identity?.response.ok && Number.isSafeInteger(identity.body?.id) && identity.body.id > 0) {
+            report(401);
+            // The metadata reader already treats GraphQL 401 specially.
+            if (path === '/graphql') throw new GitHubAuthenticationError();
+            throw new GitHubPermissionError();
+          }
+        }
+        throw error;
+      }
       try { ({ response, body } = await requestWithToken(token)); }
       catch (error) { report('network_error'); throw error; }
     }
