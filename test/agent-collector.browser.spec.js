@@ -208,3 +208,70 @@ test('malformed source quarantines its cursor, preserves other files, and recove
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
+
+test('Activity displays local workflow distribution, filters and exclusions without disclosing source identifiers', async () => {
+  await mkdir(scratch, { recursive: true });
+  const profile = await mkdtemp(join(scratch, 'clockoli-agent-workflow-'));
+  let browser;
+  try {
+    browser = await open(profile);
+    const setup = await browser.page.evaluate(async () => {
+      const store = await import(chrome.runtime.getURL('src/storage/agent-activity-store.js'));
+      const root = await navigator.storage.getDirectory();
+      const folder = await root.getDirectoryHandle('workflow-fixture', { create: true });
+      const file = await folder.getFileHandle('synthetic.jsonl', { create: true });
+      const writer = await file.createWritable();
+      const start = Date.parse('2026-01-01T00:00:00Z');
+      const rows = [];
+      for (const [index, minutes] of [3, 10, 45, 120].entries()) {
+        const turnId = 'private-turn-' + index;
+        const base = start + index * 180 * 60000;
+        rows.push({ timestamp: new Date(base).toISOString(), type: 'event_msg',
+          payload: { type: 'task_started', turn_id: turnId, private: 'PRIVATE_PAYLOAD' } },
+        { timestamp: new Date(base + minutes * 60000).toISOString(), type: 'event_msg',
+          payload: { type: 'task_complete', turn_id: turnId } });
+      }
+      rows.push({ timestamp: new Date(start + 12 * 3600000).toISOString(), type: 'event_msg',
+        payload: { type: 'task_started', turn_id: 'open-turn' } });
+      await writer.write(rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      await writer.close();
+      await store.setAgentRoot('codex', folder);
+      return chrome.runtime.sendMessage({ type: 'AGENT_COLLECTOR_CONTROL', provider: 'codex', action: 'scan' });
+    });
+    expect(setup.ok).toBe(true);
+    const errors = [];
+    browser.page.on('pageerror', error => errors.push(error.message));
+    await browser.page.goto(`chrome-extension://${new URL(browser.worker.url()).host}/src/times/times.html`);
+    const panel = browser.page.locator('#agent-workflow');
+    await expect(panel).toBeVisible();
+    await browser.page.locator('#agent-workflow-period').selectOption('all');
+    await expect(browser.page.locator('#agent-workflow-time')).toHaveText('58m');
+    await expect(browser.page.locator('#agent-workflow-turns')).toHaveText('3 / 5');
+    await expect(browser.page.locator('#agent-workflow-median')).toHaveText('10m');
+    await expect(browser.page.locator('#agent-workflow-share')).toHaveText('22.4%');
+    await expect(browser.page.locator('#agent-workflow-extended')).toHaveText('1');
+    await expect(browser.page.locator('#agent-workflow-status')).toContainText('1 extended turns excluded');
+    await expect(browser.page.locator('#agent-workflow-status')).toContainText('1 turns have unknown');
+    await browser.page.locator('#agent-workflow-threshold').selectOption('5');
+    await expect(browser.page.locator('#agent-workflow-share')).toHaveText('5.2%');
+    const data = await browser.page.evaluate(() => chrome.runtime.sendMessage({
+      type: 'AGENT_WORKFLOW_SUMMARY', period: 'all', provider: 'codex', thresholdMinutes: 15,
+    }));
+    expect(data.ok).toBe(true);
+    expect(data.data.workflow).toMatchObject({ totalTurns: 5, eligibleTurns: 3,
+      eligibleMs: 3480000, shortMs: 780000, longMs: 2700000,
+      unknownTurns: 1, extendedTurns: 1, extendedMs: 7200000 });
+    expect(JSON.stringify(data)).not.toContain('private-turn-');
+    expect(JSON.stringify(data)).not.toContain('PRIVATE_PAYLOAD');
+    expect(JSON.stringify(data)).not.toContain('fileKey');
+    await browser.page.locator('#agent-workflow-provider').selectOption('claude');
+    await expect(browser.page.locator('#agent-workflow-results')).toBeHidden();
+    await expect(browser.page.locator('#agent-workflow-status')).toContainText('not connected');
+    await browser.page.locator('#agent-workflow-provider').selectOption('codex');
+    await expect(browser.page.locator('#agent-workflow-time')).toHaveText('58m');
+    expect(errors).toEqual([]);
+  } finally {
+    await browser?.context.close().catch(() => {});
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
