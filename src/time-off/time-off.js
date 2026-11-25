@@ -91,12 +91,11 @@ function updateAddButton() {
   const remove = $('delete-selected-time-off');
   remove.hidden = deleteDays === 0;
   remove.textContent = 'Delete time off (' + deleteDays + ' days)';
-  remove.disabled = state.deletionBusy || Boolean(own.some(entry => entry._pending))
-    || own.length > 200 || $('time-off-cancel-dialog').open;
-  remove.title = own.some(entry => entry._pending)
-    ? 'Wait until your previous time off changes have synced.'
-    : own.length > 200 ? 'Too many entries to delete at once. Select fewer days.'
-      : 'Delete your own time off for the selected dates.';
+  remove.disabled = state.deletionBusy || own.length > 200
+    || $('time-off-cancel-dialog').open;
+  remove.title = own.length > 200
+    ? 'Too many entries to delete at once. Select fewer days.'
+    : 'Delete your own time off for the selected dates. Changes are saved locally first.';
 }
 function renderRepositories() {
   const select = $('time-off-repository-filter'), previous = select.value;
@@ -392,8 +391,6 @@ function renderInspector() {
       if (ownEntry) {
         const remove = deleteIconAction('Delete my time off on ' + dateLabel(entry.entryDate),
           () => openDeleteEntry(ownEntry));
-        remove.disabled = Boolean(ownEntry._pending);
-        if (remove.disabled) remove.title = 'Sync pending time off before deleting it.';
         actions.append(remove);
       }
       row.append(copy, actions);
@@ -644,7 +641,7 @@ async function saveForm(event) {
   finally { state.formBusy = false; updateAddButton(); }
 }
 function openDeleteEntry(entry) {
-  if (!isOwnEntry(entry) || entry._pending) return;
+  if (!isOwnEntry(entry) || state.deletionBusy) return;
   state.cancelEntry = entry;
   state.cancelEntries = null;
   $('time-off-cancel-title').textContent = 'Delete time off for this day?';
@@ -658,8 +655,7 @@ function openDeleteEntry(entry) {
 }
 function openDeleteSelected() {
   const own = selectedMyEntries();
-  if (!own.length || own.length > 200 || own.some(entry => entry._pending)
-      || state.deletionBusy) return;
+  if (!own.length || own.length > 200 || state.deletionBusy) return;
   const days = new Set(own.map(entry => entry.entryDate));
   const repositories = new Set(own.map(entry => entry.destinationId)).size;
   state.cancelEntry = null;
@@ -687,7 +683,7 @@ async function confirmCancel() {
   if (state.deletionBusy) return;
   const batch = state.cancelEntries, single = state.cancelEntry;
   const entries = batch ?? (single ? [single] : []);
-  if (!entries.length || entries.some(entry => !isOwnEntry(entry) || entry._pending)) return;
+  if (!entries.length || entries.some(entry => !isOwnEntry(entry))) return;
   const button = $('confirm-cancel-time-off');
   state.deletionBusy = true;
   button.disabled = true;
