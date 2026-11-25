@@ -120,7 +120,7 @@ function claudeTurns(events, sessions, turns) {
     }
     nodes.set(nodeKey, { type: event.type, uuid: event.uuid,
       parentUuid: id(event.parentUuid), fileKey: event.fileKey, sessionId: event.sessionId,
-      agentId: id(event.agentId) });
+      agentId: id(event.agentId), timestamp: timestamp(event.timestamp) });
   }
   function ancestor(event) {
     let current = event;
@@ -143,7 +143,10 @@ function claudeTurns(events, sessions, turns) {
     if (!turns.has(turnKey)) turns.set(turnKey, turn('claude', owner, candidate.uuid));
     return turns.get(turnKey);
   }
-  for (const node of nodes.values()) if (node.type === 'user') add(node);
+  for (const node of nodes.values()) if (node.type === 'user') {
+    const record = add(node);
+    record.startedAt = node.timestamp;
+  }
   for (const event of durations) {
     if (duration(event.durationMs) === null || !id(event.parentUuid)) { unknownEvents++; continue; }
     const assistant = nodes.get(key(event.sessionId, event.parentUuid));
@@ -151,6 +154,13 @@ function claudeTurns(events, sessions, turns) {
     const candidate = parent || { uuid: event.parentUuid, fileKey: event.fileKey,
       sessionId: event.sessionId, agentId: id(event.agentId) };
     const record = add(candidate);
+    // Preserve observed boundaries even if they do not establish a reliable
+    // placement of the provider duration. Never backdate an inferred start.
+    record.startedAt = parent?.timestamp ?? null;
+    record.endedAt = timestamp(event.timestamp);
+    record.elapsedMs = record.startedAt && record.endedAt && record.endedAt >= record.startedAt
+      ? Date.parse(record.endedAt) - Date.parse(record.startedAt) : null;
+    record.anchored = Boolean(parent && record.elapsedMs === event.durationMs);
     record.providerDurationMs = event.durationMs;
     record.durationSource = 'provider_duration';
     record.timingConfidence = 'high';
