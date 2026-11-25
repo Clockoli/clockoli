@@ -58,7 +58,7 @@ function safeScan(scan) {
   const result = {};
   if (!scan || typeof scan !== 'object') return result;
   if (typeof scan.complete === 'boolean') result.complete = scan.complete;
-  for (const field of ['blockedFiles', 'unknownEvents', 'pendingBytes', 'parserGeneration', 'scannedFiles', 'scannedBytes']) {
+  for (const field of ['blockedFiles', 'unknownEvents', 'pendingBytes', 'parserGeneration', 'scannedFiles', 'scannedBytes', 'archivedFiles', 'archivedIncompleteFiles', 'archivedOlderParserFiles']) {
     if (duration(scan[field]) !== null) result[field] = scan[field];
   }
   return result;
