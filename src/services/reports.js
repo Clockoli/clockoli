@@ -1,6 +1,6 @@
 import { recordDate } from '../domain/reporting.js';
 import { normalizeReportingUtc } from '../domain/local-settings.js';
-import { parseMonthlyRecords, parseMonthlyRecordsPath } from '../domain/work-records.js';
+import { activeRecordPath, parseActiveRecord, parseMonthlyRecords, parseMonthlyRecordsPath } from '../domain/work-records.js';
 import { parseTaskIndex, taskIndexRecord, TASK_INDEX_PATH } from '../domain/task-index.js';
 import { entryDateParts, normalizeStoredTaskIdentity, taskUrlOf, validatePathSegment } from '../domain/values.js';
 import { discoverUserStorageBranches } from './user-storage-branch.js';
@@ -286,6 +286,51 @@ async function settleConcurrent(items, signal, operation) {
   }
 }
 
+// Merge preview needs task identities, not every historical work record or live
+// issue metadata. Detect duplicate record IDs before offering a writable list.
+export function combineMergeTaskSummaries(groups) {
+  const tasks = new Map(), ids = new Set();
+  for (const group of groups) {
+    for (const item of group) {
+      for (const id of item.recordIds) {
+        if (ids.has(id)) throw new Error('Duplicate work record IDs in selected people. Resolve the conflict before merging tasks.');
+        ids.add(id);
+      }
+      const previous = tasks.get(item.taskUrl) ?? {
+        taskUrl: item.taskUrl, title: '', titleStartedAt: '', totalSeconds: 0, sessionCount: 0,
+      };
+      if (item.title && (!previous.title || (item.titleStartedAt || '') >= previous.titleStartedAt)) {
+        previous.title = item.title;
+        previous.titleStartedAt = item.titleStartedAt || '';
+      }
+      previous.totalSeconds += item.totalSeconds;
+      previous.sessionCount += item.recordIds.length;
+      tasks.set(item.taskUrl, previous);
+    }
+  }
+  return [...tasks.values()].map(({ titleStartedAt, ...task }) => task)
+    .sort((a, b) => b.totalSeconds - a.totalSeconds || a.taskUrl.localeCompare(b.taskUrl));
+}
+
+function mergeRecordSummaries(records, startDate, endDate) {
+  const tasks = new Map();
+  for (const record of records) {
+    if (record.entryDate < startDate || record.entryDate > endDate) continue;
+    const taskUrl = taskUrlOf(record);
+    const item = tasks.get(taskUrl) ?? {
+      taskUrl, title: '', titleStartedAt: '', totalSeconds: 0, recordIds: [],
+    };
+    const title = record.taskTitle || record.issueTitle || '';
+    if (title && (!item.title || record.startedAt >= item.titleStartedAt)) {
+      item.title = title; item.titleStartedAt = record.startedAt;
+    }
+    item.totalSeconds += record.durationSeconds || 0;
+    if (record.id) item.recordIds.push(record.id);
+    tasks.set(taskUrl, item);
+  }
+  return [...tasks.values()];
+}
+
 export class ReportService {
   constructor({ github, cache = null, concurrency = 6, onProgress = null, requestLimiter = null }) {
     this.github = github;
@@ -362,6 +407,127 @@ export class ReportService {
       github: mappedUser.github, cache: this.cache, concurrency: this.concurrency,
       onProgress: this.onProgress, requestLimiter: this.requestLimiter,
     }).loadUserRange(range, mappedUser.login, { signal, includeStorageMetadata }, budgets);
+  }
+
+  async loadMergeTaskCatalog({ startDate, endDate }, { defaultBranch, currentUser, selectedUsers, signal } = {}) {
+    entryDateParts(startDate); entryDateParts(endDate);
+    if (startDate > endDate) throw new Error('Task merge end date must not precede start date');
+    this.onProgress({ label: 'Discovering people…', value: 10 });
+    const users = await discoverUserStorageBranches(this.github.forBranch(defaultBranch, 'default'), {
+      signal, concurrency: this.concurrency, cache: this.cache,
+    });
+    const availableUsers = users.map(user => user.login).sort((a, b) => a.localeCompare(b));
+    const wanted = new Set((selectedUsers ?? [currentUser]).map(user => String(user).toLowerCase()));
+    const selected = users.filter(user => wanted.has(user.login.toLowerCase()));
+    const groups = [];
+    let completed = 0;
+    for (let offset = 0; offset < selected.length; offset += this.concurrency) {
+      const chunk = await settleConcurrent(selected.slice(offset, offset + this.concurrency), signal, async (user, branchSignal) => {
+        const progress = label => this.onProgress({
+          label: `${user.login}: ${label} (${completed}/${selected.length} people ready)`,
+          value: 15 + Math.round(80 * completed / Math.max(1, selected.length)),
+        });
+        try {
+          const service = new ReportService({ github: user.github, cache: this.cache,
+            concurrency: this.concurrency, requestLimiter: this.requestLimiter });
+          const summaries = await service.loadUserMergeTasks({ startDate, endDate }, user, { signal: branchSignal, progress });
+          completed += 1;
+          progress('Loaded');
+          return summaries;
+        } catch (error) {
+          if (branchSignal.aborted || error?.name === 'AbortError') throw error;
+          throw Object.assign(new Error(`Could not load tasks for ${user.login}: ${error.message}`), {
+            code: error.code, status: error.status, retryAt: error.retryAt, cause: error,
+          });
+        }
+      });
+      groups.push(...chunk);
+    }
+    signal?.throwIfAborted();
+    return { availableUsers, selectedUsers: selected.map(user => user.login), tasks: combineMergeTaskSummaries(groups) };
+  }
+
+  async loadUserMergeTasks({ startDate, endDate }, user, { signal, progress = () => {} } = {}) {
+    const key = this.github.repositoryKey || 'repository', cache = await this.readCache(key);
+    const activePath = activeRecordPath(user.login);
+    progress('Checking history');
+    // Ownership metadata and the snapshot are pinned to the same discovered
+    // branch head; subsequent file reads use immutable blob SHAs.
+    const snapshot = await this.requestLimiter.run(() => this.github.listTextFilesSnapshot('times/', {
+      includeActive: TASK_INDEX_PATH, includePaths: [activePath], headSha: user.headSha || null, signal,
+    }), signal);
+    const monthly = snapshot.files.flatMap(file => {
+      if (!file.path.startsWith('times/')) return [];
+      try {
+        const parsed = parseMonthlyRecordsPath(file.path);
+        return parsed.user === user.login ? [{ ...file, ...parsed }] : [];
+      } catch { return []; }
+    });
+    const selected = monthly.filter(file => file.month >= startDate.slice(0, 7) && file.month <= endDate.slice(0, 7));
+    const getBlob = file => this.requestLimiter.run(() => this.github.getBlobText(file.path, file.sha, { signal }), signal);
+    const readMonth = async file => {
+      const text = typeof cache.blobs[file.sha] === 'string' ? cache.blobs[file.sha] : (await getBlob(file)).text;
+      cache.blobs[file.sha] = text;
+      return parseMonthlyRecords(text, { user: user.login, month: file.month, path: file.path, sha: file.sha });
+    };
+    let summaries;
+    // The all-time index has no per-record dates. It is exact only if the
+    // requested range covers every completed record, including the last month.
+    // Do not silently include future-dated entries or lose the correct title.
+    const allTime = startDate === '1970-01-01';
+    const boundary = new Map();
+    if (allTime && monthly.length === selected.length) {
+      const boundaryFiles = selected.filter(file => file.month === startDate.slice(0, 7) || file.month === endDate.slice(0, 7));
+      for (const file of boundaryFiles) boundary.set(file.sha, await readMonth(file));
+      const coversAll = [...boundary.values()].every(entries => entries.every(entry => entry.entryDate >= startDate && entry.entryDate <= endDate));
+      if (coversAll) {
+        progress('Loading task index');
+        const file = snapshot.files.find(item => item.path === TASK_INDEX_PATH);
+        if (!file) throw new Error('The mandatory Clockoli task index is missing.');
+        const indexText = cache.catalog?.indexSha === file.sha ? cache.catalog.indexText : (await getBlob(file)).text;
+        const index = parseTaskIndex(indexText, { user: user.login });
+        cache.catalog = { etag: '', indexSha: file.sha, indexText,
+          ...(user.headSha ? { headSha: user.headSha, user: { id: user.id, login: user.login } } : {}) };
+        summaries = Object.entries(index.tasks).map(([taskUrl, summary]) => ({
+          taskUrl, title: summary.title || '', titleStartedAt: summary.titleStartedAt || '',
+          totalSeconds: summary.totalSeconds, recordIds: summary.recordIds,
+        }));
+      }
+    }
+    if (!summaries) {
+      summaries = [];
+      for (let offset = 0; offset < selected.length; offset += this.concurrency) {
+        signal?.throwIfAborted();
+        const files = selected.slice(offset, offset + this.concurrency);
+        progress(`Reading time files ${offset + 1}–${offset + files.length} of ${selected.length}`);
+        const records = await settleConcurrent(files, signal, (file, fileSignal) => {
+          fileSignal.throwIfAborted();
+          return boundary.has(file.sha) ? boundary.get(file.sha) : readMonth(file);
+        });
+        summaries.push(...mergeRecordSummaries(records.flat(), startDate, endDate));
+      }
+    }
+    const activeFile = snapshot.files.find(file => file.path === activePath);
+    if (activeFile) {
+      const active = parseActiveRecord((await getBlob(activeFile)).text, { user: user.login, path: activePath, sha: activeFile.sha });
+      if (active.entryDate >= startDate && active.entryDate <= endDate) summaries.push({
+        taskUrl: taskUrlOf(active), title: active.taskTitle || active.issueTitle || '',
+        titleStartedAt: active.startedAt, totalSeconds: 0, recordIds: [],
+      });
+    }
+    // Reuse the ordinary report cache for immutable monthly blobs and the
+    // task-search catalog cache for indexes. An empty ETag forces a fresh live
+    // ref check for reports rather than treating a pinned head as current.
+    signal?.throwIfAborted();
+    const fresh = await this.readCache(key);
+    fresh.files = monthly.map(({ path, sha, size }) => ({ path, sha, ...(Number.isSafeInteger(size) ? { size } : {}) }));
+    const shas = new Set(monthly.map(file => file.sha));
+    fresh.blobs = Object.fromEntries(Object.entries({ ...fresh.blobs, ...cache.blobs }).filter(([sha]) => shas.has(sha)));
+    fresh.etag = ''; fresh.snapshotReady = true;
+    if (cache.catalog) fresh.catalog = cache.catalog;
+    signal?.throwIfAborted();
+    await this.saveCache(fresh);
+    return summaries;
   }
 
   async loadRepositoryTaskCatalog({ defaultBranch, signal, budgets = {} } = {}) {

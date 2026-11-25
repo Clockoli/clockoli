@@ -281,6 +281,10 @@
         </div>
       </details>
     </div>
+    <div id="merge-task-progress" role="status" aria-live="polite" hidden>
+      <p id="merge-task-progress-label" class="help">Loading tasks…</p>
+      <progress id="merge-task-progress-value" max="100" style="width:100%" aria-label="Loading merge tasks"></progress>
+    </div>
     <div class="merge-task-columns">
       <section class="merge-task-picker" aria-labelledby="merge-source-title"><h3 id="merge-source-title">Task to replace</h3><label class="visually-hidden" for="merge-source-filter">Filter tasks to replace</label><input id="merge-source-filter" type="search" placeholder="Filter by task name or URL"><div id="merge-source-list" class="merge-task-list" role="listbox" aria-label="Tasks to replace"></div></section>
       <span class="merge-task-arrow" aria-hidden="true">→</span>
