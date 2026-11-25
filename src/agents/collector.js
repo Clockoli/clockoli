@@ -126,8 +126,25 @@ async function scanProvider(provider, trigger) {
     const ordered = firstAfter < 0 ? entries : [...entries.slice(firstAfter), ...entries.slice(0, firstAfter)];
     const changes = new Map();
     const seen = new Set(entries.map(entry => entry.fileKey));
-    for (const old of saved) if (!seen.has(old.fileKey)) {
-      changes.set(old.fileKey, { fileKey: old.fileKey, remove: true, expectedRevision: old.revision });
+    // A successful enumeration is the evidence of disappearance. Keep the
+    // sanitized events, not the source bytes, so linked Claude turns survive.
+    const previousGeneration = state.activeGeneration && state.activeGeneration !== generation
+      ? await listAgentFiles(provider, state.activeGeneration) : [];
+    const archiveCandidates = new Map(previousGeneration.map(file => [file.fileKey, file]));
+    for (const file of saved) {
+      const previous = archiveCandidates.get(file.fileKey);
+      // If a source vanishes mid-reindex, prefer the last complete evidence
+      // to an incomplete staging record. Never concatenate two generations.
+      if (!previous || file.sourceMissing || file.cursor?.offset === file.cursor?.size
+          || previous.cursor?.offset !== previous.cursor?.size) archiveCandidates.set(file.fileKey, file);
+    }
+    for (const old of archiveCandidates.values()) {
+      if (seen.has(old.fileKey)) continue;
+      const current = savedByKey.get(old.fileKey);
+      if (current === old && old.sourceMissing) continue;
+      changes.set(old.fileKey, { ...old, sourceMissing: true,
+        evidenceGeneration: old.evidenceGeneration ?? old.generation,
+        expectedRevision: current?.revision || 0 });
     }
     for (const entry of ordered) {
       status.filesVisited++;
@@ -142,12 +159,13 @@ async function scanProvider(provider, trigger) {
         continue; }
       status.scannedBytes += file.size;
       const old = savedByKey.get(entry.fileKey);
-      if (old?.cursor?.safeErrorCode && old.cursor.size === file.size
+      const reusable = old && (old.evidenceGeneration ?? generation) === generation;
+      if (reusable && !old.sourceMissing && old.cursor?.safeErrorCode && old.cursor.size === file.size
           && old.cursor.lastModified === file.lastModified) {
         status.blockedFiles++; continue;
       }
       const fullValidation = status.runNumber % 60 === 0;
-      if (old?.cursor?.size === file.size && old.cursor.lastModified === file.lastModified
+      if (reusable && !old.sourceMissing && old.cursor?.size === file.size && old.cursor.lastModified === file.lastModified
           && (old.cursor.offset === file.size || old.cursor.pendingTail) && !fullValidation) {
         if (old.cursor.offset < file.size) { status.backlog = true; status.pendingBytes += file.size - old.cursor.offset; }
         continue;
@@ -155,7 +173,7 @@ async function scanProvider(provider, trigger) {
       const remaining = MAX_RUN_BYTES - status.bytesRead;
       if (remaining < MAX_FILE_BYTES && status.bytesRead > 0) { status.backlog = true; break; }
       try {
-        const result = await boundedNative(provider, () => scanAgentJsonl(file, old?.cursor, {
+        const result = await boundedNative(provider, () => scanAgentJsonl(file, reusable ? old.cursor : null, {
           readBudget: Math.min(MAX_FILE_BYTES, remaining), maxLineBytes: MAX_FILE_BYTES,
           parseRow: row => {
             const event = parseAgentRow(provider, row);
@@ -163,7 +181,8 @@ async function scanProvider(provider, trigger) {
           }, fingerprint,
           deadlineAt: Date.now() + 17_000,
         }));
-        let currentSession = result.restarted ? null : old?.cursor?.sessionId || null;
+        const replaceEvidence = !reusable || result.restarted;
+        let currentSession = replaceEvidence ? null : old?.cursor?.sessionId || null;
         const newEvents = [];
         for (const event of result.events) {
           const opaque = await opaqueEvent(provider, event, entry.fileKey, currentSession, hash);
@@ -174,8 +193,9 @@ async function scanProvider(provider, trigger) {
           safeErrorCode: result.blockedCode,
           pendingTail: result.atEnd && result.cursor.offset < file.size && !result.blockedCode };
         changes.set(entry.fileKey, { fileKey: entry.fileKey, expectedRevision: old?.revision || 0,
-          cursor, events: [...result.restarted ? [] : old?.events || [], ...newEvents],
-          unknownEvents: (result.restarted ? 0 : old?.unknownEvents || 0) + result.unknownEvents });
+          cursor, sourceMissing: false, evidenceGeneration: generation,
+          events: [...replaceEvidence ? [] : old?.events || [], ...newEvents],
+          unknownEvents: (replaceEvidence ? 0 : old?.unknownEvents || 0) + result.unknownEvents });
         status.bytesRead += result.bytesRead;
         status.filesAdvanced++;
         status.lastFileKey = entry.fileKey;
@@ -202,10 +222,16 @@ async function scanProvider(provider, trigger) {
       projection = projectAgentTurns(provider, events);
       projection.unknownEvents += [...merged.values()].reduce((total, file) => total + (file.unknownEvents || 0), 0);
       projection.projectionVersion = AGENT_PROJECTION_VERSION;
+      const archived = [...merged.values()].filter(file => file.sourceMissing);
+      projection.archivedFiles = archived.length;
+      projection.archivedIncompleteFiles = archived.filter(file => file.cursor?.offset !== file.cursor?.size || file.cursor?.safeErrorCode).length;
+      projection.archivedOlderParserFiles = archived.filter(file => file.evidenceGeneration !== generation).length;
     }
     const complete = !status.backlog && status.blockedFiles === 0 && status.errorCount === 0
-      && status.filesVisited === entries.length && [...merged.values()].every(file => file.cursor?.offset === file.cursor?.size);
-    status.complete = complete;
+      && status.filesVisited === entries.length && [...merged.values()].every(file => file.sourceMissing || file.cursor?.offset === file.cursor?.size);
+    // A missing source cannot be re-read. Activate the available projection,
+    // but do not claim complete coverage of historical evidence that was partial.
+    status.complete = complete && !projection.archivedIncompleteFiles && !projection.archivedOlderParserFiles;
     if (status.errorCount && status.errorCode !== 'agent_revision_conflict') {
       status.retryAt = Date.now() + COOLDOWN_MS;
     }
@@ -273,13 +299,17 @@ export async function getAgentCollectorStatus() {
       runNumber: health?.runNumber || 0, scannedBytes: health?.scannedBytes || 0,
       parserGeneration: visibleGeneration, activeGeneration: state.activeGeneration,
       complete: Boolean(!root?.paused && health?.complete && state.activeGeneration === visibleGeneration),
+      archivedFiles: projection?.archivedFiles || 0,
+      archivedIncompleteFiles: projection?.archivedIncompleteFiles || 0,
+      archivedOlderParserFiles: projection?.archivedOlderParserFiles || 0,
       pendingBytes: health?.pendingBytes || 0, retryAt: health?.retryAt || null,
       startedAt: health?.startedAt || null, finishedAt: health?.finishedAt || null };
     providers[provider] = safeHealth;
     scan[provider] = { complete: safeHealth.complete, blockedFiles: safeHealth.blockedFiles,
       unknownEvents: projection?.unknownEvents || 0, pendingBytes: safeHealth.pendingBytes,
       parserGeneration: visibleGeneration, scannedFiles: safeHealth.filesVisited,
-      scannedBytes: safeHealth.scannedBytes };
+      scannedBytes: safeHealth.scannedBytes, archivedFiles: safeHealth.archivedFiles,
+      archivedIncompleteFiles: safeHealth.archivedIncompleteFiles, archivedOlderParserFiles: safeHealth.archivedOlderParserFiles };
     if (projection?.turns) allTurns.push(...projection.turns);
   }
   scan.all = {
@@ -290,6 +320,9 @@ export async function getAgentCollectorStatus() {
     scannedFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].scannedFiles, 0),
     scannedBytes: PROVIDERS.reduce((total, provider) => total + scan[provider].scannedBytes, 0),
     parserGeneration: AGENT_PARSER_VERSION,
+    archivedFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].archivedFiles, 0),
+    archivedIncompleteFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].archivedIncompleteFiles, 0),
+    archivedOlderParserFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].archivedOlderParserFiles, 0),
   };
   return { providers, coverage: summarizeAgentTurns(markStaleOpenAgentTurns(allTurns), scan) };
 }
