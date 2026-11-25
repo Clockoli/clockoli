@@ -615,6 +615,7 @@ function renderTimeOffTaskSettings(destination) {
 
   let urls = [], savedUrls = [], sha = null, loaded = false, canEdit = false, saving = false;
   let results = [], searchTimer = null, searchVersion = 0, loading = false;
+  let shownSuggestions = [], activeSuggestion = -1;
   const titles = new Map();
   const validUrl = value => {
     try { return normalizeTaskUrl(value); } catch { return ''; }
@@ -667,9 +668,14 @@ function renderTimeOffTaskSettings(destination) {
     const query = search.value.trim();
     const matches = query && !validUrl(query) && canEdit
       ? taskSearch.matches(results, task => !urls.includes(task.taskUrl), 8) : [];
-    for (const task of matches) {
+    shownSuggestions = matches;
+    activeSuggestion = -1;
+    search.removeAttribute('aria-activedescendant');
+    for (const [index, task] of matches.entries()) {
       const option = document.createElement('button'); option.type = 'button';
       option.className = 'repository-time-off-option'; option.setAttribute('role', 'option');
+      option.id = suggestions.id + '-option-' + index;
+      option.setAttribute('aria-selected', 'false');
       const title = document.createElement('strong'); title.textContent = task.title || task.taskUrl;
       const url = document.createElement('span'); url.textContent = task.taskUrl;
       option.append(title, url);
@@ -683,6 +689,8 @@ function renderTimeOffTaskSettings(destination) {
   const clearSearch = () => {
     clearTimeout(searchTimer); searchVersion++;
     search.value = ''; results = []; searchStatus.textContent = '';
+    shownSuggestions = []; activeSuggestion = -1;
+    search.removeAttribute('aria-activedescendant');
     suggestions.replaceChildren(); suggestions.hidden = true; search.setAttribute('aria-expanded', 'false');
     refreshControls();
   };
@@ -723,6 +731,21 @@ function renderTimeOffTaskSettings(destination) {
   search.addEventListener('keydown', event => {
     if (event.key === 'Escape' && !suggestions.hidden) {
       event.preventDefault(); clearSearch(); search.focus();
+    } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp')
+        && !suggestions.hidden && shownSuggestions.length) {
+      event.preventDefault();
+      activeSuggestion = (activeSuggestion + (event.key === 'ArrowDown' ? 1 : -1)
+        + shownSuggestions.length) % shownSuggestions.length;
+      for (const [i, option] of [...suggestions.children].entries()) {
+        const active = i === activeSuggestion;
+        option.classList.toggle('active', active);
+        option.setAttribute('aria-selected', String(active));
+      }
+      search.setAttribute('aria-activedescendant', suggestions.children[activeSuggestion].id);
+      suggestions.children[activeSuggestion].scrollIntoView({ block: 'nearest' });
+    } else if (event.key === 'Enter' && activeSuggestion >= 0 && !suggestions.hidden) {
+      event.preventDefault();
+      addTask(shownSuggestions[activeSuggestion].taskUrl, shownSuggestions[activeSuggestion].title);
     } else if (event.key === 'Enter' && !add.disabled) {
       event.preventDefault(); addTask(search.value.trim());
     }
