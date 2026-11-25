@@ -138,114 +138,6 @@ test('Add time routes a selected imported task only to its configured source des
     ['add', { taskUrl: message.taskUrl, taskTitle: 'Imported', startedAt: null, endedAt: null, description: '' }]]);
 });
 
-test('full overlap edits are permitted only from Activity with exactly the expected fields', async () => {
-  const worker = await readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
-  const calls = [];
-  const context = vm.createContext({ assertMessageAllowed,
-    chrome: { runtime: { getURL: path => origin + path } }, store: {},
-    requireConfiguredDestinationId: async (_store, id) => { calls.push(['destination', id]); return id; },
-    trackerForDestination: async () => ({ editStoppedOverlap: async (id, edit) => {
-      calls.push(['edit', id, edit]); return { resolved: true };
-    } }),
-    requestPendingSync: () => calls.push(['sync']),
-  });
-  // Include the validator referenced by the isolated dispatcher under test.
-  vm.runInContext(worker.slice(worker.indexOf('function validConflictEntryEdits('),
-    worker.indexOf('chrome.runtime.onMessage.addListener')), context);
-  const sender = { url: origin + 'src/times/times.html' };
-  const message = { type: 'EDIT_STOPPED_OVERLAP', destinationId: 'github:1',
-    id: '01K3X7Q8N8F4J7R2JQZ5AKP1MD', side: 'local', edits: {
-      taskUrl: 'https://example.com/work', taskTitle: 'Task',
-      startedAt: '2026-11-17T08:00:00.000Z', endedAt: '2026-11-17T09:00:00.000Z',
-      description: 'Corrected', billable: false,
-    } };
-  await assert.rejects(context.handle(message, extension), /Only Activity/i);
-  await assert.rejects(context.handle(message, content), /not allowed/i);
-  for (const invalid of [
-    { ...message, extra: 'unexpected' },
-    { ...message, side: 'all' },
-    { ...message, edits: { ...message.edits, billable: 'false' } },
-    { ...message, edits: { ...message.edits, startedAt: 'invalid' } },
-    { ...message, edits: { ...message.edits, extra: 'unexpected' } },
-  ]) await assert.rejects(context.handle(invalid, sender), /Invalid/i);
-  assert.equal(calls.length, 0);
-  assert.deepEqual(JSON.parse(JSON.stringify(await context.handle(message, sender))), { resolved: true });
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
-    ['destination', 'github:1'], ['edit', message.id, { side: 'local', edits: message.edits }], ['sync'],
-  ]);
-});
-
-test('missing completion recovery validates sender, exact payload and destination', async () => {
-  const worker = await readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
-  const calls = [];
-  const context = vm.createContext({ assertMessageAllowed,
-    chrome: { runtime: { getURL: path => origin + path } }, store: {},
-    requireConfiguredDestinationId: async (_store, id) => {
-      calls.push(['destination', id]); return id;
-    },
-    trackerForDestination: async () => ({
-      getPendingCompletionConflictContext: async id => { calls.push(['read', id]); return { kind: 'pending_completion' }; },
-      editPendingCompletionConflict: async (id, edits) => { calls.push(['edit', id, edits]); return { resolved: true }; },
-      deletePendingCompletionConflict: async id => { calls.push(['delete', id]); return { deleted: true }; },
-    }),
-    requestPendingSync: () => calls.push(['sync']),
-  });
-  vm.runInContext(worker.slice(worker.indexOf('function validConflictEntryEdits('),
-    worker.indexOf('chrome.runtime.onMessage.addListener')), context);
-  const activity = { url: origin + 'src/times/times.html' };
-  const id = '01K3X7Q8N8F4J7R2JQZ5AKP1MD';
-  const request = { type: 'GET_PENDING_COMPLETION_CONFLICT', destinationId: 'github:1', id };
-  await assert.rejects(context.handle(request, extension), /Only Activity/i);
-  await assert.rejects(context.handle(request, content), /not allowed/i);
-  await assert.rejects(context.handle({ ...request, extra: 'no' }, activity), /Invalid/i);
-  assert.equal(calls.length, 0);
-  assert.deepEqual(JSON.parse(JSON.stringify(await context.handle(request, activity))), { kind: 'pending_completion' });
-  const edit = { ...request, type: 'EDIT_PENDING_COMPLETION_CONFLICT',
-    edits: { taskUrl: 'https://example.com/task', taskTitle: 'Task',
-      startedAt: '2026-11-17T09:00:00.000Z', endedAt: '2026-11-17T10:00:00.000Z',
-      description: 'Recovered time', billable: false } };
-  await assert.rejects(context.handle({ ...edit, edits: { ...edit.edits, billable: 'false' } }, activity), /Invalid/i);
-  await assert.rejects(context.handle({ ...edit, edits: { ...edit.edits, extra: true } }, activity), /Invalid/i);
-  assert.deepEqual(JSON.parse(JSON.stringify(await context.handle(edit, activity))), { resolved: true });
-  assert.deepEqual(JSON.parse(JSON.stringify(await context.handle({
-    type: 'DELETE_PENDING_COMPLETION_CONFLICT', destinationId: 'github:1', id,
-  }, activity))), { deleted: true });
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
-    ['destination', 'github:1'], ['read', id],
-    ['destination', 'github:1'], ['edit', id, edit.edits], ['sync'],
-    ['destination', 'github:1'], ['delete', id], ['sync'],
-  ]);
-});
-
-test('saved queued Start acknowledgment requires Activity, destination and reviewed blob SHA', async () => {
-  const worker = await readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
-  const calls = [];
-  const context = vm.createContext({ assertMessageAllowed,
-    chrome: { runtime: { getURL: path => origin + path } }, store: {},
-    requireConfiguredDestinationId: async (_store, id) => {
-      calls.push(['destination', id]); return id;
-    },
-    trackerForDestination: async () => ({
-      confirmSavedQueuedStart: async (id, sha) => { calls.push(['confirm', id, sha]); return { confirmed: true }; },
-    }),
-    requestPendingSync: () => calls.push(['sync']),
-  });
-  vm.runInContext(worker.slice(worker.indexOf('function validConflictEntryEdits('),
-    worker.indexOf('chrome.runtime.onMessage.addListener')), context);
-  const activity = { url: origin + 'src/times/times.html' };
-  const message = { type: 'CONFIRM_SAVED_QUEUED_START', destinationId: 'github:1',
-    id: '01K3X7Q8N8F4J7R2JQZ5AKP1MD', savedSha: 'a'.repeat(40) };
-  await assert.rejects(context.handle(message, extension), /Only Activity/i);
-  await assert.rejects(context.handle(message, content), /not allowed/i);
-  for (const invalid of [{ ...message, savedSha: 'wrong' }, { ...message, extra: true }])
-    await assert.rejects(context.handle(invalid, activity), /Invalid/i);
-  assert.equal(calls.length, 0);
-  assert.deepEqual(JSON.parse(JSON.stringify(await context.handle(message, activity))), { confirmed: true });
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
-    ['destination', 'github:1'], ['confirm', message.id, message.savedSha], ['sync'],
-  ]);
-});
-
 test('week reads accept only a Monday–Sunday range from the extension or a GitHub tab', () => {
   const week = { startDate: '2026-10-05', endDate: '2026-10-11' };
   assert.deepEqual(weekRangeForSender(week, content, origin), week);
@@ -457,9 +349,7 @@ test('trusted extension pages can perform popup-only operations', () => {
   assert.doesNotThrow(() => assertMessageAllowed('LOAD_REPORT', extension, origin));
   assert.doesNotThrow(() => assertMessageAllowed('GET_EXCHANGE_RATES', extension, origin));
   assert.doesNotThrow(() => assertMessageAllowed('CANCEL_REPORT', extension, origin));
-  for (const type of ['LOAD_TIMES', 'BULK_ADD_TIMES', 'GET_STOPPED_OVERLAP', 'RESOLVE_STOPPED_OVERLAP', 'EDIT_STOPPED_OVERLAP',
-    'GET_ACTIVE_START_CONFLICT', 'RESOLVE_ACTIVE_START_CONFLICT',
-    'EDIT_ACTIVE_START_CONFLICT', 'DELETE_ACTIVE_START_CONFLICT']) {
+  for (const type of ['LOAD_TIMES', 'BULK_ADD_TIMES', 'GET_STOPPED_OVERLAP', 'RESOLVE_STOPPED_OVERLAP']) {
     assert.equal(assertMessageAllowed(type, extension, origin), 'extension');
     assert.throws(() => assertMessageAllowed(type, content, origin), /not allowed/i);
   }

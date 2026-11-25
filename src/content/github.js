@@ -3059,7 +3059,7 @@
       const savedWithNewerTimer = item.stage === 'clearActive' && item.conflictReason === 'completion_saved_newer_timer';
       const changedAddTime = item.stage === 'startNext' && item.conflictReason === 'add_time_overlap_changed';
       const blockedRemoteStart = item.stage === 'startNext' && item.conflictReason === 'queued_start_remote_active';
-      const completion = changedAddTime ? relatedQueuedCompletion(item) : null;
+      const completion = (changedAddTime || blockedRemoteStart) ? relatedQueuedCompletion(item) : null;
       const queuedStartRecovery = (changedAddTime || blockedRemoteStart)
         && item.operation === 'startTimer' && !relatedQueuedCompletion(item);
       const overlapKey = `${item.destinationId}:${item.id}`;
@@ -3246,7 +3246,7 @@
         box.append(el('p', 'Could not verify the saved entry. Your changes remain in this browser.'),
           button('Refresh entries', 'secondary', () => { stoppedOverlapDetails.delete(overlapKey); syncIssuesSignature = null; renderSyncIssues(); }));
       }
-      if (changedAddTime) {
+      if (changedAddTime || blockedRemoteStart && completion) {
         if (queuedStart) box.append(el('div', `Timer: ${queuedRecordLabel({ ...queuedStart, endedAt: null })}`, 'queued-context'));
         if (completion) box.append(el('p', 'This timer was stopped locally. Its completion is waiting for the start to sync. Do not discard the start or stop if you need to keep this tracked time.'));
         if (!canRetryStart) box.append(el('p', 'The queued start itself has no details needed for a safe automatic retry. A later stop can show its task and time, but cannot repair the start. Keep this browser data and inspect Activity before changing anything.'));
@@ -3320,7 +3320,7 @@
         if (!confirm('Cancel this queued deletion? Clockoli will first verify that the entry still exists on GitHub. This cannot restore time that has already been deleted remotely.')) return;
         await resolve('discard_queued_edit', true);
       }));
-      if ((changedAddTime || blockedRemoteStart) && !completion) box.append(button('Discard queued start', 'link-button', async () => {
+      if ((changedAddTime || blockedRemoteStart) && !completion && startRecovery?.canDiscard !== false) box.append(button('Discard queued start', 'link-button', async () => {
         if (!confirm('Discard this queued start and its unsaved tracked time? GitHub must confirm the timer is not already running before the local start can be removed.')) return;
         await resolve('discard_queued_start', true);
       }));
