@@ -41,7 +41,7 @@ import { OnboardingCoordinator } from '../services/onboarding-coordinator.js';
 import { RepositoryInvitationService } from '../services/repository-invitations.js';
 import { withRepositoryRecovery } from '../services/repository-operation-recovery.js';
 import { discoverUserStorageBranches, verifyRestoredStorageBranch } from '../services/user-storage-branch.js';
-import { addTimeForSender, agentCollectorRequest, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
+import { addTimeForSender, agentCollectorRequest, agentWorkflowRequest, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
 import { activeDestinationId, requireConfiguredDestinationId, resolveStartDestinationId, selectReadDestinations, syncPendingAll } from './destination-runtime.js';
 import { emitClockifyMigrationProgress, isClockifyProgressRequestId, registerClockifyMigrationProgressPort } from './clockify-migration-progress.js';
 import { SerialExecutor } from './serial-executor.js';
@@ -1126,6 +1126,9 @@ async function handle(message, sender) {
   const extensionOrigin = chrome.runtime.getURL('');
   assertMessageAllowed(message.type, sender, extensionOrigin);
   if (globalThis.clockoliLocalDataTransitioning) throw new Error('Clockoli is reloading after a local data change.');
+  if (message.type === 'AGENT_WORKFLOW_SUMMARY') {
+    return getAgentCollectorStatus(agentWorkflowRequest(message, sender, extensionOrigin));
+  }
   if (message.type === 'AGENT_COLLECTOR_STATUS' || message.type === 'AGENT_COLLECTOR_CONTROL') {
     const request = agentCollectorRequest(message, sender, extensionOrigin);
     if (request.action === 'status') return getAgentCollectorStatus();
