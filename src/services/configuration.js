@@ -138,6 +138,9 @@ export class ConfigurationService {
       this.store.getAuthSnapshot ? this.store.getAuthSnapshot() : Promise.resolve({ auth: null }),
     ]);
     const { config: previousConfig } = configurationSnapshot;
+    if (Object.values(configurationSnapshot.registry?.destinations ?? {}).some(config => config.restoredStorageUserId)) {
+      throw new Error('Remove restored time repositories before switching to personal access token mode.');
+    }
     const previousToken = configurationSnapshot.token || authSnapshot.auth?.accessToken || '';
     let previousIdentity = Number.isSafeInteger(authSnapshot.auth?.githubUserId)
       ? { id: authSnapshot.auth.githubUserId, login: authSnapshot.auth.githubLogin || '' }

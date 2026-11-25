@@ -33,6 +33,21 @@ export function parseUserBranchMetadata(text) {
   return { id: value.githubUserId, login: value.storageLogin };
 }
 
+// Unlike provisioning, validating restored storage is strictly read-only.
+export async function verifyRestoredStorageBranch(github, config, storageUserId) {
+  if (config.branch !== userStorageBranch(storageUserId) || config.storageBranchVersion !== 1
+      || config.branchMode !== 'custom' || !config.storageLogin) {
+    throw new Error('Restored storage branch does not match its pinned GitHub user.');
+  }
+  await github.assertDestinationReachable();
+  const metadata = parseUserBranchMetadata((await github.getText(USER_METADATA_PATH)).text);
+  if (metadata.id !== storageUserId || metadata.login !== config.storageLogin) {
+    throw new Error('Restored storage branch ownership does not match the backup.');
+  }
+  parseTaskIndex((await github.getText(TASK_INDEX_PATH)).text, { user: metadata.login });
+  return metadata;
+}
+
 export async function ensureUserStorageBranch(github, user, sourceBranch) {
   if (!validIdentity(user)) throw new Error('Invalid GitHub user identity for storage branch');
   const branch = userStorageBranch(user.id);

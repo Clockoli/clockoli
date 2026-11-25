@@ -38,7 +38,7 @@ import { readyRepositoryMemberIds } from '../services/repository-team-status.js'
 import { OnboardingCoordinator } from '../services/onboarding-coordinator.js';
 import { RepositoryInvitationService } from '../services/repository-invitations.js';
 import { withRepositoryRecovery } from '../services/repository-operation-recovery.js';
-import { discoverUserStorageBranches } from '../services/user-storage-branch.js';
+import { discoverUserStorageBranches, verifyRestoredStorageBranch } from '../services/user-storage-branch.js';
 import { addTimeForSender, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
 import { activeDestinationId, requireConfiguredDestinationId, resolveStartDestinationId, selectReadDestinations, syncPendingAll } from './destination-runtime.js';
 import { emitClockifyMigrationProgress, isClockifyProgressRequestId, registerClockifyMigrationProgressPort } from './clockify-migration-progress.js';
@@ -107,6 +107,26 @@ function githubForConfig(config, { measureMigration = false, rateLimitGate = nul
     rateLimitGate,
     ...(measureMigration ? { fetchImpl: clockifyGitHubRequests.wrapFetch(fetch) } : {}),
   });
+}
+
+async function verifyCrossAccountRestore(auth, destinations) {
+  // The broker is paused during restore; use only the current access token for
+  // this read-only preflight. A rejected/expired token cannot destroy the session.
+  const credentials = { token: auth.accessToken };
+  const github = new GitHubClient(credentials);
+  const identity = await github.getAuthenticatedIdentity();
+  if (identity.id !== auth.githubUserId) throw new Error('The current GitHub sign-in could not be verified.');
+  if (!destinations.length) return;
+  const discovery = await new InstallationDiscoveryService({ github }).discover();
+  for (const config of destinations) {
+    const candidate = discovery.candidates.find(value => value.repoId === config.repoId
+      && value.owner.toLowerCase() === config.owner.toLowerCase() && value.repo.toLowerCase() === config.repo.toLowerCase()
+      && value.appPermissions?.contents === 'write' && value.userPermissions?.push === true);
+    if (!candidate) throw new Error(`Your GitHub account does not have write access through Clockoli to ${config.owner}/${config.repo}. Nothing was restored.`);
+    const branch = new GitHubClient({ ...credentials, owner: config.owner, repo: config.repo, branch: config.branch,
+      branchMode: 'custom', expectedRepositoryId: config.repoId });
+    await verifyRestoredStorageBranch(branch, config, config.restoredStorageUserId ?? auth.githubUserId);
+  }
 }
 
 async function remoteActiveProbe({ config, auth, state, credentialProvider = currentCredentialProvider }) {
@@ -220,6 +240,7 @@ async function onboardingState() {
     label: config.label || `${config.owner}/${config.repo}`,
     branch: config.branch || 'main', defaultBranch: config.defaultBranch || 'main',
     storageLogin: config.storageLogin || '', installationId: config.installationId || null,
+    ...(config.restoredStorageUserId ? { restoredStorageUserId: config.restoredStorageUserId } : {}),
     repositoryFormatVersion: config.repositoryFormatVersion || null,
     default: registry.defaultDestinationId === id,
     active: tracking.activeTimer?.destinationId === id,
@@ -253,7 +274,11 @@ async function checkCurrentRepositoryAccess(destinationId = null) {
     await onboarding.recoverCurrentRepository();
     snapshot = await configuredSnapshot({ destinationId: selectedId });
   }
-  const repository = await githubForConfig(snapshot.config).assertDestinationReachable();
+  const github = githubForConfig(snapshot.config);
+  const repository = await github.assertDestinationReachable();
+  if (snapshot.config.restoredStorageUserId) {
+    await verifyRestoredStorageBranch(github, snapshot.config, snapshot.config.restoredStorageUserId);
+  }
   const lastVerifiedAt = new Date().toISOString();
   await store.saveDestinationVerification(selectedId, 'access_checked', lastVerifiedAt);
   return {
@@ -290,7 +315,7 @@ async function contextForDestination(destinationId, { localOnly = false, persist
   return {
     config, destinationId,
     reports,
-    tracker: new TrackerService({ github, store: destinationStore, reports, user, actorId: Number.isSafeInteger(auth.githubUserId) ? `github:${auth.githubUserId}` : `clockoli:${config.repoId}:${user}`, actorName: user, recentDays: config.recentDays || 7 }),
+    tracker: new TrackerService({ github, store: destinationStore, reports, user, actorId: Number.isSafeInteger(auth.githubUserId) ? `github:${auth.githubUserId}` : `clockoli:${config.repoId}:${user}`, actorName: auth.githubLogin || user, recentDays: config.recentDays || 7 }),
   };
 }
 
@@ -1515,7 +1540,9 @@ async function handle(message, sender) {
     }
     if (Object.keys(message).length !== 3 || typeof message.text !== 'string'
         || message.text.length > 64 * 1024 * 1024) throw new Error('Invalid full backup file.');
-    return replaceFullLocalData(() => store.importFullLocalBackup(message.text, message.password));
+    return replaceFullLocalData(() => store.importFullLocalBackup(message.text, message.password, {
+      verifyCrossAccount: verifyCrossAccountRestore,
+    }));
   }
   if (message.type === 'EXPORT_SETTINGS') return store.exportSettings();
   if (message.type === 'MARK_SETTINGS_EXPORTED') return { marked: await store.markSettingsExported(message.revision) };
