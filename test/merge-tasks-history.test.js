@@ -112,7 +112,8 @@ test('merge scans only existing files and updates the index atomically against t
     return { blobShas: Object.fromEntries(changes.map(c => [c.path, 'b'.repeat(40)])) };
   };
   const store = { async getState() { return { pendingWrites: [], recentCache: [] }; }, async patchState() {} };
-  const tracker = new TrackerService({ github: alice.github, store, user: 'alice', timezone: 'UTC' });
+  const tracker = new TrackerService({ github: alice.github, store, user: 'alice', timezone: 'UTC',
+    clock: () => new Date('2026-11-25T12:00:00Z') });
   const result = await tracker.mergeTasks({ ...range, pairs: [{ sourceTaskUrl: source, targetTaskUrl: target }] });
   assert.equal(result.mergedEntries, 2);
   assert.deepEqual(alice.reads.sort(), [TASK_INDEX_PATH, 'times/2021-02/alice.jsonl', 'times/2026-11/alice.jsonl'].sort());
@@ -135,7 +136,8 @@ test('active-only merge uses an atomic index guard and the snapshot head', async
     return { blobShas: { [path]: 'd'.repeat(40) } };
   };
   const store = { async getState() { return { pendingWrites: [], recentCache: [] }; }, async patchState() {} };
-  const tracker = new TrackerService({ github: alice.github, store, user: 'alice', timezone: 'UTC' });
+  const tracker = new TrackerService({ github: alice.github, store, user: 'alice', timezone: 'UTC',
+    clock: () => new Date('2026-11-25T12:00:00Z') });
   const result = await tracker.mergeTasks({ ...range, pairs: [{ sourceTaskUrl: source, targetTaskUrl: target }] });
   assert.deepEqual(result, { mergedEntries: 0, mergedActive: true });
   assert.equal(writes.length, 1);
