@@ -68,15 +68,25 @@ function selectedMyEntries() {
   }
   return [...unique.values()];
 }
+// Adding PTO is date-based: selecting a day with my existing PTO can be used
+// for deletion, but must never count towards another Add operation. Check all
+// my time repositories, not only the currently displayed repository or user.
+function datesToAdd() {
+  const occupied = new Set(state.entries.filter(entry => entry.isTimeOff && isOwnEntry(entry))
+    .map(entry => entry.entryDate));
+  return [...selectedDates].filter(date => !occupied.has(date)).sort();
+}
 function updateAddButton() {
-  const count = selectedDates.size, configured = availableRepositories().length > 0;
+  const count = datesToAdd().length, configured = availableRepositories().length > 0;
   const add = $('new-time-off');
   add.textContent = count ? 'Add time off (' + count + ' days)' : 'Add time off';
   add.disabled = count === 0 || !configured || $('time-off-dialog').open || state.deletionBusy;
   $('add-time-off-help').title = !configured
     ? 'Configure Time off tasks under Settings → Time repositories first.'
-    : !count ? 'Select one or more days in the calendar to add time off.'
-      : 'Add time off for ' + count + (count === 1 ? ' selected day.' : ' selected days.');
+    : !selectedDates.size ? 'Select one or more days in the calendar to add time off.'
+      : !count ? 'All selected days already have your time off. Select an available day to add time off.'
+        : 'Add time off for ' + count + (count === 1 ? ' available day.' : ' available days.')
+          + (count < selectedDates.size ? ' Days with your existing time off are excluded.' : '');
   const own = selectedMyEntries();
   const deleteDays = new Set(own.map(entry => entry.entryDate)).size;
   const remove = $('delete-selected-time-off');
@@ -568,7 +578,7 @@ function toggleDateSelection(date, shift = false) {
   if ($('time-off-error').textContent) notice('');
 }
 function openForm() {
-  const dates = chosenDates(), repos = availableRepositories();
+  const dates = datesToAdd(), repos = availableRepositories();
   if (!dates.length || !repos.length) { updateAddButton(); return; }
   const select = $('edit-repository');
   select.replaceChildren();
@@ -599,7 +609,7 @@ async function saveForm(event) {
   }
   let days;
   try {
-    days = normalizeTimeOffDays(chosenDates().map(date => ({
+    days = normalizeTimeOffDays(datesToAdd().map(date => ({
       date, durationSeconds: Math.round(hours * 3600),
     })));
   } catch (error) { setFormError(error.message); return; }
