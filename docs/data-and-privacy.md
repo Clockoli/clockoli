@@ -52,6 +52,12 @@ GitHub page JavaScript and content scripts do not receive credentials or raw loc
 
 The browser's `tabs` permission lets the toolbar focus an already-open Clockoli Activity tab instead of opening a duplicate, and lets Settings detect an open Clockoli team invitation page (`clockoli.com/join`). Tab URLs are checked locally and are not sent to GitHub.
 
+## Local agent activity
+
+If you opt in through Settings, Clockoli reads the selected Codex and Claude Code journal folders locally and keeps directory handles, incremental cursors, and metadata-only observations in a **separate** extension-origin IndexedDB (`clockoli-agent-activity-v1`). It does not modify the source journals or send their contents to GitHub. Raw prompts, replies, tool results, and file paths are not stored as observations. Agent observations do not affect the human timer, Git-backed time records, reports, or invoices.
+
+Settings backups and encrypted full local backups exclude this separate database and its directory handles. **Forget** removes one provider's handle and observations; **Reset full local data** clears both the ordinary Clockoli state and the agent-activity database. Browser-controlled directory permission may need to be granted again when the last extension page closes or after a restart; a saved handle alone does not guarantee unattended access.
+
 ## Time-repository and branch layout
 
 Each time repository's default branch owns its shared marker:

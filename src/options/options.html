@@ -228,6 +228,39 @@
     <a id="add-time-repository" class="button-link secondary-link time-repositories-add" href="#">Add time repository</a>
   </section>
 
+  <section id="agent-settings" class="card" aria-labelledby="agent-settings-title">
+    <div class="card-heading"><div><h2 id="agent-settings-title">Local agent activity</h2><p>Optional, read-only access to local Codex and Claude Code activity. Select each provider’s folder to opt in. GitHub setup is not required.</p></div></div>
+    <p id="agent-support" class="help" role="status" hidden>Folder access is unavailable in this browser. Use a Chromium browser with File System Access support to connect local activity.</p>
+    <div class="agent-provider-list">
+      <article id="agent-codex" class="agent-provider" aria-labelledby="agent-codex-title">
+        <div class="agent-provider-heading"><h3 id="agent-codex-title">Codex</h3><span id="agent-codex-status" class="badge" role="status">Not connected</span></div>
+        <p class="help">Select the <code>sessions</code> folder inside your Codex data folder.</p>
+        <div class="agent-actions">
+          <button id="agent-codex-select" type="button">Select folder</button>
+          <button id="agent-codex-restore" type="button" class="secondary" hidden>Restore access</button>
+          <button id="agent-codex-pause" type="button" class="secondary" disabled>Pause</button>
+          <button id="agent-codex-scan" type="button" class="secondary" disabled>Scan now</button>
+          <button id="agent-codex-forget" type="button" class="secondary" disabled>Forget</button>
+        </div>
+        <p id="agent-codex-feedback" class="form-feedback" role="status" aria-live="polite"></p>
+        <p id="agent-codex-diagnostics" class="agent-diagnostics help" aria-label="Codex technical diagnostics"></p>
+      </article>
+      <article id="agent-claude" class="agent-provider" aria-labelledby="agent-claude-title">
+        <div class="agent-provider-heading"><h3 id="agent-claude-title">Claude Code</h3><span id="agent-claude-status" class="badge" role="status">Not connected</span></div>
+        <p class="help">Select the <code>projects</code> folder inside your Claude Code data folder.</p>
+        <div class="agent-actions">
+          <button id="agent-claude-select" type="button">Select folder</button>
+          <button id="agent-claude-restore" type="button" class="secondary" hidden>Restore access</button>
+          <button id="agent-claude-pause" type="button" class="secondary" disabled>Pause</button>
+          <button id="agent-claude-scan" type="button" class="secondary" disabled>Scan now</button>
+          <button id="agent-claude-forget" type="button" class="secondary" disabled>Forget</button>
+        </div>
+        <p id="agent-claude-feedback" class="form-feedback" role="status" aria-live="polite"></p>
+        <p id="agent-claude-diagnostics" class="agent-diagnostics help" aria-label="Claude Code technical diagnostics"></p>
+      </article>
+    </div>
+  </section>
+
   <section class="card" aria-labelledby="interface-width-title">
     <div class="card-heading"><div><h2 id="interface-width-title">Interface width</h2><p>Choose the width of Activity, Reports, Top tasks, and the toolbar panel.</p></div></div>
     <label for="interface-width">Show Clockoli</label>

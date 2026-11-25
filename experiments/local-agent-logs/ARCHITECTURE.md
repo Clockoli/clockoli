@@ -1,0 +1,157 @@
+# Agent Activity Collector — architecture and validation
+
+Phase 1 is implemented on this branch for Chrome/Chromium Clockoli; this is **not** a release or a change to Clockoli's time-record format. The collector reads local Codex and Claude Code JSONL after an explicit directory grant; it never modifies agent files, starts a daemon, or sends source lines to a server. Its live validation gate remains open: after the last extension page closed, the installed Chrome worker saw `prompt` for both stored handles and could not scan unattended. A persistent grant and full browser restart have not yet been verified for this collector.
+
+## Decision and measured input
+
+Use a **local, read-only observation ledger**, separate from human timers and Git-backed work records. Measure coverage and show confirmed, estimated and unknown turns separately; do not equate elapsed turn duration with pure model-working time. Project mapping is **not a Phase 1 prerequisite**: all observations may remain Unassigned through the collector and analytics phases. Do not automatically create billable entries, identify a task from a repository name, or add parallel durations together. An optional later conversion to a v1 work record needs a verified task identity, destination, and explicit consent.
+
+A metadata-only streaming survey of the actual directories on this machine (2026-11-24) found:
+
+| Source | Observed structure | Consequence |
+|---|---|---|
+| Codex | 501 JSONL files, 462,375 rows, 1,422,471,439 bytes; 8,309 `task_started`, 8,018 `task_complete`, 290 `turn_aborted`. Strict `turn_id` pairing left 72 open starts and 71 unpaired terminal events; 43 files ended with an open turn. Some starts occurred while another turn was open in the *same* file (1,087 occurrences; maximum six open IDs). | Pair by session **and** turn ID, not by adjacent rows or a single global active turn. Preserve unmatched and interrupted states. These counts characterize logs, not a validated work-duration total. |
+| Codex context | 501 `session_meta` rows; 68 distinct working-directory strings, of which 24 currently exist here and 18 have a detectable local Git parent. `session_meta.git.repository_url` is present in 365/501 files: 351 look syntactically like GitHub HTTPS/SSH coordinates without credentials, 14 are other/unsupported; 136 have no repository URL. This is **not** verification that any remote exists or belongs to a configured Clockoli project. One file has multiple observed working directories. | Prefer a validated repository identity when present; otherwise match each turn's current cwd with an approved local rule. Never guess a repository or task URL from a directory basename. |
+| Claude Code | 34 JSONL files, 5,126 rows, 19 distinct `sessionId` values; 12 IDs occur in multiple files and 14 files contain sidechain rows. Of 1,270 `user` rows, 1,104 are solely `tool_result` blocks and 166 are not solely tool results. Among 1,774 `assistant` rows, 482 message IDs recur (1,445 rows share those IDs). | A `user` row is not necessarily a human prompt; a repeated assistant message ID is not a new turn. Include file/sidechain identity in session keys and reconcile UUID parent chains. |
+| Claude timing/context | 58 `system.turn_duration` rows had valid `durationMs`; all 58 had a `parentUuid` pointing to an assistant row in their file. Seven distinct cwd strings were observed; none currently exists on this machine. | An explicit duration is available for only a subset of apparent interactions. A branch name or a non-existing cwd does not establish a Git repository. Do not silently fill the rest with invented completed durations. |
+
+The survey parsed rows only in process memory and emitted allowlisted counts; it did **not** save or print prompts, completions, tool arguments, raw JSONL, filenames, working directories, or repository URLs. The existing FSA probe observed a real JSONL line around 11.7 MiB, so a one-megabyte read chunk is insufficient. See `README.md` for browser permissions and restart evidence. Data on other machines or later agent releases may differ.
+
+## Normalized model (private IndexedDB, not work-record v1)
+
+| Entity | Durable fields | Meaning |
+|---|---|---|
+| `SourceRoot` | provider, directory handle, permission/health state, last successful scan, opt-in flag | An explicitly chosen read-only Codex or Claude directory. No raw root path in UI messages or exports. |
+| `FileCursor` | HMAC(provider + relative path), file generation, completed-line byte offset, size/mtime, bounded head/tail HMAC, last-seen time, parser version, error code | Restart and replacement detection. No partial line or source text. A path hash is scoped to one installation's secret; the real handle remains in privileged storage. |
+| `AgentSession` | opaque session key, provider, optional family/parent key, agent/sidechain discriminator, first/last observed timestamps, optional cwd/repository fingerprints, project ID, mapping provenance/confidence, `observed_active`/`idle_unknown`/`explicitly_closed` | Session is a container; inactivity alone is not a completed session. For Claude, one `sessionId` may span several files; never use that ID alone as the unique key. |
+| `AgentTurn` | opaque stable key, session key, optional parent turn, observed start/end, elapsed/provider durations or null, duration provenance, `completed`/`interrupted`/`open`/`stale_unknown`, timing confidence, project ID and mapping confidence, evidence event IDs | Completed means an explicit supported terminal signal; interrupted means an explicit abort. A stale open turn retains `endedAt: null` and null durations. |
+| `ScanState` | trigger, run ID, per-provider file/byte counts, last success, error code, blocked/backlog counts, retry deadline, expired lease, parser/reindex generation | Diagnose permission, partial processing, and retries without storing private rows. |
+| `CoverageSnapshot` | provider, parser generation, discovered/measured/estimated/unknown turn counts, measured percentage, status counts, scan completeness, computed-at | Derived from deduplicated observations, not an independently incremented counter; expose incomplete scans and unsupported formats alongside the percentage. |
+
+Proposed **local schema v1** (contract sketch, not Clockoli's Git-backed work-record schema):
+
+```text
+AgentSession {
+  key: opaque HMAC; provider: codex | claude;
+  sourceFileKey: opaque HMAC; upstreamFamilyKey: opaque HMAC | null;
+  parentSessionKey: opaque HMAC | null; sidechain: boolean | null;
+  firstObservedAt: UTC | null; lastObservedAt: UTC | null;
+  cwdKey: opaque HMAC | null; repositoryKey: opaque HMAC | null;
+  projectId: existing Clockoli project ID | null;
+  mapping: { source: validated_repo | approved_cwd_rule | unresolved;
+             confidence: high | medium | none };
+  status: observed_active | idle_unknown | explicitly_closed;
+}
+AgentTurn {
+  key: opaque HMAC; sessionKey: AgentSession.key;
+  parentTurnKey: opaque HMAC | null;
+  startedAt: UTC | null; endedAt: UTC | null;
+  elapsedMs: nonnegative integer | null;
+  providerDurationMs: nonnegative integer | null;
+  durationSource: event_interval | provider_duration | estimated_window | none;
+  status: completed | interrupted | open | stale_unknown;
+  timingConfidence: high | medium | low | none;
+  projectId: existing Clockoli project ID | null;
+  projectConfidence: high | medium | low | none;
+  evidenceKeys: bounded array of opaque HMACs;
+}
+FileCursor {
+  key: opaque HMAC; generation: positive integer;
+  completeByteOffset: nonnegative integer; completeLines: nonnegative integer;
+  observedSize: nonnegative integer; lastModifiedAt: UTC | null;
+  headHmac: opaque HMAC; tailHmac: opaque HMAC;
+  parserVersion: positive integer; lastSeenAt: UTC; safeErrorCode: string | null;
+}
+CoverageSnapshot { // computed separately for codex, claude, and an overall roll-up
+  provider: codex | claude | all; parserGeneration: positive integer;
+  turns: { discovered: integer; measured: integer;
+           estimated: integer; unknown: integer };
+  measuredCoveragePct: number | null;
+  status: { interrupted: integer; open: integer; staleUnknown: integer };
+  scan: { complete: boolean; blockedFiles: integer;
+          unknownEvents: integer; pendingBytes: integer | null };
+  computedAt: UTC;
+}
+```
+
+All timestamps are UTC instants. A turn's **elapsed wall time** is distinct from provider-reported duration and from agent-active time; if the source supplies both, retain both with provenance and report discrepancies. A provider duration is not assumed to exclude human approval waits. Use a structured confidence level (`high`, `medium`, `low`, `none`) **per dimension**, with machine-readable reasons, rather than one uncalibrated score. High timing confidence requires an explicit start/end pair or verified provider duration; an inferred start from a duration/end timestamp is marked as inferred. Project confidence is independent of timing confidence. Unknown time stays null, not zero.
+
+## Coverage and time metrics
+
+Compute coverage **separately for Codex and Claude Code**, then an overall roll-up from the two deduplicated sets. A discovered turn is a distinct supported turn candidate: for Codex, a start or otherwise orphaned terminal keyed by `(session, turn_id)`; for Claude, an identifiable non-tool-result input/turn boundary or a duration event not yet matched to one, reconciled across files and sidechains by UUID ancestry. An orphan duration must be represented, not silently dropped; an ambiguous duplicate must not become two turns. Parser-unknown events, malformed/blocked files and incomplete backfill remain visible in scan completeness—**do not call the discovered-turn denominator complete** while any source is unprocessed. The 58 observed Claude `turn_duration` rows are events, **not** a validated count or coverage percentage of turns.
+
+Each discovered turn belongs to exactly one duration bucket: **measured** (a reliable explicit provider duration or valid start/end elapsed interval), **estimated** (a bounded but inferential duration, never presented as measured), or **unknown** (no defensible duration). When both measured sources exist for one turn, select **one** canonical duration for totals (prefer a validated event interval; otherwise the provider duration), keep the other as a discrepancy check, and never add both. `discovered = measured + estimated + unknown`; `measuredCoveragePct = 100 × measured / discovered`, or `null` when no turns are discovered. Publish the four counts and percentage per provider, along with parser generation and scan completeness. `completed`, `interrupted`, `open` and `stale_unknown` are **orthogonal status counts**: an interrupted turn can still have a measured elapsed duration, and an open turn has no final duration. Coverage is about reliable *turn elapsed duration*, not an assertion of continuous model activity. Do not exclude unknown turns to inflate Claude coverage.
+
+Report four distinct time measures, each per provider and, where meaningful, combined:
+
+| Metric | Definition and exclusion |
+|---|---|
+| **Agent Time** | Sum of measured turn durations (including explicitly interrupted turns with a valid duration). It is summed turn time, so parallel turns can contribute more than one hour within one wall-clock hour; it is **not** pure model execution time. |
+| **Wall-clock Time** | Length of the union of **measured, reliably anchored UTC turn intervals**, without double-counting parallel turns. Show the count of measured turns excluded because their interval cannot be anchored reliably; do not infer their placement merely from a duration. |
+| **Estimated Time** | Sum of estimated turn durations, shown separately from Agent Time and excluded from the confirmed Wall-clock Time. Display its turn count and assumptions, especially for Claude. |
+| **Human Waiting Time** | **Not calculated in this phase.** Research explicit wait-begin/wait-end signals before claiming it can be separated from elapsed turns. |
+
+Neither Agent Time nor Wall-clock Time is automatically added to the human timer, Git-backed totals, invoices or billable time. A turn may include waiting for a user permission/approval inside its elapsed duration; the current logs do not justify subtracting that wait.
+
+Session and turn IDs, cwd tokens, and relative-path tokens should be HMACed with an installation-local secret kept in privileged local storage. Raw paths and repository strings may be held briefly in worker memory for validation/matching but not stored in observations, sent to content scripts, logged, or included in settings exports. The directory handles themselves are privileged local state and must be disclosed as such to the user.
+
+## Parsers and duration rules
+
+- **Codex:** allowlist `session_meta`, `turn_context`, and `event_msg` subtypes; use `session_meta.payload.id`, `event_msg.payload.turn_id`, and the latest valid `turn_context.payload.cwd`. Match `task_started` to `task_complete` or `turn_aborted` by `(session key, turn_id)`, even if events interleave. Prefer exact event timestamps for an elapsed interval; record optional provider `duration_ms` separately and validate it. Duplicates/replays update the same turn; a terminal without its start is an incomplete observation, not a fabricated interval. Preserve open turns across scans and browser restarts. A turn aborted with an explicit terminal is interrupted; browser closure or a missing final line is **unknown**, not aborted.
+- **Claude Code:** distinguish human-like `user` messages from `user` rows containing only `tool_result` blocks by looking at **block types**, never block text. Use file/sidechain identity, `sessionId`, `agentId` where present, row UUID and `parentUuid` relationships; do not deduplicate solely by `message.id`. A valid `system`/`turn_duration` `durationMs` correlated through `parentUuid` supplies a completed measured duration. An assistant message without an explicit terminal is **not** a completion signal in these observed logs (1,773/1,774 assistant rows had null `stop_reason`). For other turns, optional observed windows may be shown as **estimated** only after an unambiguous human-input-to-output association; absent such evidence, retain `open`/`stale_unknown` and no duration. Never convert `tool_result` to a new human turn or equate sidechain work with independent additive wall time.
+- **Both:** require bounded UTF-8/JSONL decoding, valid UTC timestamps, finite nonnegative durations and bounded identifiers. Version parsers and preserve an `unknown_event`/format-change counter. A malformed or oversized line quarantines that file's current offset with a safe code; continue other files but do not advance the failing cursor or silently discard its recoverable tail. A format change pauses affected projections and requests a new parser version/reindex instead of guessing.
+
+For reporting, count overlapping measured intervals and report overlap duration as **sum of eligible per-turn interval lengths minus their union length**, with measured but unanchored durations called out separately. `Agent Time` may include those unanchored durations and must not be used directly in the overlap subtraction. Never mix estimated time into the confirmed union. Parent/child, cross-provider or cross-project overlaps cannot be allocated uniquely without further evidence; show an ambiguous bucket rather than assigning the same time twice. These measures are elapsed observations, not CPU/model activity.
+
+## Incremental collector and failure recovery
+
+1. An extension-owned Settings page performs read-only directory selection and, if needed, `requestPermission({mode:'read'})` on a **stored** handle in a user gesture. Handles are structured-cloned into a collector-specific IndexedDB store. Chrome's persistent choice is browser-controlled; a stored handle alone does not imply `granted`.[1]
+2. Existing `alarms` permission and a bounded alarm plus `onStartup` wake the MV3 worker. Recheck `queryPermission` before each scan. On `prompt`/`denied`, suspend that root's scans until a visible-page user gesture repairs access; on a stalled native FSA call, record a timeout, cap concurrent outstanding reads to one per root and use a bounded cooldown rather than stacking new promises (`Promise.race` does **not** cancel native I/O). Retain all cursors and expose the access state without prompting from the worker. A worker restart may retry after the cooldown, never in a tight loop. Recreate missing alarms at startup/worker initialization, but do not promise collection while Chrome is closed or asleep.[2][3]
+3. Enumerate JSONL under selected roots with a depth/file budget; prioritize recent files, but periodically sweep the **whole** tree so newly created nested files cannot be starved. Read only from completed byte offsets, cap bytes and time per run, process large lines in bounded chunks, and keep a durable round-robin backlog. Avoid reopening/decoding unchanged files; a scheduled full validation detects some replacements, while identical-content-length-and-mtime stealth edits remain a limitation. Quarantine a malformed/oversized line at its unchanged file generation and offset with a safe error code; skip repeated parsing of the same bytes on every alarm, retry on a changed generation or explicit repair/reindex, and count it as blocked rather than silently advancing.
+4. **Finish all FSA reads, JSONL parsing and any cross-file reconciliation in memory before opening an IndexedDB `readwrite` transaction.** Read required revisions through readonly transactions first. Then use one short `readwrite` transaction to compare revisions and atomically commit the completed-line cursor, normalized per-file observations/affected Claude family projections, session keys and reconciliation/generation state. Do not await FSA I/O, parse a line, or perform unrelated async work while the write transaction is open. A mismatch retries from durable state; a crash before commit replays the batch, and deterministic event/turn keys make replay idempotent. On truncation/rewrite, replace that file's projection and recompute any linked Claude observations from **all files in the affected family** before publishing totals; never erase another file's evidence or count it twice. Bound overlapping alarms/startup with durable leases and revisions, not in-memory locks alone.
+5. A parser update performs a **safe reindex**: stage a new parser generation from byte zero with its own cursors and per-file evidence; include every linked Claude sidechain/file when rebuilding a family. Reconcile the complete staged provider projection and switch its active generation atomically only after all required files are successfully processed. Until then retain and label the old projection, surface reindex backlog/blocked files, and never add old and new totals together. If parsing, permissions or quota fail, leave the old generation intact and resumable; garbage-collect it only after a verified switch. Format changes trigger this process rather than silently reinterpreting old cursors.
+6. Keep source-file reads and GitHub synchronization independent. Initial backfill across the observed 1.42 GB of Codex JSONL needs multiple bounded runs; report backlog and coverage, never "fully scanned" after one 64 MiB alarm. Benchmark this **real initial volume** and a no-change repeat scan before choosing production budgets; capture total elapsed time, bytes/files/turns processed, run count, throughput, peak memory, error/backoff counts and database growth. The prototype's 64 MiB/run, 16 MiB/file and 5,000-file limits are starting safety bounds, not proven production defaults.
+
+Chrome documents persistent FSA grants and IndexedDB handles; the alarm API documents session persistence options and advises recreating important alarms on startup. A service worker is disposable, so all authoritative state is durable.[1][2][3] The controlled Chrome 158 experiment in `README.md` demonstrated `granted` and reading real files after a full restart without a post-restart picker; an earlier restart stalled, so this is feasibility evidence, not a reliability guarantee. `file:///*` is deliberately **excluded**: it grants access to far more than the two selected trees.
+
+## Phase 3 project matching without invented tasks
+
+Clockoli projects today are ordered, case-insensitive **task-URL substrings**, each associated with a configured destination; Reports derives the project from the work item's URL (`src/domain/local-settings.js`, `src/background/destination-runtime.js`). A local cwd is **not** such a URL. **No mapping is required in Phases 1–2**: retain the nullable project fields and show every observation as Unassigned. Phase 3 adds local mapping to an *existing stable project ID*, with provenance:
+
+1. If a validated Codex repository URL is present, normalize only an approved GitHub HTTPS/SSH repository coordinate (reject credentials, query, fragments and unrecognized hosts); match an explicitly configured repository/project identity **only if unique**. Do not infer an issue, PR, or destination from a substring of an arbitrary path. Repository metadata presence is not proof that the URL is valid or permitted.
+2. Otherwise match a user-approved exact/longest-prefix cwd rule to a project ID. Store HMAC fingerprints of normalized prefixes instead of raw cwd strings; compare candidate prefixes in privileged worker memory. Revalidate that the project still exists and route changes do not silently reassign already accepted observations. An ambiguous or unmatched session stays **Unassigned**, never in the default project merely because a human timer would route there.
+3. An optional later workspace-directory grant could inspect `.git` metadata **locally**, including worktrees and symlinks, to confirm remote identity. The log-folder grants do not grant access to workspaces. Do not request this extra access in Phases 1–2; any Phase 3 use requires separate consent. Claude's observed cwd paths were not present on this machine, and a `gitBranch` value alone is not a remote repository.
+
+A project mapping is not a task identity. **None of Phases 1–4** writes agent observations into `times/YYYY-MM/*.jsonl` or `.clockoli/tasks.json`, preserving the work-record v1 contract, the global human timer, queue and SHA guards. A separately approved later opt-in export would need a verified task URL/identity and destination, a stable v1 record ID, `actor.kind: agent`, `producer.kind: browser_extension`, `execution`, non-billable default, atomic task-index update and conflict-safe retry. **This is not just a writer hook:** the current `fromStoredRecord()` requires `actor.name` to equal the human storage login (`src/domain/work-records.js`), so a distinct agent actor in that branch would fail to read. Its storage ownership/reader contract must be designed and tested before any Git write. Never fabricate a GitHub issue URL from a repository name.
+
+## Integration surface, privacy and delivery phases
+
+- New pure parsers/normalizer in `src/agents/`, with focused Node tests. A dedicated `src/storage/agent-activity-store.js` encapsulates its IndexedDB transactions and FSA handles. **Do not put handles into `ChromeStore`'s current `values` map**: `exportFullLocalBackup()` serializes all its entries and current reset only clears that map (`src/storage/chrome-store.js`). Keep the collector store separate but explicitly integrate *forget/reset* with Clockoli's full local reset; specify whether encrypted full backup includes sanitized observations (recommended Phase 1: exclude collector data/handles and document that). Settings export never includes them.
+- Phase 1 needs only a small opt-in Settings permission/recovery control for directory grants, pause/resume and access repair—not the analytics UI or project mapping. Phase 2 adds a read-only Agent Activity panel in Activity with separate time metrics, per-provider coverage, unknowns, overlaps and scan/permission health; all observations may be Unassigned. Phase 3 adds user-approved mapping rules. No invoice/report inclusion in these phases. Add only extension-origin, narrowly validated messages to `src/background/message-policy.js`; content scripts receive neither handles nor paths. Reuse existing `alarms` permission; gate FSA on supported Chrome contexts without changing the existing browser-wide minimum or adding broad host permissions. Firefox/Safari support is a separate decision.
+- Do not persist source lines, messages, descriptions, tool arguments/results, raw paths, remote URLs with credentials, or arbitrary JSON keys. Reject unsafe/oversized input; keep sanitized error codes and counts only. Raw bytes necessarily exist **temporarily in worker memory** to parse JSONL; this is a privileged local-files capability and requires informed opt-in and a clear revoke/forget control. No network call belongs in the collector path. Do not expose raw metadata in content-script responses, console, backups, screenshots or telemetry.
+
+**Phase 1 — Collector (minimum viable collection):** Implement pure Codex/Claude parsers, metadata-only local storage, bounded incremental scanning, opt-in FSA permissions, background recovery and the minimal Settings grant/revoke/health control. Keep `projectId: null` and `mapping.source: unresolved`. Acceptance: focused fixtures cover Codex interleaving, aborts, orphan terminals and partial lines; Claude tool-result-only `user` rows, repeated assistant IDs, linked observations across files/sidechains, duration-event coverage and unknown ends; both providers cover unrecognized events. Isolated IndexedDB/OPFS tests demonstrate read/parse **before** `readwrite`, atomic cursor-plus-observations commit, crash replay, overlapping alarms, replacement/truncation/deletion, parser-version reindex with interrupted staging/rollback, cross-file Claude recomputation, and idempotence. Simulate `prompt`/`denied`, FSA timeout/hanging read and corrupt/oversized JSONL: no unbounded concurrency or tight retry, no cursor/data loss, health and backlog visible. Verify real-folder permission and collection with pages closed and after a full Chrome restart, explicitly recording whether a native prompt/reselection occurred.
+
+**Mandatory Phase 1 validation gate — before any Phase 2 UI development:** Run the actual collector against **real local Codex and Claude Code journals**, read-only, including the observed **1,422,471,439-byte (~1.42 GB) Codex initial backfill**; do not substitute only synthetic fixtures or the earlier structural survey. Produce a metadata-only technical report with, **for each provider and overall**:
+
+1. Discovered/measured/estimated/unknown turn counts, `measuredCoveragePct`, parser generation, scanned files/bytes, backlog, blocked files and unknown-event counts. Report measured **Agent Time** and **Wall-clock Time** separately from **Estimated Time**, plus unknown, explicitly interrupted, open and stale-unknown turn counts. Explain why Claude's explicit-duration event count is not turn coverage; do not claim complete coverage if backfill, permission or parsing is blocked.
+2. Number and total duration of overlapping eligible intervals; measured turns excluded from Wall-clock Time for lack of anchored intervals; provider and combined union results. Never conflate summed durations with wall time or human waiting.
+3. First-import and no-change repeat-scan wall time, runs, files/bytes processed, throughput, peak memory, errors/backoff and backlog trajectory. Measure **dedicated IndexedDB size after import** using the isolated browser profile's database disk footprint (report the measurement method); `navigator.storage.estimate()` is origin-wide and must not be labeled an exact IndexedDB size. Record any quota pressure.
+4. Stable observation keys, turn counts, coverage and time totals across unchanged repeat scans, extension worker suspension/restart and a full Chrome restart; verify no duplicate turns or durations. Verify recovery after an interrupted transaction, changed file and parser reindex without mixed generations, including a Claude family spanning files.
+5. Privacy evidence: inspect persisted schema/records, backup/export, UI/DOM and service-worker logs for disallowed log content; verify no source-content network transfer and no collector network path. Publish **only** aggregates, safe error codes and permission states—no raw rows, prompts, replies, tool results, filenames, paths or remote URLs.
+
+If the report exposes low or ambiguous coverage (especially Claude), permission instability, unbounded retries, duplicate totals or privacy leakage, **Phase 2 is blocked** until corrected or the limitation is explicitly resolved and represented as unknown. Do not backfill missing time with assumptions to clear the gate.
+
+**Phase 2 — Agent Activity UI and analytics:** Only after the gate, display the four time measures (Human Waiting Time explicitly unavailable), per-provider coverage and scan completeness, status breakdown, overlaps and Unassigned observations. Acceptance: UI tests verify labels, unknown/estimated separation, partial scans and inaccessible roots; browser page and worker consoles have no errors and no sensitive payloads. Do not affect human tracking, GitHub-backed work records, Reports or invoicing.
+
+**Phase 3 — Project mapping:** Add validated Git repository identity and user-approved cwd rules, with provenance and nullable `projectId`; an ambiguous or unmapped observation remains Unassigned. Acceptance: unique match, invalid remote, nonexistent cwd, changed/removed rule, overlapping prefixes and mismatched destination never silently assign a project or fabricate a task. Keep time metrics unchanged by mapping.
+
+**Phase 4 — Human + AI activity correlation:** Research overlap of independent human-timer and agent intervals as a **read-only** view. Acceptance: cross-source overlaps are labeled without double-counting or attribution claims; Human Waiting Time remains unavailable until separately validated signals exist. No automatic billable records or mutation of human/Git history.
+
+For each implemented phase, run focused tests first, then repository public and available private suites, plus relevant browser UI and worker-console verification. This branch contains Phase 1 only; the mandatory live gate above must be completed before Phase 2 begins.
+
+## Sources
+
+[1] https://developer.chrome.com/blog/persistent-permissions-for-the-file-system-access-api
+[2] https://developer.chrome.com/docs/extensions/reference/api/alarms
+[3] https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle

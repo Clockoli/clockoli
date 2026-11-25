@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>File URL read-only probe</title>
+<style>body{font:14px system-ui;max-width:740px;margin:24px auto}label{display:block;margin:12px 0}input{display:block;width:100%}pre{white-space:pre-wrap;word-break:break-word}</style>
+<h1>Isolated file URL probe</h1>
+<p>Enable “Allow access to file URLs” for <em>this experimental extension</em> in chrome://extensions. Paths stay in this extension’s local IndexedDB; only permission states and counts appear below.</p>
+<label>Codex root file URL (ends in /sessions/)<input id="codex-root" type="url"></label>
+<label>Codex known JSONL file URL<input id="codex-sample" type="url"></label>
+<label>Claude root file URL (ends in /projects/)<input id="claude-root" type="url"></label>
+<label>Claude known JSONL file URL<input id="claude-sample" type="url"></label>
+<button id="save">Save local probe paths</button> <button id="scan">Read bounded metadata</button> <button id="refresh">Refresh status</button>
+<pre id="status" aria-live="polite"></pre>
+<script type="module" src="probe.js"></script>
+</html>

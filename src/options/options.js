@@ -1,4 +1,5 @@
 import { mountRunningStatus } from '../ui/running-status.js';
+import { getAgentRoot, setAgentRoot } from '../storage/agent-activity-store.js';
 import { onboardingStep, parseRepositoryTarget, selectOnlyEligibleRepository, settleBeforeDeadline } from './onboarding-flow.js';
 import { invoicingSettings, normalizeInvoicingSettings, normalizeProjects, parseRateFields } from '../domain/local-settings.js';
 import { taskPeriodRange } from '../domain/tasks.js';
@@ -3424,6 +3425,143 @@ async function checkSignInRecovery() {
     }
   } catch { /* Keep sign-in available when the local state cannot be checked. */ }
   finally { authRecoveryChecking = false; }
+}
+
+// Handles never cross the runtime-message boundary; only this extension page stores
+// and requests permission for them. The worker receives provider/action strings.
+const agentProviders = { codex: 'sessions', claude: 'projects' };
+const agentRoots = { codex: null, claude: null };
+const agentStatus = { codex: null, claude: null };
+const agentBusy = { codex: false, claude: false };
+const agentFolderSupported = typeof window.showDirectoryPicker === 'function' && window.isSecureContext;
+
+function agentFeedback(provider, text, kind = '') {
+  const node = $(`agent-${provider}-feedback`);
+  node.textContent = text;
+  node.className = `form-feedback ${kind}`.trim();
+}
+
+function safeAgentCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function renderAgent(provider) {
+  const status = agentStatus[provider];
+  const hasRoot = Boolean(agentRoots[provider]);
+  const connected = status?.connected === true && hasRoot;
+  const permission = status?.permission;
+  const paused = status?.paused === true;
+  const needsAccess = hasRoot && !paused && permission !== 'granted';
+  const available = agentFolderSupported && !agentBusy[provider];
+  const badge = $(`agent-${provider}-status`);
+  badge.textContent = !agentFolderSupported ? 'Unavailable' : !connected ? 'Not connected'
+    : paused ? 'Paused' : needsAccess ? 'Access needed' : status?.backlog ? 'Scanning' : 'Connected';
+  badge.className = `badge${connected && !needsAccess && !paused ? ' ready' : ''}`;
+  $(`agent-${provider}-select`).disabled = !available;
+  const restore = $(`agent-${provider}-restore`);
+  restore.hidden = !needsAccess || !agentFolderSupported;
+  restore.disabled = !available;
+  const toggle = $(`agent-${provider}-pause`);
+  toggle.textContent = paused ? 'Resume' : 'Pause';
+  toggle.disabled = !available || !connected || needsAccess;
+  $(`agent-${provider}-scan`).disabled = !available || !connected || needsAccess || paused;
+  $(`agent-${provider}-forget`).disabled = !available || !hasRoot;
+  const diagnostics = $(`agent-${provider}-diagnostics`);
+  if (!connected) { diagnostics.textContent = ''; return; }
+  const count = key => safeAgentCount(status?.[key]);
+  const code = typeof status?.errorCode === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(status.errorCode)
+    ? status.errorCode : 'none';
+  diagnostics.textContent = `Files visited: ${count('filesVisited')} · Advanced: ${count('filesAdvanced')} · Bytes read: ${count('bytesRead')} · Backlog: ${status?.backlog ? 'yes' : 'no'} · Blocked: ${count('blockedFiles')} · Runs: ${count('runNumber')} · Error code: ${code}`;
+}
+
+async function refreshAgentStatus() {
+  if (!agentFolderSupported) return;
+  if (!Object.values(agentRoots).some(Boolean)) {
+    for (const provider of Object.keys(agentProviders)) { agentStatus[provider] = null; renderAgent(provider); }
+    return;
+  }
+  try {
+    const result = await send({ type: 'AGENT_COLLECTOR_STATUS' });
+    for (const provider of Object.keys(agentProviders)) {
+      agentStatus[provider] = result?.providers?.[provider] || null;
+      renderAgent(provider);
+    }
+  } catch {
+    for (const provider of Object.keys(agentProviders)) agentFeedback(provider, 'Collector status is unavailable. Retry by reopening Settings.', 'error');
+  }
+}
+
+async function initAgentSettings() {
+  $('agent-support').hidden = agentFolderSupported;
+  for (const provider of Object.keys(agentProviders)) {
+    renderAgent(provider);
+    if (!agentFolderSupported) continue;
+    try { agentRoots[provider] = await getAgentRoot(provider); }
+    catch { agentFeedback(provider, 'Saved folder access could not be loaded.', 'error'); }
+    renderAgent(provider);
+  }
+  await refreshAgentStatus();
+}
+
+async function withAgentAction(provider, action) {
+  if (!agentFolderSupported || agentBusy[provider]) return;
+  agentBusy[provider] = true;
+  agentFeedback(provider, '');
+  renderAgent(provider);
+  try {
+    if (action === 'select') {
+      const handle = await window.showDirectoryPicker({ mode: 'read' });
+      if (handle?.kind !== 'directory' || handle.name !== agentProviders[provider]) {
+        agentFeedback(provider, `Select the ${agentProviders[provider]} folder, not its parent or another folder.`, 'error');
+        return;
+      }
+      const permission = await handle.queryPermission({ mode: 'read' });
+      if (permission !== 'granted' && await handle.requestPermission({ mode: 'read' }) !== 'granted') {
+        agentFeedback(provider, 'Read access was not granted. Select the folder again to retry.', 'error');
+        return;
+      }
+      await setAgentRoot(provider, handle);
+      agentRoots[provider] = handle;
+      agentFeedback(provider, 'Scanning local metadata…');
+      await send({ type: 'AGENT_COLLECTOR_CONTROL', provider, action: 'scan' });
+    } else if (action === 'restore') {
+      const handle = agentRoots[provider];
+      if (!handle) return;
+      // Use the already loaded handle so the permission prompt retains this click's activation.
+      if (await handle.requestPermission({ mode: 'read' }) !== 'granted') {
+        agentFeedback(provider, 'Read access was not granted. Try Restore access again.', 'error');
+        return;
+      }
+      agentFeedback(provider, 'Scanning local metadata…');
+      await send({ type: 'AGENT_COLLECTOR_CONTROL', provider, action: 'scan' });
+    } else {
+      if (action === 'scan' || action === 'resume') agentFeedback(provider, 'Scanning local metadata…');
+      await send({ type: 'AGENT_COLLECTOR_CONTROL', provider, action });
+      if (action === 'forget') agentRoots[provider] = null;
+    }
+    await refreshAgentStatus();
+  } catch (error) {
+    if (error?.name !== 'AbortError') agentFeedback(provider, 'Could not complete this action. Check folder access and try again.', 'error');
+  } finally {
+    agentBusy[provider] = false;
+    renderAgent(provider);
+  }
+}
+
+for (const provider of Object.keys(agentProviders)) {
+  for (const action of ['select', 'restore', 'pause', 'scan', 'forget']) {
+    $(`agent-${provider}-${action}`).addEventListener('click', () => {
+      const control = action === 'pause' && agentStatus[provider]?.paused ? 'resume' : action;
+      void withAgentAction(provider, control);
+    });
+  }
+}
+void initAgentSettings();
+if (typeof window.setInterval === 'function') {
+  const agentStatusTimer = window.setInterval(() => {
+    if (!document.hidden && Object.values(agentBusy).every(busy => !busy)) void refreshAgentStatus();
+  }, 15_000);
+  window.addEventListener('pagehide', () => window.clearInterval(agentStatusTimer));
 }
 
 scanOpenJoinInvitations().then(refreshState).then(refreshLocalPreferences).then(refreshAddonSettings).then(refreshMergeTasks).catch(error => message(error.message, 'error'));

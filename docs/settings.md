@@ -24,6 +24,14 @@ Select **Add time repository** to connect another destination. Repository cards 
 
 See [Time repositories](time-data-repository.md) and [Work as a team](teams.md).
 
+## Local agent activity
+
+You can optionally select the **sessions** folder inside your Codex data directory and the **projects** folder inside your Claude Code data directory. Clockoli asks for read-only directory access. This does not require a GitHub connection or change your agent's files. Each provider has **Pause**, **Scan now**, **Restore access**, and **Forget** controls; Forget removes that provider's saved permission handle and local observations. Chrome may stop granting access when the last Clockoli page closes or after a restart. In that case, open Settings and select **Restore access** from a user gesture; if Chrome offers persistent access, choose it to allow unattended scans.
+
+The technical status shows permission, scan backlog, visited/advanced files, bytes read, blocked files and safe error codes. A scan runs on a best-effort MV3 alarm while Chrome is running; sleep or a closed browser delays it. An incomplete backfill or a blocked file is not complete coverage. This first phase does **not** add an activity dashboard, project mapping, human-wait analysis, invoicing, or GitHub synchronization. Elapsed agent turns can include time spent waiting for human approval and are not billable time.
+
+See [Data, privacy, and security](data-and-privacy.md#local-agent-activity) for the separate storage and backup boundary.
+
 ## Interface width
 
 Choose a centered layout or use the available screen width for Activity, Reports, and Top tasks. This preference stays in the current browser and is not included in settings backups.

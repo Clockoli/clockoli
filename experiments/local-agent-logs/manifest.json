@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Clockoli Local Log Read-only Probe",
+  "version": "0.1.0",
+  "minimum_chrome_version": "122",
+  "description": "Isolated local-only experiment; never writes agent logs or sends data over the network.",
+  "permissions": ["alarms"],
+  "background": { "service_worker": "worker.js", "type": "module" },
+  "action": { "default_popup": "probe.html" },
+  "options_page": "probe.html",
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'" }
+}

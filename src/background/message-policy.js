@@ -24,6 +24,7 @@ const EXTENSION_MESSAGES = new Set([
   'CLEAR_LOCAL_CONFIGURATION', 'MERGE_TASKS', 'GET_ADDON_SETTINGS', 'SET_ADDON_ENABLED',
   'GET_CLOCKIFY_MIGRATION_PREVIEW', 'GET_CLOCKIFY_MIGRATION_SUGGESTIONS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'CONFIRM_CLOCKIFY_MIGRATION', 'RESTORE_CLOCKIFY_MIGRATION_PREVIEW', 'INVITE_MIGRATED_USER',
   'CLEANUP_CLOCKIFY_TEST_IMPORTS', 'DELETE_ALL_CLOCKOLI_RECORDS',
+  'AGENT_COLLECTOR_STATUS', 'AGENT_COLLECTOR_CONTROL',
 ]);
 const COMPLETED_MUTATION_MESSAGES = new Set([
   'EDIT_ENTRIES', 'QUEUE_ENTRY_EDIT', 'QUEUE_ENTRY_DELETE', 'QUEUE_ENTRIES_EDIT', 'DELETE_ENTRY',
@@ -60,6 +61,24 @@ export function assertMessageAllowed(type, sender, extensionOrigin) {
     throw new Error(`Message ${type} is not allowed from this sender`);
   }
   return context.kind;
+}
+
+export function agentCollectorRequest(message, sender, extensionOrigin) {
+  if (!message || !['AGENT_COLLECTOR_STATUS', 'AGENT_COLLECTOR_CONTROL'].includes(message.type)
+      || assertMessageAllowed(message.type, sender, extensionOrigin) !== 'extension'
+      || sender?.url !== `${extensionOrigin}src/options/options.html`) {
+    throw new Error('Agent collector access requires Settings');
+  }
+  if (message.type === 'AGENT_COLLECTOR_STATUS') {
+    if (Object.keys(message).join(',') !== 'type') throw new Error('Invalid agent status request');
+    return { action: 'status' };
+  }
+  if (Object.keys(message).sort().join(',') !== 'action,provider,type'
+      || !['codex', 'claude'].includes(message.provider)
+      || !['scan', 'pause', 'resume', 'forget'].includes(message.action)) {
+    throw new Error('Invalid agent collector control');
+  }
+  return { action: message.action, provider: message.provider };
 }
 
 export function cachedViewRequest(message, sender, extensionOrigin) {

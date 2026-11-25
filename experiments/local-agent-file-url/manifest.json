@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Clockoli File URL Read-only Probe",
+  "version": "0.1.0",
+  "minimum_chrome_version": "122",
+  "description": "Isolated local-only file URL access experiment; no source-log writes or network upload.",
+  "permissions": ["alarms"],
+  "host_permissions": ["file:///*"],
+  "background": { "service_worker": "worker.js", "type": "module" },
+  "action": { "default_popup": "probe.html" },
+  "options_page": "probe.html",
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'" }
+}

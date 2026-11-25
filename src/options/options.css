@@ -24,7 +24,7 @@
 /* Focus first-time setup on the next action, not on regular Settings. */
 html:is([data-clockoli-onboarding="welcome"],[data-clockoli-onboarding="authorization"],[data-clockoli-onboarding="setup"]) .page-tab-list,
 html:is([data-clockoli-onboarding="welcome"],[data-clockoli-onboarding="authorization"],[data-clockoli-onboarding="setup"]) #running-status,
-html:is([data-clockoli-onboarding="welcome"],[data-clockoli-onboarding="authorization"],[data-clockoli-onboarding="setup"]) main.settings-main > :not(.connection-card){display:none}
+html:is([data-clockoli-onboarding="welcome"],[data-clockoli-onboarding="authorization"],[data-clockoli-onboarding="setup"]) main.settings-main > :not(.connection-card):not(#agent-settings){display:none}
 html:is([data-clockoli-onboarding="welcome"],[data-clockoli-onboarding="authorization"],[data-clockoli-onboarding="setup"]) main.settings-main{max-width:680px;margin:clamp(24px,6vh,64px) auto 40px}
 html:is([data-clockoli-onboarding="authorization"],[data-clockoli-onboarding="setup"]) .setup-progress .progress-track{display:none}
 html[data-clockoli-onboarding="setup"] #connected,
@@ -128,6 +128,8 @@ select{appearance:none;padding-right:32px;background-image:url("data:image/svg+x
 .repository-more-members>summary:focus-visible{outline:2px solid var(--focus-outlineColor);outline-offset:2px}
 .repository-more-members>.repository-team-member{margin-top:8px}
 .repository-more-members>.repository-view-all{display:inline-block;margin-top:10px}
+
+.agent-provider-list{display:grid;gap:12px}.agent-provider{padding:16px;border:1px solid var(--borderColor-muted);border-radius:6px}.agent-provider-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.agent-provider-heading h3{margin:0;font:var(--text-title-shorthand-small)}.agent-provider>.help{margin:8px 0 12px}.agent-actions{display:flex;flex-wrap:wrap;gap:8px}.agent-actions button{min-height:32px}.agent-provider .form-feedback:empty,.agent-diagnostics:empty{display:none}.agent-provider .agent-diagnostics{margin:12px 0 0;overflow-wrap:anywhere}@media(max-width:400px){.agent-actions{flex-direction:column}.agent-actions button{width:100%}}
 
 /* Keep account selection beside search, and separate the optional share link from the invite action. */
 .teammate-picker .teammate-feedback{margin:8px 0}

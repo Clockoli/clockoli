@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clockoli · Local log probe (read-only)</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; margin: 32px auto; max-width: 780px; padding: 0 18px; color: #1e293b; }
+    h1 { font-size: 24px; }
+    section { padding: 16px; margin: 16px 0; border: 1px solid #cbd5e1; border-radius: 10px; }
+    button { padding: 10px 14px; margin: 5px; cursor: pointer; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f1f5f9; padding: 16px; }
+    .note { color: #475569; }
+  </style>
+</head>
+<body>
+  <h1>Local agent logs — read-only experiment</h1>
+  <p class="note">Отдельное расширение: не меняет Clockoli и логи агентов. В IndexedDB сохраняются только выбранные handles, непрозрачные ключи файлов, смещения и счётчики. Никаких запросов в сеть.</p>
+  <section data-provider="codex">
+    <h2>Codex · ~/.codex/sessions</h2>
+    <button type="button" class="choose">Выбрать каталог sessions</button>
+    <button type="button" class="allow" hidden>Разрешить чтение снова</button>
+    <span class="permission">Не выбран</span>
+  </section>
+  <section data-provider="claude">
+    <h2>Claude Code · ~/.claude/projects</h2>
+    <button type="button" class="choose">Выбрать каталог projects</button>
+    <button type="button" class="allow" hidden>Разрешить чтение снова</button>
+    <span class="permission">Не выбран</span>
+  </section>
+  <p><button id="scan" type="button">Проверить сейчас</button> <button id="refresh" type="button">Обновить статус</button></p>
+  <pre id="status" aria-live="polite">Ожидание…</pre>
+  <script type="module" src="probe.js"></script>
+</body>
+</html>

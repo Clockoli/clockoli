@@ -1,0 +1,297 @@
+import { scanAgentJsonl } from './jsonl-reader.js';
+import { parseAgentRow, projectAgentTurns } from './parsers.js';
+import { markStaleOpenAgentTurns, summarizeAgentTurns } from './metrics.js';
+import {
+  acquireAgentLease, beginAgentReindex, commitAgentBatch, forgetAgentRoot,
+  getAgentHealth, getAgentProjection, getAgentRootState, getAgentSecret, getAgentState,
+  listAgentFiles, pruneAgentGenerations, releaseAgentLease, setAgentHealth, setAgentPaused,
+} from '../storage/agent-activity-store.js';
+
+export const AGENT_ALARM = 'agent-activity-collector';
+export const AGENT_PARSER_VERSION = 1;
+const PROVIDERS = ['codex', 'claude'];
+const MAX_ENTRIES = 20_000, MAX_FILES = 5_000, MAX_DEPTH = 6;
+const MAX_RUN_BYTES = 64 * 1024 * 1024, MAX_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_FILES_PER_RUN = 128, NATIVE_TIMEOUT_MS = 20_000, COOLDOWN_MS = 5 * 60_000;
+const pendingNative = new Map();
+let running = null;
+let runningProviders = null;
+
+function safeCode(error) {
+  if (error?.message === 'fsa_timeout') return 'fsa_timeout';
+  if (error?.name === 'NotAllowedError') return 'permission_denied';
+  if (error?.name === 'NotFoundError') return 'file_disappeared';
+  if (error?.message === 'entry_limit' || error?.message === 'file_limit') return error.message;
+  if (error?.message === 'agent_revision_conflict' || error?.message === 'agent_root_changed') return error.message;
+  return 'source_unavailable';
+}
+function boundedNative(provider, operation) {
+  if (pendingNative.has(provider)) return Promise.reject(new Error('fsa_timeout'));
+  const pending = Promise.resolve().then(operation);
+  pendingNative.set(provider, pending);
+  void pending.finally(() => { if (pendingNative.get(provider) === pending) pendingNative.delete(provider); }).catch(() => {});
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('fsa_timeout')), NATIVE_TIMEOUT_MS);
+    pending.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
+  });
+}
+async function* walk(directory, prefix = '', depth = 0, budget = { entries: 0, files: 0 }) {
+  if (depth > MAX_DEPTH) throw new Error('entry_limit');
+  for await (const [name, handle] of directory.entries()) {
+    if (++budget.entries > MAX_ENTRIES) throw new Error('entry_limit');
+    if (handle.kind === 'directory') yield* walk(handle, `${prefix}${name}/`, depth + 1, budget);
+    else if (handle.kind === 'file' && name.endsWith('.jsonl')) {
+      if (++budget.files > MAX_FILES) throw new Error('file_limit');
+      yield { handle, relativePath: `${prefix}${name}` };
+    }
+  }
+}
+async function keyer(provider) {
+  const raw = await getAgentSecret();
+  const key = await crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const encoder = new TextEncoder();
+  const cache = new Map();
+  async function hash(scope, value) {
+    if (typeof value !== 'string' || !value) return null;
+    const source = `${provider}:${scope}:${value}`;
+    if (cache.has(source)) return cache.get(source);
+    const bytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(source)));
+    const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    cache.set(source, hex);
+    return hex;
+  }
+  async function fingerprint(bytes) {
+    const digest = new Uint8Array(await crypto.subtle.sign('HMAC', key, bytes));
+    return [...digest].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+  return { hash, fingerprint };
+}
+async function opaqueEvent(provider, event, fileKey, previousSession, hash) {
+  if (event.type === 'session_meta') {
+    const sessionId = await hash('session', event.sessionId);
+    return { event: null, sessionId: sessionId || previousSession };
+  }
+  if (event.type === 'turn_context') return { event: null, sessionId: previousSession };
+  const sessionId = provider === 'codex' ? previousSession || fileKey
+    : await hash('session', event.sessionId) || fileKey;
+  const safe = { type: event.type, timestamp: event.timestamp, fileKey, sessionId };
+  for (const [name, scope] of [['turnId', 'turn'], ['uuid', 'uuid'], ['parentUuid', 'uuid'], ['agentId', 'agent']]) {
+    if (event[name]) safe[name] = await hash(scope, event[name]);
+  }
+  if (Number.isSafeInteger(event.durationMs) && event.durationMs >= 0) safe.durationMs = event.durationMs;
+  return { event: safe, sessionId: previousSession };
+}
+function healthFor(root, previous, trigger) {
+  return { connected: true, paused: Boolean(root.paused), permission: previous?.permission || 'unknown',
+    filesVisited: 0, filesAdvanced: 0, bytesRead: 0, scannedBytes: 0, blockedFiles: 0,
+    errorCode: null, errorCount: 0, backlog: false, pendingBytes: 0,
+    runNumber: (previous?.runNumber || 0) + 1, trigger, startedAt: new Date().toISOString(),
+    lastFileKey: previous?.lastFileKey || null, retryAt: null, complete: false };
+}
+async function scanProvider(provider, trigger) {
+  const root = await getAgentRootState(provider);
+  if (!root) return { connected: false, paused: false, permission: 'not_selected', complete: false };
+  const previousHealth = await getAgentHealth(provider);
+  if (root.paused) return { ...healthFor(root, previousHealth, trigger), permission: 'paused', paused: true };
+  if (trigger === 'alarm' && (previousHealth?.permission === 'prompt' || previousHealth?.permission === 'denied'
+      || previousHealth?.retryAt > Date.now())) return previousHealth;
+  const status = healthFor(root, previousHealth, trigger);
+  const lease = await acquireAgentLease(provider, root.rootId);
+  if (!lease) return { ...status, errorCode: 'scan_busy', backlog: true };
+  try {
+    status.permission = await boundedNative(provider, () => root.handle.queryPermission({ mode: 'read' }));
+    if (status.permission !== 'granted') { status.errorCode = 'access_required'; return status; }
+    const { hash, fingerprint } = await keyer(provider);
+    const state = await getAgentState(provider);
+    if (state.activeGeneration > AGENT_PARSER_VERSION || state.desiredGeneration > AGENT_PARSER_VERSION) {
+      status.errorCode = 'parser_version_unsupported'; return status;
+    }
+    if (state.activeGeneration < AGENT_PARSER_VERSION && state.desiredGeneration !== AGENT_PARSER_VERSION) {
+      await beginAgentReindex(provider, AGENT_PARSER_VERSION);
+    }
+    const generation = AGENT_PARSER_VERSION;
+    const saved = await listAgentFiles(provider, generation);
+    const savedByKey = new Map(saved.map(file => [file.fileKey, file]));
+    const entries = [];
+    await boundedNative(provider, async () => {
+      for await (const entry of walk(root.handle)) {
+        const fileKey = await hash('path', entry.relativePath);
+        entries.push({ fileKey, handle: entry.handle });
+      }
+    });
+    entries.sort((a, b) => a.fileKey.localeCompare(b.fileKey));
+    const firstAfter = entries.findIndex(entry => entry.fileKey > (previousHealth?.lastFileKey || ''));
+    const ordered = firstAfter < 0 ? entries : [...entries.slice(firstAfter), ...entries.slice(0, firstAfter)];
+    const changes = new Map();
+    const seen = new Set(entries.map(entry => entry.fileKey));
+    for (const old of saved) if (!seen.has(old.fileKey)) {
+      changes.set(old.fileKey, { fileKey: old.fileKey, remove: true, expectedRevision: old.revision });
+    }
+    for (const entry of ordered) {
+      status.filesVisited++;
+      if (status.bytesRead >= MAX_RUN_BYTES || status.filesAdvanced >= MAX_FILES_PER_RUN) {
+        status.backlog = true; break;
+      }
+      let file;
+      try { file = await boundedNative(provider, () => entry.handle.getFile()); }
+      catch (error) { status.errorCount++; status.errorCode = safeCode(error); status.backlog = true;
+        if (status.errorCode === 'permission_denied') status.permission = 'denied';
+        if (status.errorCode === 'fsa_timeout' || status.errorCode === 'permission_denied') break;
+        continue; }
+      status.scannedBytes += file.size;
+      const old = savedByKey.get(entry.fileKey);
+      if (old?.cursor?.safeErrorCode && old.cursor.size === file.size
+          && old.cursor.lastModified === file.lastModified) {
+        status.blockedFiles++; continue;
+      }
+      const fullValidation = status.runNumber % 60 === 0;
+      if (old?.cursor?.size === file.size && old.cursor.lastModified === file.lastModified
+          && (old.cursor.offset === file.size || old.cursor.pendingTail) && !fullValidation) {
+        if (old.cursor.offset < file.size) { status.backlog = true; status.pendingBytes += file.size - old.cursor.offset; }
+        continue;
+      }
+      const remaining = MAX_RUN_BYTES - status.bytesRead;
+      if (remaining < MAX_FILE_BYTES && status.bytesRead > 0) { status.backlog = true; break; }
+      try {
+        const result = await boundedNative(provider, () => scanAgentJsonl(file, old?.cursor, {
+          readBudget: Math.min(MAX_FILE_BYTES, remaining), maxLineBytes: MAX_FILE_BYTES,
+          parseRow: row => {
+            const event = parseAgentRow(provider, row);
+            return event.type === 'unknown_event' ? { kind: 'unknown' } : event;
+          }, fingerprint,
+          deadlineAt: Date.now() + 17_000,
+        }));
+        let currentSession = result.restarted ? null : old?.cursor?.sessionId || null;
+        const newEvents = [];
+        for (const event of result.events) {
+          const opaque = await opaqueEvent(provider, event, entry.fileKey, currentSession, hash);
+          currentSession = opaque.sessionId;
+          if (opaque.event) newEvents.push(opaque.event);
+        }
+        const cursor = { ...result.cursor, sessionId: currentSession,
+          safeErrorCode: result.blockedCode,
+          pendingTail: result.atEnd && result.cursor.offset < file.size && !result.blockedCode };
+        changes.set(entry.fileKey, { fileKey: entry.fileKey, expectedRevision: old?.revision || 0,
+          cursor, events: [...result.restarted ? [] : old?.events || [], ...newEvents],
+          unknownEvents: (result.restarted ? 0 : old?.unknownEvents || 0) + result.unknownEvents });
+        status.bytesRead += result.bytesRead;
+        status.filesAdvanced++;
+        status.lastFileKey = entry.fileKey;
+        if (result.blockedCode) { status.blockedFiles++; status.errorCode = result.blockedCode; status.errorCount++; }
+        if (result.backlog) { status.backlog = true; status.pendingBytes += file.size - cursor.offset; }
+      } catch (error) {
+        status.errorCode = safeCode(error); status.errorCount++; status.backlog = true;
+        if (status.errorCode === 'permission_denied') status.permission = 'denied';
+        if (status.errorCode === 'fsa_timeout' || status.errorCode === 'permission_denied') break;
+      }
+    }
+    const merged = new Map(savedByKey);
+    for (const file of changes.values()) {
+      if (file.remove) merged.delete(file.fileKey);
+      else merged.set(file.fileKey, file);
+    }
+    // Build all linked Claude observations from all files before opening a write transaction.
+    const events = [...merged.values()].flatMap(file => file.events || []);
+    const projection = projectAgentTurns(provider, events);
+    projection.unknownEvents += [...merged.values()].reduce((total, file) => total + (file.unknownEvents || 0), 0);
+    const existingProjection = await getAgentProjection(provider, generation);
+    const complete = !status.backlog && status.blockedFiles === 0 && status.errorCount === 0
+      && status.filesVisited === entries.length && [...merged.values()].every(file => file.cursor?.offset === file.cursor?.size);
+    status.complete = complete;
+    if (status.errorCount && status.errorCode !== 'agent_revision_conflict') {
+      status.retryAt = Date.now() + COOLDOWN_MS;
+    }
+    if (changes.size || (!state.activeGeneration && complete) || (complete && state.activeGeneration !== generation)) {
+      await commitAgentBatch({ provider, rootId: root.rootId, generation, files: [...changes.values()],
+        projection, expectedProjectionRevision: existingProjection?.revision || 0,
+        activate: complete && state.activeGeneration !== generation });
+    }
+    if (complete && generation > 1) await pruneAgentGenerations(provider, generation, root.rootId);
+    status.parserGeneration = generation;
+    status.activeGeneration = complete ? generation : state.activeGeneration;
+    status.discovered = projection.turns.length;
+    status.unknownEvents = projection.unknownEvents;
+    status.finishedAt = new Date().toISOString();
+    return status;
+  } catch (error) {
+    status.errorCode = safeCode(error);
+    status.errorCount++;
+    status.backlog = true;
+    if (status.errorCode === 'permission_denied') status.permission = 'denied';
+    if (status.errorCode !== 'agent_revision_conflict') status.retryAt = Date.now() + COOLDOWN_MS;
+    return status;
+  } finally {
+    await releaseAgentLease(provider, lease).catch(() => {});
+    status.finishedAt ||= new Date().toISOString();
+    await setAgentHealth(provider, root.rootId, status).catch(() => {});
+  }
+}
+export async function ensureAgentAlarm() {
+  const connected = await Promise.all(PROVIDERS.map(getAgentRootState));
+  if (connected.some(root => root && !root.paused)) {
+    if (!await chrome.alarms.get(AGENT_ALARM)) await chrome.alarms.create(AGENT_ALARM, { periodInMinutes: 1 });
+  } else await chrome.alarms.clear(AGENT_ALARM);
+}
+export async function scanAgentActivity(trigger = 'manual', onlyProvider = null) {
+  if (onlyProvider !== null && !PROVIDERS.includes(onlyProvider)) throw new TypeError('Unknown agent provider');
+  if (running) {
+    const includesProvider = onlyProvider === null ? runningProviders?.size === PROVIDERS.length
+      : runningProviders?.has(onlyProvider);
+    const current = await running;
+    return includesProvider ? current : scanAgentActivity(trigger, onlyProvider);
+  }
+  runningProviders = new Set(onlyProvider ? [onlyProvider] : PROVIDERS);
+  running = (async () => {
+    const providers = {};
+    for (const provider of runningProviders) providers[provider] = await scanProvider(provider, trigger);
+    return { providers };
+  })();
+  try { return await running; }
+  finally { running = null; runningProviders = null; }
+}
+export async function getAgentCollectorStatus() {
+  const providers = {}, allTurns = [], scan = {};
+  for (const provider of PROVIDERS) {
+    const root = await getAgentRootState(provider);
+    const health = await getAgentHealth(provider);
+    const state = await getAgentState(provider);
+    const visibleGeneration = state.activeGeneration || state.desiredGeneration;
+    const projection = root ? await getAgentProjection(provider, visibleGeneration) : null;
+    const safeHealth = { connected: Boolean(root), paused: Boolean(root?.paused),
+      permission: root ? health?.permission || 'unknown' : 'not_selected',
+      filesVisited: health?.filesVisited || 0, filesAdvanced: health?.filesAdvanced || 0,
+      bytesRead: health?.bytesRead || 0, blockedFiles: health?.blockedFiles || 0,
+      backlog: Boolean(health?.backlog), errorCode: health?.errorCode || null,
+      runNumber: health?.runNumber || 0, scannedBytes: health?.scannedBytes || 0,
+      parserGeneration: visibleGeneration, activeGeneration: state.activeGeneration,
+      complete: Boolean(!root?.paused && health?.complete && state.activeGeneration === visibleGeneration),
+      pendingBytes: health?.pendingBytes || 0, retryAt: health?.retryAt || null,
+      startedAt: health?.startedAt || null, finishedAt: health?.finishedAt || null };
+    providers[provider] = safeHealth;
+    scan[provider] = { complete: safeHealth.complete, blockedFiles: safeHealth.blockedFiles,
+      unknownEvents: projection?.unknownEvents || 0, pendingBytes: safeHealth.pendingBytes,
+      parserGeneration: visibleGeneration, scannedFiles: safeHealth.filesVisited,
+      scannedBytes: safeHealth.scannedBytes };
+    if (projection?.turns) allTurns.push(...projection.turns);
+  }
+  scan.all = {
+    complete: PROVIDERS.every(provider => scan[provider].complete),
+    blockedFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].blockedFiles, 0),
+    unknownEvents: PROVIDERS.reduce((total, provider) => total + scan[provider].unknownEvents, 0),
+    pendingBytes: PROVIDERS.reduce((total, provider) => total + scan[provider].pendingBytes, 0),
+    scannedFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].scannedFiles, 0),
+    scannedBytes: PROVIDERS.reduce((total, provider) => total + scan[provider].scannedBytes, 0),
+    parserGeneration: AGENT_PARSER_VERSION,
+  };
+  return { providers, coverage: summarizeAgentTurns(markStaleOpenAgentTurns(allTurns), scan) };
+}
+export async function controlAgentCollector(provider, action) {
+  if (!PROVIDERS.includes(provider) || !['scan', 'pause', 'resume', 'forget'].includes(action)) {
+    throw new TypeError('Invalid agent collector action');
+  }
+  if (action === 'forget') await forgetAgentRoot(provider);
+  if (action === 'pause' || action === 'resume') await setAgentPaused(provider, action === 'pause');
+  await ensureAgentAlarm();
+  if (action === 'scan' || action === 'resume') await scanAgentActivity('manual', provider);
+  return getAgentCollectorStatus();
+}

@@ -10,6 +10,8 @@ import { isUrlTaskIdentity, normalizeTaskUrl, parseGitHubProjectPaneIssueUrl, ta
 import { aggregateTaskParticipants, aggregateTrackedTasks } from '../domain/tasks.js';
 import { ChromeStore } from '../storage/chrome-store.js';
 import { IndexedDbBackend } from '../storage/chrome-store.js';
+import { resetAgentActivity } from '../storage/agent-activity-store.js';
+import { AGENT_ALARM, controlAgentCollector, ensureAgentAlarm, getAgentCollectorStatus, scanAgentActivity } from '../agents/collector.js';
 import { setAddonEnabled } from '../addons/service.js';
 import { normalizeClockifyDetailedReport } from '../addons/clockify/report-normalizer.js';
 import { normalizeClockifyDetailedCsv } from '../addons/clockify/csv-normalizer.js';
@@ -39,7 +41,7 @@ import { OnboardingCoordinator } from '../services/onboarding-coordinator.js';
 import { RepositoryInvitationService } from '../services/repository-invitations.js';
 import { withRepositoryRecovery } from '../services/repository-operation-recovery.js';
 import { discoverUserStorageBranches, verifyRestoredStorageBranch } from '../services/user-storage-branch.js';
-import { addTimeForSender, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
+import { addTimeForSender, agentCollectorRequest, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
 import { activeDestinationId, requireConfiguredDestinationId, resolveStartDestinationId, selectReadDestinations, syncPendingAll } from './destination-runtime.js';
 import { emitClockifyMigrationProgress, isClockifyProgressRequestId, registerClockifyMigrationProgressPort } from './clockify-migration-progress.js';
 import { SerialExecutor } from './serial-executor.js';
@@ -1124,6 +1126,11 @@ async function handle(message, sender) {
   const extensionOrigin = chrome.runtime.getURL('');
   assertMessageAllowed(message.type, sender, extensionOrigin);
   if (globalThis.clockoliLocalDataTransitioning) throw new Error('Clockoli is reloading after a local data change.');
+  if (message.type === 'AGENT_COLLECTOR_STATUS' || message.type === 'AGENT_COLLECTOR_CONTROL') {
+    const request = agentCollectorRequest(message, sender, extensionOrigin);
+    if (request.action === 'status') return getAgentCollectorStatus();
+    return controlAgentCollector(request.provider, request.action);
+  }
   if (message.type === 'CONSUME_TOOLBAR_TASK_CONTEXT') {
     if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) {
       throw new Error('Only Activity can consume the toolbar task context');
@@ -1529,6 +1536,8 @@ async function handle(message, sender) {
       if (Object.keys(message).length !== 1) throw new Error('Invalid local reset request.');
       return replaceFullLocalData(async () => {
         await store.resetFullLocalData();
+        await resetAgentActivity();
+        await ensureAgentAlarm();
         return { reset: true };
       });
     }
@@ -2215,13 +2224,15 @@ async function applyToolbarClickMode(mode) {
 void store.getToolbarClickMode().then(applyToolbarClickMode).catch(() => console.warn('Could not configure toolbar click behavior.'));
 chrome.runtime.onInstalled.addListener(details => {
   scheduleSync();
+  void ensureAgentAlarm().catch(() => {});
   if (details.reason === 'install') void chrome.runtime.openOptionsPage();
 });
 chrome.action.onClicked.addListener(tab => {
   void toggleActionSurface(tab).catch(() => {});
 });
-chrome.runtime.onStartup.addListener(() => { scheduleSync(); });
+chrome.runtime.onStartup.addListener(() => { scheduleSync(); void ensureAgentAlarm().catch(() => {}); });
 chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === AGENT_ALARM) void scanAgentActivity('alarm').catch(() => {});
   if (alarm.name === 'sync-pending') {
     void syncPendingNow().catch(() => {}).finally(() => pullRemoteNow().catch(() => {}));
   }
@@ -2231,3 +2242,4 @@ chrome.alarms.onAlarm.addListener(alarm => {
 });
 
 scheduleSync();
+void ensureAgentAlarm().catch(() => {});
