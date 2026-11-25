@@ -118,3 +118,75 @@ export function summarizeAgentTurns(turns, scanHealth = {}) {
     all: snapshot([...byProvider.codex, ...byProvider.claude], scanHealth?.all ?? scanHealth),
   };
 }
+
+// These are product display boundaries, not estimates of active compute or human waiting.
+const MINUTE = 60_000;
+const EXTENDED_MS = 60 * MINUTE;
+const WORKFLOW_BUCKETS = [1, 5, 15, 30, 60].map(value => value * MINUTE);
+
+/** Aggregate complete observed turn durations, not human idle time.
+ * Calendar filters assign a whole turn to its terminal instant (or last known start).
+ * Missing dates are counted separately; only all-history includes undated turns.
+ */
+export function summarizeAgentWorkflow(turns, { period = 'today', provider = 'all', thresholdMinutes = 15 } = {}, nowMs = Date.now()) {
+  if (!['today', '7d', '30d', 'all'].includes(period) ||
+      !['all', ...PROVIDERS].includes(provider) || ![5, 15, 30].includes(thresholdMinutes)) {
+    throw new TypeError('Invalid agent workflow filters');
+  }
+  const startDate = new Date(nowMs);
+  startDate.setHours(0, 0, 0, 0);
+  startDate.setDate(startDate.getDate() - (period === '7d' ? 6 : period === '30d' ? 29 : 0));
+  const result = {
+    totalTurns: 0, eligibleTurns: 0, eligibleMs: 0, shortMs: 0, longMs: 0,
+    shortCount: 0, longCount: 0, medianMs: null, shortSharePct: null,
+    extendedTurns: 0, extendedMs: 0, unknownTurns: 0, undatedTurns: 0,
+    providerDurationTurns: 0, unanchoredTurns: 0, interruptedTurns: 0,
+    buckets: WORKFLOW_BUCKETS.map(() => ({ count: 0, ms: 0 })),
+  };
+  const seen = new Set(), durations = [];
+  for (const turn of Array.isArray(turns) ? turns : []) {
+    if (!turn || !PROVIDERS.includes(turn.provider) || (provider !== 'all' && provider !== turn.provider)
+        || typeof turn.key !== 'string' || !turn.key || seen.has(turn.key)) continue;
+    seen.add(turn.key);
+    const start = instant(turn.startedAt), end = instant(turn.endedAt);
+    const date = end ?? start;
+    if (date === null) result.undatedTurns++;
+    if (period !== 'all' && (date === null || date < startDate.getTime() || date > nowMs)) continue;
+    result.totalTurns++;
+    if (turn.status === 'interrupted') result.interruptedTurns++;
+    const value = classify(turn);
+    if (value.bucket !== 'measured') { result.unknownTurns++; continue; }
+    // Even when a provider reports a short duration, a long observed lifecycle
+    // is not evidence of a usable uninterrupted delegation window.
+    if (value.ms > EXTENDED_MS || (start !== null && end !== null && end - start > EXTENDED_MS)) {
+      result.extendedTurns++;
+      result.extendedMs = safeSum(result.extendedMs, value.ms);
+      continue;
+    }
+    result.eligibleTurns++;
+    result.eligibleMs = safeSum(result.eligibleMs, value.ms);
+    if (!value.interval) result.unanchoredTurns++;
+    if (turn.durationSource === 'provider_duration' || !(
+        turn.durationSource === 'event_interval' && start !== null && end !== null &&
+        end >= start && turn.elapsedMs === end - start)) result.providerDurationTurns++;
+    durations.push(value.ms);
+    const bucket = result.buckets[WORKFLOW_BUCKETS.findIndex((max, i) =>
+      value.ms < max || i === WORKFLOW_BUCKETS.length - 1)];
+    bucket.count++;
+    bucket.ms = safeSum(bucket.ms, value.ms);
+    if (value.ms < thresholdMinutes * MINUTE) {
+      result.shortMs = safeSum(result.shortMs, value.ms);
+      result.shortCount++;
+    } else {
+      result.longMs = safeSum(result.longMs, value.ms);
+      result.longCount++;
+    }
+  }
+  if (durations.length) {
+    durations.sort((a, b) => a - b);
+    const mid = Math.floor(durations.length / 2);
+    result.medianMs = durations.length % 2 ? durations[mid] : (durations[mid - 1] + durations[mid]) / 2;
+  }
+  if (result.eligibleMs > 0) result.shortSharePct = 100 * result.shortMs / result.eligibleMs;
+  return result;
+}
