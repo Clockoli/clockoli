@@ -10,7 +10,7 @@ Configuring a PTO task also classifies its historical time entries as time off. 
 
 ## Year calendar and daily details
 
-The annual calendar shows **12 month rows**. Days with exactly one teammate away show their **GitHub avatar**; days with multiple absences show the number of distinct people away. All dates before today are dimmed, including days without any PTO. Your own time off has a bright yellow outline.
+The annual calendar shows **12 month rows**. Days with exactly one teammate away show their **GitHub avatar**; days with multiple absences show the number of distinct people away. All dates before today are strongly faded and subtly hatched, including days without any PTO. Your own time off has a bright yellow outline.
 
 **Hover over a day** to see the list of teammates in the right panel instantly. **Clicking a day** also selects it for new time off and keeps that day's details visible while the cursor stays inside the calendar. After leaving the calendar, returning to any cell resumes hover previews. The right panel shows each person's small GitHub avatar, name, hours on the right, optional description, and a delete icon only for your own saved records. There are no separate Planned/Taken count headings or task titles in the day details.
 
@@ -21,7 +21,7 @@ Navigate between years, filter by time repository, or choose **This year**. Succ
 ## Add time off
 
 1. Click one or more dates in the annual calendar. Click a selected day again to remove it from the selection. You can also **Shift-click** a range of weekdays; weekends can be selected individually.
-2. When at least one day is selected and a time-off task is configured, the **Add time off** button at the bottom right of the calendar becomes available. Otherwise it is disabled, with a tooltip explaining what is required.
+2. The **Add time off (N days)** button at the bottom right of the calendar shows how many dates are selected. When none are selected, it becomes **Add time off**, disabled with a tooltip explaining what to do.
 3. Click **Add time off** to open a short dialog. Choose the **Time repository** and **Type** (configured PTO task) when there is more than one option. Clockoli automatically selects the only available repository or task and hides its selector. Set **Hours per day** (8 by default) and an optional **Description**. The selected dates are shown for confirmation; there is no second calendar or manual start time.
 4. Save. Clockoli immediately queues the complete plan locally. Your teammates will see it after GitHub synchronization. Up to 50 days across a 500-day span can be saved together.
 
@@ -29,9 +29,11 @@ Clockoli automatically chooses a free continuous interval, preferring 09:00 or t
 
 ## Remove a day
 
-Hover over or click a day with your own saved time off. In the right-hand details, use the **trash icon beside your entry**, then confirm. **Only that one entry is removed**, even if it belongs to a group spanning many days. Other days retain their original IDs, hours and timestamps. Unsynchronized records cannot be deleted until the previous write finishes.
+Hover over or click a day with your own saved time off. In the right-hand details, use the **trash icon beside your entry**, then confirm. **Only that one entry is removed**, even if it belongs to a group spanning many days.
 
-Each deletion is accepted into the local queue and committed as one guarded GitHub operation. Clockoli checks the original entry against GitHub to avoid silently deleting a newer edit. The **My upcoming time off** list is read-only for quick navigation; there is no separate Past time off list or editing flow.
+To remove several dates at once, select days in the year calendar. If one or more selected days contain your own saved PTO, a **Delete time off (N days)** button appears alongside Add. The count is the number of selected dates with **your own** PTO, not all selected dates or the number of underlying entries. Confirm to delete all your PTO entries for those dates, including historical and future entries. Other dates in your PTO groups and everyone's else PTO remain untouched. Pending entries cannot be deleted again until their previous sync finishes.
+
+For each repository, the batch is queued locally and saved in **one guarded atomic GitHub commit**, checking the exact task, group ID and timestamps of every targeted entry. If your selection includes multiple repositories, each repository gets its own atomic operation; a failure in one is reported instead of hiding partial success. The **My upcoming time off** list is read-only for navigation; there is no separate Past time off list or editing flow.
 
 ## Reporting and billing
 
