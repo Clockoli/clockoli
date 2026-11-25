@@ -26,6 +26,8 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm test
       - run: npm run test:browser
+      - name: Agent Collector browser regressions
+        run: npm run test:browser:agents
       - run: npm run check
       - name: Verify Corresponding Source archive
         run: |
