@@ -2235,7 +2235,7 @@
       catch (error) { throw ['local', 'previous'].includes(side) ? overlapMessageError(error) : error; }
       stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
       syncIssueError = ''; recentLoaded = false;
-      if (!result?.resolved) {
+      if (!result?.resolved && !(side === 'queued-start' && result?.savedLocally)) {
         throw new Error(side
           ? 'Your edited time is saved locally but not yet confirmed on GitHub. Keep this browser data until it syncs.'
           : 'Your corrected time is stored locally but not yet confirmed on GitHub. Keep extension data until it syncs.');
