@@ -464,9 +464,9 @@ export class ReportService {
       } catch { return []; }
     });
     const selected = monthly.filter(file => file.month >= startDate.slice(0, 7) && file.month <= endDate.slice(0, 7));
-    const getBlob = file => this.requestLimiter.run(() => this.github.getBlobText(file.path, file.sha, { signal }), signal);
-    const readMonth = async file => {
-      const text = typeof cache.blobs[file.sha] === 'string' ? cache.blobs[file.sha] : (await getBlob(file)).text;
+    const getBlob = (file, readSignal = signal) => this.requestLimiter.run(() => this.github.getBlobText(file.path, file.sha, { signal: readSignal }), readSignal);
+    const readMonth = async (file, readSignal = signal) => {
+      const text = typeof cache.blobs[file.sha] === 'string' ? cache.blobs[file.sha] : (await getBlob(file, readSignal)).text;
       cache.blobs[file.sha] = text;
       return parseMonthlyRecords(text, { user: user.login, month: file.month, path: file.path, sha: file.sha });
     };
@@ -502,7 +502,7 @@ export class ReportService {
         progress(`Reading time files ${offset + 1}–${offset + files.length} of ${selected.length}`);
         const records = await settleConcurrent(files, signal, (file, fileSignal) => {
           fileSignal.throwIfAborted();
-          return boundary.has(file.sha) ? boundary.get(file.sha) : readMonth(file);
+          return boundary.has(file.sha) ? boundary.get(file.sha) : readMonth(file, fileSignal);
         });
         summaries.push(...mergeRecordSummaries(records.flat(), startDate, endDate));
       }

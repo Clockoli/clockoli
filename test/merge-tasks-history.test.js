@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { ReportService, combineMergeTaskSummaries } from '../src/services/reports.js';
 import { TrackerService } from '../src/services/tracker.js';
 import { applyTaskIndexChanges, emptyTaskIndex, serializeTaskIndex, TASK_INDEX_PATH } from '../src/domain/task-index.js';
-import { activeRecordPath, serializeMonthlyRecords } from '../src/domain/work-records.js';
+import { activeRecordPath, serializeActiveRecord, serializeMonthlyRecords } from '../src/domain/work-records.js';
 import { buildActiveTimer, buildEntry } from '../src/domain/records.js';
 import { userBranchMetadataText } from '../src/services/user-storage-branch.js';
 
@@ -11,7 +11,7 @@ const source = 'https://example.com/old', target = 'https://example.com/new';
 const range = { startDate: '1970-01-01', endDate: '2026-11-25' };
 const headSha = 'a'.repeat(40);
 const record = (user, day, i, taskUrl = source) => {
-  const id = '01K2ABCDEF0123456789ABCDE' + String(i);
+  const id = '01K2ABCDEF0123456789ABC' + String(i).padStart(3, '0');
   return buildEntry({ active: buildActiveTimer({ user, id, taskUrl, taskTitle: 'Example task',
     startedAt: day + 'T08:00:00Z', timezone: 'UTC' }), endedAt: day + 'T09:00:00Z' });
 };
@@ -56,8 +56,7 @@ test('All time uses selected people only and reuses the index for history over 1
   const old = Array.from({ length: 24 }, (_, i) => {
     const month = String(i % 12 + 1).padStart(2, '0');
     // Unique ULIDs are needed for every historical record.
-    const e = record('alice', (2022 + Math.floor(i / 12)) + '-' + month + '-01', 0);
-    return { ...e, id: '01K2ABCDEF0123456789ABC' + String(i).padStart(3, '0') };
+    return record('alice', (2022 + Math.floor(i / 12)) + '-' + month + '-01', i);
   });
   const alice = fixture('alice', 1, old);
   const bob = fixture('bob', 2, [record('bob', '2024-01-01', 1)]);
@@ -84,6 +83,14 @@ test('All time excludes future dates in the current month and future monthly fil
   assert.deepEqual(result.tasks.map(t => t.taskUrl), [source]);
   assert.equal(result.tasks[0].sessionCount, 1);
   assert.ok(!alice.reads.includes('times/2026-12/alice.jsonl'));
+});
+
+test('All time checks the boundary month even when there are no future monthly files', async () => {
+  const alice = fixture('alice', 1, [record('alice', '2023-01-01', 0), record('alice', '2026-11-26', 1, target)]);
+  const service = new ReportService({ github: repoWithPeople({ 'clockoli/users/1': alice }), cache: memoryCache() });
+  const result = await service.loadMergeTaskCatalog(range, { defaultBranch: 'main', currentUser: 'alice' });
+  assert.deepEqual(result.tasks.map(t => t.taskUrl), [source]);
+  assert.ok(!alice.reads.includes(TASK_INDEX_PATH), 'out-of-range boundary records require exact monthly history');
 });
 
 test('short period reads only intersecting months and duplicate record IDs fail closed', async () => {
@@ -114,4 +121,25 @@ test('merge scans only existing files and updates the index atomically against t
   const index = JSON.parse(writes[0].changes.find(c => c.path === TASK_INDEX_PATH).text);
   assert.equal(index.tasks[target].sessionCount, 2);
   assert.equal(index.tasks[source], undefined);
+});
+
+test('active-only merge uses an atomic index guard and the snapshot head', async () => {
+  const alice = fixture('alice', 1, []);
+  const path = activeRecordPath('alice');
+  const active = buildActiveTimer({ user: 'alice', id: '01K2ABCDEF0123456789ABC001', taskUrl: source,
+    startedAt: '2026-11-25T08:00:00Z', timezone: 'UTC' });
+  alice.files.set(path, { path, sha: 'c'.repeat(40), text: serializeActiveRecord(active) });
+  const writes = [];
+  alice.github.updateTextsAtomic = async (changes, message, options) => {
+    writes.push({ changes, options });
+    return { blobShas: { [path]: 'd'.repeat(40) } };
+  };
+  const store = { async getState() { return { pendingWrites: [], recentCache: [] }; }, async patchState() {} };
+  const tracker = new TrackerService({ github: alice.github, store, user: 'alice', timezone: 'UTC' });
+  const result = await tracker.mergeTasks({ ...range, pairs: [{ sourceTaskUrl: source, targetTaskUrl: target }] });
+  assert.deepEqual(result, { mergedEntries: 0, mergedActive: true });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].changes.length, 1);
+  assert.equal(writes[0].options.expectedHeadSha, headSha);
+  assert.equal(writes[0].options.guards[0].path, TASK_INDEX_PATH);
 });
