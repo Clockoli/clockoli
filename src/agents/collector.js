@@ -9,6 +9,8 @@ import {
 
 export const AGENT_ALARM = 'agent-activity-collector';
 export const AGENT_PARSER_VERSION = 1;
+// Projection-only changes can be rebuilt from sanitized evidence without re-reading JSONL.
+const AGENT_PROJECTION_VERSION = 1;
 const PROVIDERS = ['codex', 'claude'];
 const MAX_ENTRIES = 20_000, MAX_FILES = 5_000, MAX_DEPTH = 6;
 const MAX_RUN_BYTES = 64 * 1024 * 1024, MAX_FILE_BYTES = 16 * 1024 * 1024;
@@ -185,23 +187,29 @@ async function scanProvider(provider, trigger) {
         if (status.errorCode === 'fsa_timeout' || status.errorCode === 'permission_denied') break;
       }
     }
+    const existingProjection = await getAgentProjection(provider, generation);
     const merged = new Map(savedByKey);
     for (const file of changes.values()) {
       if (file.remove) merged.delete(file.fileKey);
       else merged.set(file.fileKey, file);
     }
-    // Build all linked Claude observations from all files before opening a write transaction.
-    const events = [...merged.values()].flatMap(file => file.events || []);
-    const projection = projectAgentTurns(provider, events);
-    projection.unknownEvents += [...merged.values()].reduce((total, file) => total + (file.unknownEvents || 0), 0);
-    const existingProjection = await getAgentProjection(provider, generation);
+    // Reuse the persisted projection on unchanged scans. Rebuild once when
+    // its interpretation changes, using existing sanitized event evidence.
+    const rebuild = changes.size > 0 || existingProjection?.projectionVersion !== AGENT_PROJECTION_VERSION;
+    let projection = existingProjection;
+    if (rebuild) {
+      const events = [...merged.values()].flatMap(file => file.events || []);
+      projection = projectAgentTurns(provider, events);
+      projection.unknownEvents += [...merged.values()].reduce((total, file) => total + (file.unknownEvents || 0), 0);
+      projection.projectionVersion = AGENT_PROJECTION_VERSION;
+    }
     const complete = !status.backlog && status.blockedFiles === 0 && status.errorCount === 0
       && status.filesVisited === entries.length && [...merged.values()].every(file => file.cursor?.offset === file.cursor?.size);
     status.complete = complete;
     if (status.errorCount && status.errorCode !== 'agent_revision_conflict') {
       status.retryAt = Date.now() + COOLDOWN_MS;
     }
-    if (changes.size || (!state.activeGeneration && complete) || (complete && state.activeGeneration !== generation)) {
+    if (rebuild || (complete && state.activeGeneration !== generation)) {
       await commitAgentBatch({ provider, rootId: root.rootId, generation, files: [...changes.values()],
         projection, expectedProjectionRevision: existingProjection?.revision || 0,
         activate: complete && state.activeGeneration !== generation });
