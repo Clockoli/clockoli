@@ -397,3 +397,123 @@ test('bulk PTO deletion validates its record limit and exact task and group mark
     previous: [{ ...make(0), groupId: 'bogus' }], bulkDayDeletion: true,
   })), /Bulk time off deletion/);
 });
+
+
+test('PTO added and deleted locally before any GitHub sync never remains remotely', async () => {
+  const { github, tracker, store } = setup();
+  const created = await tracker.queueTimeOffChange(payload([{
+    date: '2026-12-07', durationSeconds: 4 * 3600,
+  }, { date: '2026-12-08', durationSeconds: 4 * 3600 }]));
+  assert.ok(created.entries.every(entry => entry._pending));
+  const canceled = created.entries.find(entry => entry.entryDate === '2026-12-07');
+  const removed = await tracker.queueTimeOffChange(payload([], {
+    groupId: created.groupId, previous: previous([canceled]), singleDayDeletion: true,
+  }));
+  assert.equal(removed.pending, true);
+  assert.equal(github.writes.length, 0);
+  assert.equal(store.state.pendingWrites.length, 2);
+  const projected = await tracker.projectActivityRecords([]);
+  assert.deepEqual(projected.records.map(entry => entry.entryDate), ['2026-12-08'],
+    'calendar hides canceled pending PTO immediately');
+  await tracker.syncPending();
+  assert.equal(store.state.pendingWrites.length, 0);
+  assert.equal(github.writes.length, 2, 'add and dependent delete flush in FIFO order');
+  assert.deepEqual(savedRecords(github).map(entry => entry.entryDate), ['2026-12-08']);
+});
+
+test('PTO deletion follows an automatically replanned pending creation', async () => {
+  const { github, tracker, store } = setup();
+  const created = await tracker.queueTimeOffChange(payload([{
+    date: '2026-12-07', durationSeconds: 4 * 3600,
+  }]));
+  const original = created.entries[0];
+  assert.equal(original.startedAt, '2026-12-07T09:00:00.000Z');
+  await tracker.queueTimeOffChange(payload([], {
+    groupId: created.groupId, previous: previous([original]), singleDayDeletion: true,
+  }));
+  seedRemoteWork(github, '2026-12-07T09:00:00Z', '2026-12-07T12:00:00Z');
+  await tracker.syncPending();
+  assert.equal(store.state.pendingWrites.length, 0,
+    'dependent deletion must use the replanned 12:00 start, not stale 09:00');
+  assert.equal(github.writes.length, 2);
+  assert.deepEqual(savedRecords(github).map(entry => entry.startedAt),
+    ['2026-12-07T09:00:00.000Z']);
+});
+
+test('PTO queued while its creation is already in-flight deletes after that commit', async () => {
+  const { github, tracker, store } = setup();
+  const created = await tracker.queueTimeOffChange(payload([{
+    date: '2026-12-07', durationSeconds: 4 * 3600,
+  }]));
+  const originalAtomic = github.updateTextsAtomic.bind(github);
+  let inserted = false;
+  github.updateTextsAtomic = async (...args) => {
+    if (!inserted) {
+      inserted = true;
+      await tracker.queueTimeOffChange(payload([], {
+        groupId: created.groupId,
+        previous: previous(created.entries),
+        singleDayDeletion: true,
+      }));
+      assert.equal(github.writes.length, 0);
+      assert.equal(store.state.pendingWrites.length, 2);
+    }
+    return originalAtomic(...args);
+  };
+  await tracker.syncPending();
+  assert.equal(inserted, true);
+  assert.equal(store.state.pendingWrites.length, 1,
+    'new deletion stays locally queued when it was appended during the active sync');
+  assert.equal(store.state.pendingWrites[0].singleDayDeletion, true);
+  await tracker.syncPending();
+  assert.equal(store.state.pendingWrites.length, 0);
+  assert.equal(github.writes.length, 2);
+  assert.deepEqual(savedRecords(github), []);
+});
+
+test('multi-day PTO deletion accepts a mix of pending additions and remote entries', async () => {
+  const { github, tracker, store } = setup();
+  const existing = await tracker.queueTimeOffChange(payload([{
+    date: '2026-12-07', durationSeconds: 4 * 3600,
+  }]));
+  await tracker.syncPending();
+  const saved = savedRecords(github)[0];
+  const newGroup = await tracker.queueTimeOffChange(payload([{
+    date: '2026-12-08', durationSeconds: 4 * 3600,
+  }, { date: '2026-12-09', durationSeconds: 4 * 3600 }]));
+  const pending = newGroup.entries.find(entry => entry.entryDate === '2026-12-08');
+  const originals = [saved, pending].map(entry => ({
+    ...previous([entry])[0], taskUrl: entry.taskUrl,
+    groupId: entry.metadata.clockoli.timeOffGroupId,
+  }));
+  await tracker.queueTimeOffChange(payload([], {
+    previous: originals, bulkDayDeletion: true,
+  }));
+  assert.equal(github.writes.length, 1);
+  assert.equal(store.state.pendingWrites.length, 2);
+  const projected = await tracker.projectActivityRecords([saved]);
+  assert.deepEqual(projected.records.map(entry => entry.entryDate), ['2026-12-09']);
+  await tracker.syncPending();
+  assert.equal(store.state.pendingWrites.length, 0);
+  assert.equal(github.writes.length, 3);
+  assert.deepEqual(savedRecords(github).map(entry => entry.entryDate), ['2026-12-09']);
+  assert.ok(savedRecords(github)[0].metadata.clockoli.timeOffGroupId === newGroup.groupId);
+  assert.notEqual(newGroup.groupId, existing.groupId);
+});
+
+test('failed pending PTO creation blocks the dependent deletion without losing either operation', async () => {
+  const { github, tracker, store } = setup();
+  const created = await tracker.queueTimeOffChange(payload([{
+    date: '2026-12-07', durationSeconds: 8 * 3600,
+  }]));
+  await tracker.queueTimeOffChange(payload([], {
+    groupId: created.groupId, previous: previous(created.entries), singleDayDeletion: true,
+  }));
+  seedRemoteWork(github, '2026-12-07T09:00:00Z', '2026-12-07T23:00:00Z');
+  await tracker.syncPending();
+  assert.equal(github.writes.length, 0);
+  assert.equal(store.state.pendingWrites.length, 2);
+  assert.equal(store.state.pendingWrites[0].status, 'conflict');
+  assert.deepEqual((await tracker.projectActivityRecords([])).records.map(row => row.entryDate), [],
+    'optimistically deleted PTO stays hidden even while its creation conflicts');
+});
