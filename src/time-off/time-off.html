@@ -37,8 +37,9 @@
         <button id="this-year" type="button" class="time-off-secondary">This year</button>
       </div>
       <div class="time-off-toolbar-actions">
-        <label for="time-off-repository-filter">Time repository</label>
-        <select id="time-off-repository-filter"><option value="">All repositories</option></select>
+        <label id="time-off-repository-filter-field" for="time-off-repository-filter">Time repository
+          <select id="time-off-repository-filter"><option value="">All repositories</option></select>
+        </label>
         <button id="refresh-time-off" type="button" class="time-off-secondary">Refresh</button>
       </div>
     </div>
@@ -74,12 +75,12 @@
           <span><i class="legend-swatch away-2"></i>2–3 away</span>
           <span><i class="legend-swatch away-4"></i>4–6 away</span>
           <span><i class="legend-swatch away-7"></i>7+ away</span>
-          <span><i class="legend-swatch past"></i>Past</span>
+          <span><i class="legend-swatch past"></i>Past (muted)</span>
           <span><i class="legend-swatch mine"></i>My time off</span>
           <span><i class="legend-swatch pick"></i>Selected for adding</span>
         </div>
         <div class="time-off-year-actions">
-          <span id="year-selection-summary" aria-live="polite">Select days to add time off</span>
+          <button id="delete-selected-time-off" type="button" class="time-off-danger" hidden>Delete time off</button>
           <span id="add-time-off-help" class="time-off-add-help" title="Select one or more days in the calendar to add time off.">
             <button id="new-time-off" type="button" class="time-off-primary" disabled>Add time off</button>
           </span>
