@@ -127,11 +127,13 @@ test('unchanged large journal resumes and linked Claude files reconcile', async 
       return { scan, files: (await store.listAgentFiles('claude', 1)).length,
         projection: await store.getAgentProjection('claude', 1) };
     });
-    expect(deleted.files).toBe(1);
+    expect(deleted.files).toBe(2);
     expect(deleted.projection.turns).toHaveLength(1);
-    expect(deleted.projection.turns[0].status).toBe('open');
-    expect(deleted.scan.data.coverage.claude.turns.unknown).toBe(1);
-    expect(deleted.scan.data.coverage.claude.time.agentMs).toBe(0);
+    expect(deleted.projection.turns[0].key).toBe(claude.projection.turns[0].key);
+    expect(deleted.projection.turns[0].status).toBe('completed');
+    expect(deleted.scan.data.coverage.claude.scan.archivedFiles).toBe(1);
+    expect(deleted.scan.data.coverage.claude.turns.measured).toBe(1);
+    expect(deleted.scan.data.coverage.claude.time.agentMs).toBe(3000);
   } finally {
     await context?.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
