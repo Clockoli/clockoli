@@ -141,3 +141,29 @@ body.activity-rate-limit-visible #activity-running-status .running-status-error[
 .activity-source-dismiss:hover{background:var(--bgColor-muted);color:var(--fgColor-default)}
 .activity-source-track:focus-visible,.activity-source-dismiss:focus-visible,#activity-source-link:focus-visible{outline:2px solid var(--focus-outlineColor);outline-offset:2px}
 @media(max-width:640px){.activity-source-context{flex-wrap:wrap;gap:12px;padding:12px}.activity-source-copy{flex-basis:calc(100% - 104px)}.activity-source-track{order:2;width:100%}.activity-source-dismiss{margin-left:auto}}
+
+/* Optional local agent analytics; keep independent of human Activity state. */
+#agent-workflow[hidden],#agent-workflow-results[hidden],#agent-workflow-share-meter[hidden]{display:none}
+.agent-workflow{box-sizing:border-box;width:var(--clockoli-page-width);margin:16px auto 0;padding:12px 16px;border:1px solid var(--borderColor-muted);border-radius:6px;background:var(--bgColor-default);font:400 13px/1.5 var(--fontStack-sansSerif);color:var(--fgColor-default)}
+.agent-workflow summary{font-size:15px;font-weight:600;cursor:pointer}
+.agent-workflow-controls{display:flex;flex-wrap:wrap;align-items:end;gap:8px 12px;margin:12px 0}
+.agent-workflow-controls label{display:grid;gap:3px;color:var(--fgColor-muted);font-size:12px}
+.agent-workflow-controls select,.agent-workflow-controls button{box-sizing:border-box;min-height:30px;padding:4px 8px;border:1px solid var(--borderColor-default);border-radius:6px;background:var(--bgColor-default);color:var(--fgColor-default);font:inherit}
+.agent-workflow-controls button{cursor:pointer}
+.agent-workflow-controls a{color:var(--fgColor-accent);padding:5px 0}
+.agent-workflow-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:8px 16px;margin:8px 0 12px}
+.agent-workflow-kpis>div{display:grid;gap:2px}
+.agent-workflow-kpis span,.agent-workflow-note,#agent-workflow-status{color:var(--fgColor-muted);font-size:12px}
+.agent-workflow-kpis strong{font-size:21px;font-weight:600;font-variant-numeric:tabular-nums}
+.agent-workflow-windows{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px}
+#agent-workflow-share-meter{width:100%;height:14px;margin:4px 0 8px;accent-color:var(--fgColor-accent)}
+.agent-workflow-table{width:100%;border-collapse:collapse;table-layout:fixed;font-variant-numeric:tabular-nums}
+.agent-workflow-table th,.agent-workflow-table td{padding:5px 4px;text-align:left;border-bottom:1px solid var(--borderColor-muted);overflow-wrap:anywhere}
+.agent-workflow-table th{font-weight:500}
+.agent-workflow-table th:first-child{width:28%}
+.agent-workflow-table th:nth-child(2){width:35%}
+.agent-workflow-table td:nth-last-child(-n+2),.agent-workflow-table thead th:nth-last-child(-n+2){text-align:right}
+.agent-workflow-table progress{width:100%;height:10px;accent-color:var(--fgColor-accent)}
+.agent-workflow-table tfoot{color:var(--fgColor-muted)}
+#agent-workflow-status:empty{display:none}
+.agent-workflow-note{margin:10px 0 0}
