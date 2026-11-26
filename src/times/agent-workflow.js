@@ -30,6 +30,8 @@ function set(field, value) {
 function render(data) {
   const connected = Object.entries(data.providers).filter(([, state]) => state.connected);
   panel.hidden = connected.length === 0;
+  matchingPanel.hidden = panel.hidden;
+  if (panel.hidden) clearMatching();
   if (panel.hidden) { results.hidden = true; return; }
   const selected = connected.filter(([name]) => provider.value === 'all' || provider.value === name);
   if (!selected.length) {
@@ -95,3 +97,141 @@ document.getElementById('agent-workflow-refresh').addEventListener('click', () =
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 setInterval(() => { if (!document.hidden) refresh(); }, 60_000);
 refresh();
+
+const matchingPanel = document.getElementById('agent-matching');
+const matchingDate = document.getElementById('agent-matching-date');
+const matchingThreshold = document.getElementById('agent-matching-threshold');
+const matchingStatus = document.getElementById('agent-matching-status');
+const matchingResults = document.getElementById('agent-matching-results');
+const matchingRun = document.getElementById('agent-matching-run');
+const matchingExport = document.getElementById('agent-matching-export');
+let matchingData = null, matchingSequence = 0;
+function localDate(date) {
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+}
+matchingDate.value = localDate(new Date());
+matchingDate.max = matchingDate.value;
+function node(tag, text, parent, className) {
+  const el = document.createElement(tag);
+  if (text !== null) el.textContent = text;
+  if (className) el.className = className;
+  parent.append(el);
+  return el;
+}
+const matchingReasons = {
+  explicit_url_and_containment: 'Explicit task URL and contained timer',
+  repository_branch_and_containment: 'Repository + issue branch + contained timer',
+  task_history_incomplete: 'Task history is incomplete; automatic matching disabled',
+  source_evidence_unavailable: 'Source evidence unavailable',
+  source_lifecycle_changed: 'Source lifecycle differs from collected turn; scan again',
+  interval_unverified: 'Turn interval is not verified',
+  extended_turn: 'Extended turn (> 60 minutes)',
+  prompt_reference_scan_incomplete: 'Prompt URL extraction was incomplete',
+  working_directory_changed: 'Turn working directory differs from session',
+  conflicting_identity: 'Conflicting task references',
+  session_context_unverified: 'Session repository context not verified for this turn',
+  identity_outside_tracked_interval: 'Task identity matches, but turn is outside its timer',
+  repository_only: 'Repository matches, no strong task identity',
+  time_only: 'Time overlaps, no strong task identity',
+  no_overlapping_task: 'No overlapping task',
+  provider_matching_not_supported: 'Claude matching not implemented yet',
+  source_file_too_large: 'Journal exceeds per-file diagnostic limit',
+  diagnostic_byte_limit: 'Diagnostic byte limit reached',
+  source_scan_incomplete: 'Journal scan incomplete',
+  source_access_changed: 'Source access changed during diagnostic',
+  source_paused: 'Source paused',
+  source_missing: 'Journal unavailable or removed',
+  turn_evidence_missing: 'Turn identity missing in source journal',
+  permission_denied: 'Directory permission required',
+  fsa_timeout: 'Directory busy or read timed out; retry',
+  source_unavailable: 'Source unavailable',
+};
+function localTime(value) {
+  if (value === null || value === undefined) return '—';
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString('en-GB', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }) : '—';
+}
+function renderMatching(data) {
+  matchingResults.replaceChildren();
+  const matched = data.rows.filter(row => row.state === 'matched').length;
+  const warnings = [count(matched) + ' matched / ' + count(data.totalTurns) + ' observed turns · rules v' + data.ruleVersion];
+  if (data.partial) warnings.push('Task history incomplete.');
+  if (data.omittedTurns) warnings.push(count(data.omittedTurns) + ' turns omitted by diagnostic limit.');
+  if (Object.values(data.providers).some(p => p.connected && !p.complete)) warnings.push('Collector history may be incomplete.');
+  warnings.push('Scanned ' + count(data.bytesRead) + ' bytes from selected journals.');
+  matchingStatus.textContent = warnings.join(' ');
+  node('h3', 'Tasks tracked on this day', matchingResults);
+  if (!data.tasks.length) node('p', 'No tracked task candidates found.', matchingResults);
+  for (const task of data.tasks) {
+    const row = node('div', null, matchingResults, 'agent-match-task');
+    node('strong', task.title, row);
+    node('span', task.url, row);
+    node('span', task.intervals.map(i => localTime(i.start) + ' – ' + localTime(i.end) + (i.active ? ' (running)' : '')).join('; '), row);
+    const s = task.summary;
+    node('span', 'Matched turns: ' + count(s.totalTurns) + ' · included time: ' + time(s.eligibleMs)
+      + ' · short-turn share: ' + percent(s.shortSharePct) + ' · median: ' + time(s.medianMs), row);
+    node('span', ['< 1m', '1–5m', '5–15m', '15–30m', '30–60m'].map((label, i) =>
+      label + ': ' + count(s.buckets[i].count) + ' (' + time(s.buckets[i].ms) + ')').join(' · '), row);
+  }
+  node('h3', 'Turn-by-turn decision log', matchingResults);
+  for (const turn of data.rows) {
+    const details = node('details', null, matchingResults, 'agent-match-row is-' + turn.state);
+    const task = data.tasks.find(t => t.url === turn.matchedUrl);
+    node('summary', localTime(turn.startedAt ?? turn.endedAt) + ' · ' + turn.provider + ' · '
+      + time(turn.elapsedMs) + ' · ' + (task ? task.title : 'Unassigned') + ' · '
+      + (matchingReasons[turn.reason] || turn.reason), details);
+    node('p', 'Turn ID (local pseudonym): ' + turn.turnId + ' · ' + turn.status + ' · ' +
+      localTime(turn.startedAt) + ' – ' + localTime(turn.endedAt), details);
+    const e = turn.signals;
+    node('p', 'Repository: ' + (e.repository || '—') + ' · branch issue: ' + (e.branchIssueNumbers.join(', ') || '—')
+      + ' · client: ' + (e.client || '—') + ' · matching CWD evidence: ' + (e.cwdMismatch ? 'conflict' : e.contextSeen ? 'present' : 'missing'), details);
+    node('p', 'Explicit task references: ' + (e.explicitTaskUrls.join(', ') || 'none'), details);
+    node('p', 'Decision: ' + turn.reason, details);
+    const list = node('ul', null, details);
+    for (const c of turn.candidates) {
+      node('li', c.title + ' · ' + c.url + ' · overlap ' + time(c.overlapMs) +
+        ' · contained ' + (c.contained ? 'yes' : 'no') + ' · repository ' + (c.repository ? 'yes' : 'no') +
+        ' · branch ' + (c.branch ? 'yes' : 'no') + ' · explicit URL ' + (c.explicit ? 'yes' : 'no'), list);
+    }
+    if (!turn.candidates.length) node('li', 'No task candidates', list);
+  }
+}
+function clearMatching() {
+  matchingSequence++;
+  matchingData = null;
+  matchingRun.disabled = false;
+  matchingExport.disabled = true;
+  matchingResults.replaceChildren();
+  matchingStatus.textContent = 'Choose a day and analyze to see the task candidates and matching decisions.';
+}
+for (const control of [matchingDate, matchingThreshold]) control.addEventListener('change', clearMatching);
+matchingRun.addEventListener('click', async () => {
+  if (!matchingDate.reportValidity() || !matchingDate.value) return;
+  clearMatching();
+  const id = matchingSequence;
+  const date = matchingDate.value, thresholdMinutes = Number(matchingThreshold.value);
+  matchingRun.disabled = true;
+  matchingStatus.textContent = 'Reading task history and selected journals…';
+  try {
+    const data = await send({ type: 'AGENT_MATCHING_DIAGNOSTICS', date, thresholdMinutes });
+    if (id !== matchingSequence) return;
+    matchingData = { date, thresholdMinutes, ...data };
+    renderMatching(data);
+    matchingExport.disabled = false;
+  } catch {
+    if (id === matchingSequence) matchingStatus.textContent = 'Matching unavailable. Check your source access and task history, then retry.';
+  } finally {
+    if (id === matchingSequence) matchingRun.disabled = false;
+  }
+});
+matchingExport.addEventListener('click', () => {
+  if (!matchingData) return;
+  const blob = new Blob([JSON.stringify(matchingData, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob), link = document.createElement('a');
+  link.href = url;
+  link.download = 'clockoli-matching-' + matchingData.date + '.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
