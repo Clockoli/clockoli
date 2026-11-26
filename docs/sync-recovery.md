@@ -1,26 +1,49 @@
 # Advanced sync recovery
 
-Understand how Clockoli checks queued time entries and helps recover changes that conflict with GitHub.
+Clockoli keeps time changes locally until GitHub accepts them and helps resolve conflicts without losing queued work.
 
-**Do not clear extension data or discard pending changes until you have verified that the time is saved elsewhere.** Local changes may not yet exist in GitHub.
+**Do not clear browser data or discard pending time unless you have confirmed it is saved elsewhere.**
 
-## How queued additions are checked at sync
+## Sync and conflict review
 
-During background synchronization, completed additions validate the original start date's monthly file, the preceding day's partition and, if the interval crosses a month boundary, the end date's monthly file, plus the active timer; the monthly JSONL and task index update atomically. A queued addition remains valid for synchronization after midnight or a timezone change: its accepted entryDate and timezone are preserved. Running timers validate and guard the start and preceding day's files at sync.
+Completed additions check the starting month, preceding day, any crossed month boundary, and active timer; running Starts check the starting and preceding-day files. Monthly records and the task index update atomically. Accepted entry dates and timezones remain unchanged, even after midnight or a timezone change. Overlaps and concurrent GitHub changes leave operations queued for review.
 
-Remote overlap and concurrent repository changes are rejected or retained as actionable conflicts; accepted local work is never discarded silently. A conflicted running timer remains visible at the top of Activity, but its unsaved start is not a completed entry in the list. When that timer has since been stopped locally, **Review sync issues** shows two List-style records: the earlier entry and the stopped entry marked **Pending · saved in this browser**. The overlap and both records display browser-local dates and **HH:MM**, not seconds; the original stored instants still determine whether they overlap. Any still-pending edit of the earlier entry is labeled separately, so Activity's optimistic time is not mistaken for the saved time.
+Open **Activity → Review sync issues**. The **Resolve time conflict** dialog shows affected entries; multiple conflicts share a selectable list. Expand **All queued changes** to inspect waiting operations. **Resolve blocking Start** and **Go to unresolved conflict** return to the change that needs attention.
 
-The icon-only **Edit** controls open a minute-based form with only one editable field: the previous entry's End or the stopped entry's Start. The unchanged boundary and date are not displayed as inactive inputs. A changed Start uses `:01.000` and a changed End uses `:00.000`; the unchanged boundary keeps its exact stored timestamp. When the earlier record has not yet been checked on GitHub, the editor opens, but Save still requires a fresh privileged GitHub check and leaves pending work intact on failure. A queued full-form edit that repeats the original task and description is treated as an end-only edit when those fields are unchanged. For the supported Start → Stop → pending previous-end edit queue, recovery checks fresh GitHub data before saving, retains the local start and stop, and refuses unsupported queue shapes or competing remote changes.
-Unlike ordinary Add time, resolving this overlap immediately synchronizes the repaired queue with GitHub after the guarded checks. Save displays an indeterminate progress bar and disables repeated submission while this remote work is in flight. The form closes after the worker confirms the repaired queue has drained; the Activity history refresh continues separately. An error keeps the form open for review and preserves recoverable local work.
-**All queued changes** expands below the two overlap records, including the dependent stop and any other pending edits. Select one to inspect its own queued details; the overlap remains available in the list.
+Entries display local dates and HH:MM, but validation uses their exact saved timestamps. Background retries do not reset the selected resolution. If the reviewed time or a dependency changes, actions are disabled until **Recheck GitHub**. Unknown operations offer recheck and **Technical details**, never automatic deletion.
 
-The same record actions as List also offer icon-only **Delete** with an explicit confirmation. Deleting the pending entry removes its queued Start and Stop together, including their tracked time; a fresh remote check must find neither a matching timer nor a completed record, and the independent earlier edit stays queued. Deleting the earlier GitHub record first queues a guarded remote deletion; only after GitHub confirms it are its dependent queued edit removed and the pending timer retried. If that edit changed during deletion, its newer version remains visible as a separate conflict while the timer can still sync. Failed checks and remote conflicts retain recoverable work for review instead of silently discarding it. Keep extension data until Activity confirms the result.
+## Edit or delete overlapping time
 
-When the start is the last queued change and the timer is still running, **Start after previous entry** checks GitHub and aligns it to the exact end of the one completed entry already running at its start, preserving the timer ID and time since that end; the overlapping seconds are excluded. If a later change is queued, there is another completed interval or remote timer, a read is unavailable, or GitHub changes meanwhile, the queued data remains for review rather than being silently rewritten. Recheck can adopt a timer already running remotely. **Discard queued start** is destructive: it removes the local timer and its unsaved tracked time, only after an online GitHub check confirms that timer is not running there. The dialog does not offer discard while later local changes depend on that start.
+For a stopped timer overlapping saved time, the dialog shows the saved entry and **Pending time · saved in this browser**. Each card has its own **Edit saved time / Edit pending time** and **Delete saved time / Delete pending time** actions.
 
+- **Edit** opens the standard **Edit time** form: task, Start/End dates and times, description, and Non-billable. Editing pending time keeps its record ID and queues one corrected completion. Editing saved time uses a guarded GitHub update before retrying the pending timer. Both paths reject overlaps, changed GitHub records, and unsafe dependencies. Saved-entry actions require the reviewed record ID and file SHA; recheck GitHub before editing or deleting an unverified saved entry.
+- **Delete** requires confirmation. Deleting pending time irreversibly removes its local Start/Stop only after checking GitHub history, the task index, and the active timer for an existing record. A saved entry is deleted with a guarded GitHub write; any linked queued edit is removed only after that succeeds. Unrelated work stays queued. If a record is already saved, depends on another change, or cannot be verified, deletion is blocked.
+
+Unlike ordinary **Add time**, conflict edits try to sync immediately. Save blocks repeat submissions and closes after confirmation; failures keep corrected time locally queued. A stopped timer remains recoverable at the pre-save `appendMonthly` stage if GitHub confirms it has not been saved.
+
+## Start-time conflicts
+
+For `editActiveStart`, **Undo the start-time change** restores the original Start; **Start after the saved entry** moves it past the overlap when safe. A still-running timer offers **Adjust running timer Start** (Start only). A locally stopped timer offers the full **Edit pending time** form or a guarded **Delete pending time** instead. Retrying the same rejected Start does not resolve an overlap.
+
+For a queued `startTimer`, **Start after previous entry** moves Start to the end of one overlapping entry when no other timer is running on GitHub. **Save as completed time** lets you choose the actual End even if the newer timer has already stopped; any running GitHub timer remains untouched. If the same timer already has a completed entry on GitHub, Activity shows the saved entry instead. **Confirm saved time** verifies its ID and task index, then removes only the obsolete local Start without changing GitHub. If the history and index disagree or another queued change depends on that Start, confirmation is unavailable. The completion is checked for overlaps and keeps its original ID. **Discard queued start** loses unsaved time and is allowed only after GitHub confirms that no completed record or active timer with that ID exists and no other queued change depends on the Start.
+
+## Interrupted Stops and task switches
+
+If `completeTimer` or `completeTimerAndStart` fails at `verifyActive`, `appendMonthly`, or `commitCompletion`, **Edit pending time** can recover the unsaved completion with its original ID; **Delete pending time** is a separately verified, destructive choice. A task switch keeps its next timer queued and checks it independently against GitHub.
+
+Recovery also preserves later queued switches when their timer chain can be verified; an unrelated local running timer blocks unsafe recovery. If the completion was already saved, **Confirm saved time** verifies an exact match in the monthly file and task index, then clears only the local conflict. The next timer stays queued. For a switch that already reached `clearActive` or `startNext`, **Recover queued next timer** resumes the verified next Start. No recovery may overwrite a newer GitHub active timer or save the same completion twice.
+
+## Other queued operations
+
+- `discardActive`: recheck and retry removal without deleting another running timer.
+- `addTime` / `bulkAddTimes`: retry after verification, replan free intervals where available, or explicitly discard only after checking GitHub.
+- `editEntry` / `editEntries`: compare original and pending records, retry guarded edits, or discard the queued edit.
+- `deleteEntry`: retry deletion; cancellation is allowed only if the original record still exists in both the monthly file and task index.
+
+Closing the dialog never discards queued time. Saved entries that already overlap switch Timeline and Calendar to **List** for ordinary editing; queued conflicts use **Review sync issues**.
 
 ## Related guides
 
-- [Add and edit time](editing-time.md) — normal editing and adding workflows
-- [Sync and offline work](sync.md) — background syncing, retry, and conflict behavior
-- [Troubleshooting](troubleshooting.md#synchronization-and-conflicts) — symptoms and first recovery steps
+- [Add and edit time](editing-time.md)
+- [Sync and offline work](sync.md)
+- [Troubleshooting](troubleshooting.md#synchronization-and-conflicts)
