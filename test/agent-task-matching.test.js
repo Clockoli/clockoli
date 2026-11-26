@@ -1,0 +1,165 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { githubTask, githubRepository, branchIssueNumbers, extractCodexMatchingRow,
+  matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline, buildObservedTaskTimeline, turnOverlapsTrackedIntervals } from '../src/agents/task-matching.js';
+
+const date = '2026-11-25T';
+const at = time => date + time + 'Z';
+const start = Date.parse(at('18:00:00')), end = Date.parse(at('20:00:00'));
+const url = 'https://github.com/example/buddy/issues/679';
+const other = 'https://github.com/example/buddy/issues/680';
+const taskRows = [
+  { taskUrl: url, taskTitle: 'Hybrid search', startedAt: at('18:00:00'), endedAt: at('19:00:00') },
+  { taskUrl: other, taskTitle: 'Other task', startedAt: at('19:00:00'), endedAt: at('20:00:00') },
+];
+const tasks = matchingTasks(taskRows, start, end);
+const turn = { startedAt: at('18:28:40'), endedAt: at('18:28:43'), status: 'completed', provider: 'codex' };
+const meta = { type: 'session_meta', payload: { id: 'session-a', cwd: '/private/path',
+  originator: 'air-plugin:phpstorm', git: { repository_url: 'git@github.com:example/buddy.git', branch: 'feat/679-hybrid-chat-search' } } };
+const makeRows = (metadata = meta, message = 'Write a commit message', cwd = '/private/path') => [
+  metadata,
+  { type: 'event_msg', timestamp: turn.startedAt, payload: { type: 'task_started', turn_id: 'turn-a' } },
+  { type: 'turn_context', payload: { turn_id: 'turn-a', cwd } },
+  { type: 'event_msg', payload: { type: 'item_completed', turn_id: 'turn-a',
+    item: { type: 'UserMessage', content: [{ type: 'text', text: message }] } } },
+  { type: 'event_msg', timestamp: turn.endedAt, payload: { type: 'task_complete', turn_id: 'turn-a' } },
+].map(extractCodexMatchingRow).filter(Boolean);
+const evidence = (...args) => matchingEvidenceByTurn(makeRows(...args))[0];
+
+test('canonical GitHub coordinates accept HTTPS, SCP and SSH but reject credentials and foreign hosts', () => {
+  assert.equal(githubRepository('git@github.com:Example/Buddy.git'), 'example/buddy');
+  assert.equal(githubRepository('https://github.com/example/buddy.git'), 'example/buddy');
+  assert.equal(githubRepository('ssh://git@github.com/example/buddy.git'), 'example/buddy');
+  assert.equal(githubRepository('https://secret@github.com/example/buddy.git'), null);
+  assert.equal(githubRepository('https://github.com.evil.test/example/buddy.git'), null);
+  assert.equal(githubTask('https://github.com/EXAMPLE/Buddy/issues/679/').url, url);
+  assert.deepEqual(branchIssueNumbers('feat/679-hybrid-chat-search'), ['679']);
+  assert.deepEqual(branchIssueNumbers('release/2026-11-25'), []);
+  assert.deepEqual(branchIssueNumbers('dev'), []);
+});
+
+test('repository + branch + verified context + timer containment matches one task and explains other candidates', () => {
+  const result = explainAgentMatch(turn, evidence(), tasks);
+  assert.equal(result.matchedUrl, url);
+  assert.equal(result.reason, 'repository_branch_and_containment');
+  assert.equal(result.candidates[0].overlapMs, 3000);
+  assert.equal(result.candidates[0].branch, true);
+  assert.equal(result.candidates[1].repository, true);
+  assert.equal(result.candidates[1].contained, false);
+  assert.equal(JSON.stringify(result).includes('/private/path'), false);
+  assert.equal(JSON.stringify(result).includes('Write a commit message'), false);
+  assert.equal(JSON.stringify(result).includes('session-a'), false);
+});
+
+test('smoke prompt in a timer without repository metadata is unassigned, not a false match', () => {
+  const sample = { ...meta, payload: { ...meta.payload, git: null, originator: 'codex_exec' } };
+  const result = explainAgentMatch(turn, evidence(sample, 'Reply with OK'), tasks);
+  assert.equal(result.state, 'unassigned');
+  assert.equal(result.reason, 'time_only');
+  assert.equal(result.candidates[0].contained, true);
+});
+
+test('exact user-linked issue may match without repository; multiple or contradictory references abstain', () => {
+  const sample = { ...meta, payload: { ...meta.payload, git: null } };
+  assert.equal(explainAgentMatch(turn, evidence(sample, 'Work on ' + url), tasks).reason, 'explicit_url_and_containment');
+  assert.equal(explainAgentMatch(turn, evidence(meta, 'Work on ' + other), tasks).reason, 'conflicting_identity');
+  assert.equal(explainAgentMatch(turn, evidence(sample, url + ' ' + other), tasks).reason, 'conflicting_identity');
+  assert.equal(explainAgentMatch(turn, evidence(meta, 'x'.repeat(32769)), tasks).reason, 'prompt_reference_scan_incomplete');
+});
+
+test('context and lifecycle conflicts abstain; strong identities may match crossing and long turns', () => {
+  assert.equal(explainAgentMatch(turn, evidence(meta, 'task', '/different'), tasks).reason, 'working_directory_changed');
+  assert.equal(explainAgentMatch(turn, evidence(), tasks, { partial: true }).reason, 'task_history_incomplete');
+  assert.equal(explainAgentMatch(turn, null, tasks).reason, 'source_evidence_unavailable');
+  assert.equal(explainAgentMatch({ ...turn, endedAt: at('18:28:44') }, evidence(), tasks).reason, 'source_lifecycle_changed');
+  const crossed = { ...turn, endedAt: at('19:01:00') };
+  assert.equal(explainAgentMatch(crossed, { ...evidence(), endedAt: Date.parse(crossed.endedAt) }, tasks).reason, 'repository_branch_and_overlap');
+  assert.equal(explainAgentMatch({ ...turn, anchored: false }, evidence(), tasks).reason, 'interval_unverified');
+  const long = { ...turn, startedAt: at('18:00:00'), endedAt: at('19:30:00') };
+  assert.equal(explainAgentMatch(long, { ...evidence(), startedAt: Date.parse(long.startedAt), endedAt: Date.parse(long.endedAt) }, tasks).reason, 'repository_branch_and_overlap');
+});
+
+test('unscoped user messages and tool outputs cannot establish task identity', () => {
+  assert.equal(extractCodexMatchingRow({ type: 'event_msg', payload: { type: 'user_message', message: url } }), null);
+  assert.equal(extractCodexMatchingRow({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: url }] } }), null);
+  assert.equal(extractCodexMatchingRow({ type: 'event_msg', payload: { type: 'item_completed', turn_id: 'turn-a', item: { type: 'ToolResult', content: [{ type: 'text', text: url }] } } }), null);
+});
+
+test('matching candidates include intervals crossing the local day, but never unrelated days', () => {
+  const result = matchingTasks([...taskRows, { taskUrl: 'https://example.com/other', taskTitle: 'yesterday',
+    startedAt: '2026-11-24T00:00:00Z', endedAt: '2026-11-24T01:00:00Z' }], start, end);
+  assert.equal(result.length, 2);
+  assert.deepEqual(result[0].intervals, [{ start, end: Date.parse(at('19:00:00')), active: false }]);
+});
+
+test('timeline preserves long and overlapping turns, exact gaps, and original boundaries',()=>{
+  const t=(id,a,b)=>({turnId:id,provider:'codex',startedAt:new Date(a).toISOString(),endedAt:new Date(b).toISOString(),elapsedMs:b-a,status:'completed',timingConfidence:'high'});
+  const h=3600000;
+  const turns=[t('long',h/2,2*h),t('parallel',h,2.5*h),t('last',3*h,5*h),{...t('uncertain',0,h),anchored:false}];
+  const result=buildTaskTimeline([{start:0,end:4*h}],turns,0,4*h);
+  assert.equal(result.trackedMs,4*h);
+  assert.equal(result.coveredMs,3*h);
+  assert.equal(result.uncoveredMs,h);
+  assert.equal(result.coveragePct,75);
+  assert.equal(result.unverified.length,1);
+  assert.deepEqual(result.windows[0].gaps,[{start:0,end:h/2},{start:2.5*h,end:3*h}]);
+  assert.equal(result.windows[0].segments[2].end,5*h);
+  assert.equal(result.windows[0].segments[2].visibleEnd,4*h);
+});
+test('selected-day clipping and multiple task timers exclude untracked gaps and retain exact source interval',()=>{
+  const turn={turnId:'cross-day',provider:'codex',startedAt:new Date(100).toISOString(),endedAt:new Date(900).toISOString(),elapsedMs:800,status:'completed',timingConfidence:'high'};
+  const result=buildTaskTimeline([{start:0,end:400},{start:600,end:1000}],[turn],200,800);
+  assert.equal(result.trackedMs,400);assert.equal(result.coveredMs,400);assert.equal(result.observedTurnMs,800);
+  assert.deepEqual(result.windows.map(w=>[w.start,w.end,w.trackedStart,w.trackedEnd]),[[200,400,0,400],[600,800,600,1000]]);
+  assert.equal(buildTaskTimeline([{start:0,end:100}],[],0,100).windows[0].gaps[0].end,100);
+});
+
+test('observed timeline is populated without matches and attribution never changes coverage',()=>{
+  const task={url:'task-a',intervals:[{start:0,end:10000}]};
+  const turn=(id,a,b,matchedUrl=null)=>({turnId:id,provider:'codex',startedAt:new Date(a).toISOString(),endedAt:new Date(b).toISOString(),elapsedMs:b-a,status:'completed',timingConfidence:'high',matchedUrl});
+  const rows=[turn('a',1000,4000),turn('b',2000,5000),turn('c',7000,8000),turn('outside',10000,11000)];
+  const result=buildObservedTaskTimeline(task,rows,0,10000);
+  assert.equal(result.observedTurns,3);assert.equal(result.matchedTurns,0);
+  assert.equal(result.coveredMs,5000);assert.equal(result.matchedCoveredMs,0);
+  assert.equal(result.uncoveredMs,5000);assert.equal(result.unresolvedTurns,3);
+  assert.deepEqual(result.windows[0].gaps,[{start:0,end:1000},{start:5000,end:7000},{start:8000,end:10000}]);
+  const classified=buildObservedTaskTimeline(task,rows,0,10000,new Map([['a',{url:'task-a'}],['b',{url:null}],['c',{url:'task-b'}]]));
+  assert.equal(classified.coveredMs,result.coveredMs);
+  assert.equal(classified.matchedCoveredMs,3000);
+  assert.equal(classified.matchedTurns,1);assert.equal(classified.otherTaskTurns,1);
+  assert.deepEqual(classified.windows[0].segments.map(t=>t.attribution),['matched','model_unassigned','other_task']);
+});
+test('unverified overlapping observations are visible but cannot invent duration',()=>{
+  const task={url:'task-a',intervals:[{start:0,end:10000}]};
+  const rows=[{turnId:'open',provider:'codex',startedAt:new Date(2000).toISOString(),endedAt:null,elapsedMs:null,status:'open'}];
+  const result=buildObservedTaskTimeline(task,rows,0,10000);
+  assert.equal(result.observedTurns,1);assert.equal(result.coveredMs,0);
+  assert.equal(result.unverified[0].start,2000);
+  assert.equal(result.unverified[0].end,null);
+});
+
+test('tracked entries define scope before diagnostics; half-open boundaries and day clipping',()=>{
+  const t=(a,b)=>({startedAt:new Date(a).toISOString(),endedAt:b===null?null:new Date(b).toISOString()});
+  const intervals=[{start:100,end:300},{start:600,end:900}];
+  for(const [a,b,expected] of [[0,100,false],[99,101,true],[300,400,false],[599,601,true],[900,1000,false],[100,100,true],[300,300,false],[200,null,true],[500,null,false]]){
+    assert.equal(turnOverlapsTrackedIntervals(t(a,b),intervals,0,1000),expected);
+  }
+  assert.equal(turnOverlapsTrackedIntervals(t(99,101),intervals,200,1000),false);
+  assert.equal(turnOverlapsTrackedIntervals(t(0,1000),intervals,200,800),true);
+});
+
+test('semantic rejection is distinct from unresolved evidence and leaves factual timing intact',()=>{
+  const task={url:'task-a',intervals:[{start:0,end:10000}]};
+  const make=(id,a,b,matchedUrl=null)=>({turnId:id,provider:'codex',startedAt:new Date(a).toISOString(),endedAt:new Date(b).toISOString(),elapsedMs:b-a,status:'completed',timingConfidence:'high',matchedUrl});
+  const rows=[make('old',0,2000,'task-a'),make('new',3000,4000),make('unclear',5000,7000),make('not-analyzed',8000,9000)];
+  const before=buildObservedTaskTimeline(task,rows,0,10000);
+  const after=buildObservedTaskTimeline(task,rows,0,10000,new Map([
+    ['old',{url:null,reason:'unrelated',confidence:'high'}],['new',{url:'task-a',reason:'context',confidence:'medium'}],
+    ['unclear',{url:null,reason:'unrelated',confidence:'low'}],
+  ]));
+  assert.equal(before.matchedCoveredMs,2000);
+  assert.equal(after.matchedCoveredMs,1000);
+  assert.equal(before.coveredMs,after.coveredMs);
+  assert.equal(after.rejectedTurns,1);assert.equal(after.unresolvedTurns,2);
+  assert.deepEqual(after.windows[0].segments.map(s=>s.attribution),['model_unrelated','matched','model_unassigned','unassigned']);
+});

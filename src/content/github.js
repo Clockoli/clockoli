@@ -85,6 +85,11 @@
     return activityViewSave;
   }
   let timelineInstance = null;
+  let activityAgentOverlay = null;
+  if (timesMode) globalThis.addEventListener('clockoli:agent-activity-overlay', event => {
+    activityAgentOverlay = event.detail;
+    timelineInstance?.setAgentActivity?.(activityAgentOverlay);
+  });
   let timelineWindow = null;
   let timelineEntriesById = new Map();
   let timelineQueueIndicator = null;
@@ -3776,6 +3781,7 @@
           catch (error) { setError(error, 'edit'); throw error; }
         },
         });
+        if (timesMode) timelineInstance.setAgentActivity?.(activityAgentOverlay);
         if ((!timesMode || focusCurrentActivityWeek) && periodStart === weekWindow(Date.now()).start) timelineInstance.scrollToEnd();
         if (focusCurrentActivityWeek && timelineInstance.getViewMode?.() === 'timeline') {
           activityInitialFocusMounted = true;

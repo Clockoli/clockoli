@@ -44,6 +44,38 @@
     <div id="activity-summary" aria-busy="true"><div class="activity-initial-summary" aria-hidden="true"><strong>This week</strong><span>Loading totals…</span></div></div>
     <div id="activity-running-status" class="running-status is-loading" aria-label="Running status"><div class="running-status-row">Loading tracking status…</div></div>
   </div>
+  <section id="agent-matching" class="agent-workflow" aria-labelledby="agent-matching-title" hidden>
+    <details open>
+      <summary id="agent-matching-title">AI activity</summary>
+      <p class="agent-workflow-note">Green: proposed task match. Gray: unresolved overlap. Turns rejected as unrelated by the model are hidden from calendar blocks.</p>
+      <div class="agent-workflow-controls">
+        <label>Day <input id="agent-matching-date" type="date" min="1970-01-01"></label>
+        <button id="agent-matching-run" type="button">Show activity</button>
+        <label class="agent-unmatched-option"><input id="agent-show-unmatched" type="checkbox" checked> Show unresolved turns</label>
+        <button id="agent-matching-export" type="button" disabled>Download debug JSON</button>
+      </div>
+      <p id="agent-matching-status" role="status">Choose a day to see tracked entries and overlapping AI turns.</p>
+      <div id="agent-matching-comparison"></div>
+      <details id="agent-entry-debug"><summary>Detailed intervals &amp; matching diagnostics</summary><div id="agent-matching-results"></div></details>
+      <details id="semantic-matching-controls">
+        <summary>Semantic matching · experimental (optional paid API)</summary>
+        <p class="agent-workflow-note">Prepare a local preview first. Only send after reviewing the exact content. Prompts and issue descriptions can contain confidential information even after automatic redaction. API keys are used for this run only; provider charges and retention policies apply.</p>
+        <div class="agent-workflow-controls">
+          <label>API provider <select id="semantic-provider"><option value="openrouter">OpenRouter</option><option value="openai">OpenAI</option><option value="anthropic">Claude (Anthropic)</option></select></label>
+          <label>Model ID <input id="semantic-model" type="text" maxlength="200" autocomplete="off" placeholder="Provider model ID"></label>
+          <button type="button" id="semantic-prepare">Prepare preview</button>
+        </div>
+        <p id="semantic-status" role="status"></p>
+        <pre id="semantic-preview" style="max-height:280px;overflow:auto;white-space:pre-wrap" hidden></pre>
+        <div class="agent-workflow-controls">
+          <label>API key <input id="semantic-key" type="password" autocomplete="off" maxlength="4096"></label>
+          <label><input type="checkbox" id="semantic-consent"> I reviewed and authorize sending the preview to the selected provider.</label>
+          <button type="button" id="semantic-run" disabled>Classify preview</button>
+        </div>
+        <div id="semantic-results"></div>
+      </details>
+    </details>
+  </section>
   <div id="activity-sync-status"></div>
   <div id="clockoli-times-root"><div class="activity-initial-loading" role="status">Loading activity…</div></div>
   <script src="../ui/instant-tooltips.js"></script>
@@ -55,5 +87,6 @@
   <script type="module" src="../ui/pending-navigation.js"></script>
   <script type="module" src="../ui/running-status.js"></script>
   <script type="module" src="times-add-time.js"></script>
+  <script type="module" src="agent-workflow.js"></script>
 </body>
 </html>

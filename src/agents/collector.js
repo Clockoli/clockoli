@@ -1,6 +1,8 @@
+import { createSemanticExtractor, semanticContext, makeSemanticBatches, redactSemanticText } from './semantic-matching.js';
 import { scanAgentJsonl } from './jsonl-reader.js';
 import { parseAgentRow, projectAgentTurns } from './parsers.js';
-import { markStaleOpenAgentTurns, summarizeAgentTurns } from './metrics.js';
+import { extractCodexMatchingRow, matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline, buildObservedTaskTimeline, turnOverlapsTrackedIntervals, MATCH_RULE_VERSION } from './task-matching.js';
+import { markStaleOpenAgentTurns, summarizeAgentTurns, summarizeAgentWorkflow } from './metrics.js';
 import {
   acquireAgentLease, beginAgentReindex, commitAgentBatch, forgetAgentRoot,
   getAgentHealth, getAgentProjection, getAgentRootState, getAgentSecret, getAgentState,
@@ -9,6 +11,8 @@ import {
 
 export const AGENT_ALARM = 'agent-activity-collector';
 export const AGENT_PARSER_VERSION = 1;
+// Projection-only changes can be rebuilt from sanitized evidence without re-reading JSONL.
+const AGENT_PROJECTION_VERSION = 1;
 const PROVIDERS = ['codex', 'claude'];
 const MAX_ENTRIES = 20_000, MAX_FILES = 5_000, MAX_DEPTH = 6;
 const MAX_RUN_BYTES = 64 * 1024 * 1024, MAX_FILE_BYTES = 16 * 1024 * 1024;
@@ -124,8 +128,25 @@ async function scanProvider(provider, trigger) {
     const ordered = firstAfter < 0 ? entries : [...entries.slice(firstAfter), ...entries.slice(0, firstAfter)];
     const changes = new Map();
     const seen = new Set(entries.map(entry => entry.fileKey));
-    for (const old of saved) if (!seen.has(old.fileKey)) {
-      changes.set(old.fileKey, { fileKey: old.fileKey, remove: true, expectedRevision: old.revision });
+    // A successful enumeration is the evidence of disappearance. Keep the
+    // sanitized events, not the source bytes, so linked Claude turns survive.
+    const previousGeneration = state.activeGeneration && state.activeGeneration !== generation
+      ? await listAgentFiles(provider, state.activeGeneration) : [];
+    const archiveCandidates = new Map(previousGeneration.map(file => [file.fileKey, file]));
+    for (const file of saved) {
+      const previous = archiveCandidates.get(file.fileKey);
+      // If a source vanishes mid-reindex, prefer the last complete evidence
+      // to an incomplete staging record. Never concatenate two generations.
+      if (!previous || file.sourceMissing || file.cursor?.offset === file.cursor?.size
+          || previous.cursor?.offset !== previous.cursor?.size) archiveCandidates.set(file.fileKey, file);
+    }
+    for (const old of archiveCandidates.values()) {
+      if (seen.has(old.fileKey)) continue;
+      const current = savedByKey.get(old.fileKey);
+      if (current === old && old.sourceMissing) continue;
+      changes.set(old.fileKey, { ...old, sourceMissing: true,
+        evidenceGeneration: old.evidenceGeneration ?? old.generation,
+        expectedRevision: current?.revision || 0 });
     }
     for (const entry of ordered) {
       status.filesVisited++;
@@ -140,12 +161,13 @@ async function scanProvider(provider, trigger) {
         continue; }
       status.scannedBytes += file.size;
       const old = savedByKey.get(entry.fileKey);
-      if (old?.cursor?.safeErrorCode && old.cursor.size === file.size
+      const reusable = old && (old.evidenceGeneration ?? generation) === generation;
+      if (reusable && !old.sourceMissing && old.cursor?.safeErrorCode && old.cursor.size === file.size
           && old.cursor.lastModified === file.lastModified) {
         status.blockedFiles++; continue;
       }
       const fullValidation = status.runNumber % 60 === 0;
-      if (old?.cursor?.size === file.size && old.cursor.lastModified === file.lastModified
+      if (reusable && !old.sourceMissing && old.cursor?.size === file.size && old.cursor.lastModified === file.lastModified
           && (old.cursor.offset === file.size || old.cursor.pendingTail) && !fullValidation) {
         if (old.cursor.offset < file.size) { status.backlog = true; status.pendingBytes += file.size - old.cursor.offset; }
         continue;
@@ -153,7 +175,7 @@ async function scanProvider(provider, trigger) {
       const remaining = MAX_RUN_BYTES - status.bytesRead;
       if (remaining < MAX_FILE_BYTES && status.bytesRead > 0) { status.backlog = true; break; }
       try {
-        const result = await boundedNative(provider, () => scanAgentJsonl(file, old?.cursor, {
+        const result = await boundedNative(provider, () => scanAgentJsonl(file, reusable ? old.cursor : null, {
           readBudget: Math.min(MAX_FILE_BYTES, remaining), maxLineBytes: MAX_FILE_BYTES,
           parseRow: row => {
             const event = parseAgentRow(provider, row);
@@ -161,7 +183,8 @@ async function scanProvider(provider, trigger) {
           }, fingerprint,
           deadlineAt: Date.now() + 17_000,
         }));
-        let currentSession = result.restarted ? null : old?.cursor?.sessionId || null;
+        const replaceEvidence = !reusable || result.restarted;
+        let currentSession = replaceEvidence ? null : old?.cursor?.sessionId || null;
         const newEvents = [];
         for (const event of result.events) {
           const opaque = await opaqueEvent(provider, event, entry.fileKey, currentSession, hash);
@@ -172,8 +195,9 @@ async function scanProvider(provider, trigger) {
           safeErrorCode: result.blockedCode,
           pendingTail: result.atEnd && result.cursor.offset < file.size && !result.blockedCode };
         changes.set(entry.fileKey, { fileKey: entry.fileKey, expectedRevision: old?.revision || 0,
-          cursor, events: [...result.restarted ? [] : old?.events || [], ...newEvents],
-          unknownEvents: (result.restarted ? 0 : old?.unknownEvents || 0) + result.unknownEvents });
+          cursor, sourceMissing: false, evidenceGeneration: generation,
+          events: [...replaceEvidence ? [] : old?.events || [], ...newEvents],
+          unknownEvents: (replaceEvidence ? 0 : old?.unknownEvents || 0) + result.unknownEvents });
         status.bytesRead += result.bytesRead;
         status.filesAdvanced++;
         status.lastFileKey = entry.fileKey;
@@ -185,23 +209,35 @@ async function scanProvider(provider, trigger) {
         if (status.errorCode === 'fsa_timeout' || status.errorCode === 'permission_denied') break;
       }
     }
+    const existingProjection = await getAgentProjection(provider, generation);
     const merged = new Map(savedByKey);
     for (const file of changes.values()) {
       if (file.remove) merged.delete(file.fileKey);
       else merged.set(file.fileKey, file);
     }
-    // Build all linked Claude observations from all files before opening a write transaction.
-    const events = [...merged.values()].flatMap(file => file.events || []);
-    const projection = projectAgentTurns(provider, events);
-    projection.unknownEvents += [...merged.values()].reduce((total, file) => total + (file.unknownEvents || 0), 0);
-    const existingProjection = await getAgentProjection(provider, generation);
+    // Reuse the persisted projection on unchanged scans. Rebuild once when
+    // its interpretation changes, using existing sanitized event evidence.
+    const rebuild = changes.size > 0 || existingProjection?.projectionVersion !== AGENT_PROJECTION_VERSION;
+    let projection = existingProjection;
+    if (rebuild) {
+      const events = [...merged.values()].flatMap(file => file.events || []);
+      projection = projectAgentTurns(provider, events);
+      projection.unknownEvents += [...merged.values()].reduce((total, file) => total + (file.unknownEvents || 0), 0);
+      projection.projectionVersion = AGENT_PROJECTION_VERSION;
+      const archived = [...merged.values()].filter(file => file.sourceMissing);
+      projection.archivedFiles = archived.length;
+      projection.archivedIncompleteFiles = archived.filter(file => file.cursor?.offset !== file.cursor?.size || file.cursor?.safeErrorCode).length;
+      projection.archivedOlderParserFiles = archived.filter(file => file.evidenceGeneration !== generation).length;
+    }
     const complete = !status.backlog && status.blockedFiles === 0 && status.errorCount === 0
-      && status.filesVisited === entries.length && [...merged.values()].every(file => file.cursor?.offset === file.cursor?.size);
-    status.complete = complete;
+      && status.filesVisited === entries.length && [...merged.values()].every(file => file.sourceMissing || file.cursor?.offset === file.cursor?.size);
+    // A missing source cannot be re-read. Activate the available projection,
+    // but do not claim complete coverage of historical evidence that was partial.
+    status.complete = complete && !projection.archivedIncompleteFiles && !projection.archivedOlderParserFiles;
     if (status.errorCount && status.errorCode !== 'agent_revision_conflict') {
       status.retryAt = Date.now() + COOLDOWN_MS;
     }
-    if (changes.size || (!state.activeGeneration && complete) || (complete && state.activeGeneration !== generation)) {
+    if (rebuild || (complete && state.activeGeneration !== generation)) {
       await commitAgentBatch({ provider, rootId: root.rootId, generation, files: [...changes.values()],
         projection, expectedProjectionRevision: existingProjection?.revision || 0,
         activate: complete && state.activeGeneration !== generation });
@@ -249,7 +285,7 @@ export async function scanAgentActivity(trigger = 'manual', onlyProvider = null)
   try { return await running; }
   finally { running = null; runningProviders = null; }
 }
-export async function getAgentCollectorStatus() {
+export async function getAgentCollectorStatus(workflow = null) {
   const providers = {}, allTurns = [], scan = {};
   for (const provider of PROVIDERS) {
     const root = await getAgentRootState(provider);
@@ -265,13 +301,17 @@ export async function getAgentCollectorStatus() {
       runNumber: health?.runNumber || 0, scannedBytes: health?.scannedBytes || 0,
       parserGeneration: visibleGeneration, activeGeneration: state.activeGeneration,
       complete: Boolean(!root?.paused && health?.complete && state.activeGeneration === visibleGeneration),
+      archivedFiles: projection?.archivedFiles || 0,
+      archivedIncompleteFiles: projection?.archivedIncompleteFiles || 0,
+      archivedOlderParserFiles: projection?.archivedOlderParserFiles || 0,
       pendingBytes: health?.pendingBytes || 0, retryAt: health?.retryAt || null,
       startedAt: health?.startedAt || null, finishedAt: health?.finishedAt || null };
     providers[provider] = safeHealth;
     scan[provider] = { complete: safeHealth.complete, blockedFiles: safeHealth.blockedFiles,
       unknownEvents: projection?.unknownEvents || 0, pendingBytes: safeHealth.pendingBytes,
       parserGeneration: visibleGeneration, scannedFiles: safeHealth.filesVisited,
-      scannedBytes: safeHealth.scannedBytes };
+      scannedBytes: safeHealth.scannedBytes, archivedFiles: safeHealth.archivedFiles,
+      archivedIncompleteFiles: safeHealth.archivedIncompleteFiles, archivedOlderParserFiles: safeHealth.archivedOlderParserFiles };
     if (projection?.turns) allTurns.push(...projection.turns);
   }
   scan.all = {
@@ -282,8 +322,19 @@ export async function getAgentCollectorStatus() {
     scannedFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].scannedFiles, 0),
     scannedBytes: PROVIDERS.reduce((total, provider) => total + scan[provider].scannedBytes, 0),
     parserGeneration: AGENT_PARSER_VERSION,
+    archivedFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].archivedFiles, 0),
+    archivedIncompleteFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].archivedIncompleteFiles, 0),
+    archivedOlderParserFiles: PROVIDERS.reduce((total, provider) => total + scan[provider].archivedOlderParserFiles, 0),
   };
-  return { providers, coverage: summarizeAgentTurns(markStaleOpenAgentTurns(allTurns), scan) };
+  const turns = markStaleOpenAgentTurns(allTurns);
+  if (workflow) return {
+    providers: Object.fromEntries(PROVIDERS.map(provider => {
+      const { connected, paused, permission, complete } = providers[provider];
+      return [provider, { connected, paused, permission, complete }];
+    })),
+    workflow: summarizeAgentWorkflow(turns, workflow),
+  };
+  return { providers, coverage: summarizeAgentTurns(turns, scan) };
 }
 export async function controlAgentCollector(provider, action) {
   if (!PROVIDERS.includes(provider) || !['scan', 'pause', 'resume', 'forget'].includes(action)) {
@@ -294,4 +345,113 @@ export async function controlAgentCollector(provider, action) {
   await ensureAgentAlarm();
   if (action === 'scan' || action === 'resume') await scanAgentActivity('manual', provider);
   return getAgentCollectorStatus();
+}
+
+// An explicit diagnostic, not another continuous collector. Re-read only files
+// containing already observed turns for the selected day. No new persisted
+// fields, reindex, raw prompt export, or automatic writes to time records.
+export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { partial = false, semantic = false, loadDescription = null } = {}) {
+  const tasks = matchingTasks(records, dayStart, dayEnd);
+  const taskLimit = 100;
+  if (tasks.length > taskLimit) throw new Error('Too many task candidates for a single day');
+  const dayTurns = [], providers = {};
+  for (const provider of PROVIDERS) {
+    const root = await getAgentRootState(provider);
+    const state = await getAgentState(provider);
+    const health = await getAgentHealth(provider);
+    const projection = root ? await getAgentProjection(provider, state.activeGeneration || state.desiredGeneration) : null;
+    providers[provider] = { connected: Boolean(root), complete: Boolean(root && health?.complete && !root.paused),
+      permission: health?.permission || 'unknown' };
+    for (const turn of projection?.turns || []) {
+      const date = Date.parse(turn.startedAt ?? turn.endedAt);
+      const end = Date.parse(turn.endedAt);
+      if ((date >= dayStart && date < dayEnd) || (date < dayEnd && end > dayStart)) dayTurns.push(turn);
+    }
+  }
+  dayTurns.sort((a, b) => Date.parse(a.startedAt ?? a.endedAt) - Date.parse(b.startedAt ?? b.endedAt) || a.key.localeCompare(b.key));
+  // Scope evidence to actual Clockoli entries before applying the read budget.
+  const trackedIntervals = tasks.flatMap(task=>task.intervals);
+  const relevantTurns = dayTurns.filter(turn=>turnOverlapsTrackedIntervals(turn,trackedIntervals,dayStart,dayEnd));
+  const selected = relevantTurns.slice(0, 300);
+  const evidence = new Map(), sourceStatus = new Map();
+  const semanticEntries = [];
+  const codexTurns = selected.filter(turn => turn.provider === 'codex');
+  const wanted = new Set(codexTurns.map(turn => turn.sourceFileKey));
+  let bytesRead = 0;
+  const root = wanted.size ? await getAgentRootState('codex') : null;
+  if (root && !root.paused) {
+    try {
+      const permission = await boundedNative('codex', () => root.handle.queryPermission({ mode: 'read' }));
+      if (permission !== 'granted') throw new Error('permission_denied');
+      const { hash, fingerprint } = await keyer('codex');
+      const selectedFiles = [];
+      await boundedNative('codex', async () => {
+        for await (const entry of walk(root.handle)) {
+          const fileKey = await hash('path', entry.relativePath);
+          if (wanted.has(fileKey)) selectedFiles.push({ fileKey, handle: entry.handle });
+        }
+      });
+      for (const entry of selectedFiles.sort((a, b) => a.fileKey.localeCompare(b.fileKey))) {
+        try {
+          const file = await boundedNative('codex', () => entry.handle.getFile());
+          if (file.size > (semantic ? MAX_RUN_BYTES : MAX_FILE_BYTES)) { sourceStatus.set(entry.fileKey, 'source_file_too_large'); continue; }
+          if (bytesRead + file.size > MAX_RUN_BYTES) { sourceStatus.set(entry.fileKey, 'diagnostic_byte_limit'); continue; }
+          const scan = await boundedNative('codex', () => scanAgentJsonl(file, null, {
+            readBudget: semantic ? MAX_RUN_BYTES : MAX_FILE_BYTES, maxLineBytes: MAX_FILE_BYTES, fingerprint,
+            parseRow: semantic ? createSemanticExtractor(extractCodexMatchingRow) : extractCodexMatchingRow, deadlineAt: Date.now() + 17_000,
+          }));
+          bytesRead += scan.bytesRead;
+          if (scan.blockedCode || scan.backlog) { sourceStatus.set(entry.fileKey, 'source_scan_incomplete'); continue; }
+          const items = matchingEvidenceByTurn(scan.events);
+          for (const item of semantic ? semanticContext(items) : items) {
+            const sessionId = await hash('session', item.sessionId);
+            const turnId = await hash('turn', item.turnId);
+            evidence.set(JSON.stringify([entry.fileKey, sessionId, turnId]), item);
+          }
+          sourceStatus.set(entry.fileKey, 'read');
+        } catch (error) {
+          sourceStatus.set(entry.fileKey, safeCode(error));
+          if (safeCode(error) === 'fsa_timeout') break;
+        }
+      }
+    } catch (error) {
+      for (const fileKey of wanted) sourceStatus.set(fileKey, error?.message === 'permission_denied' ? 'permission_denied' : safeCode(error));
+    }
+  }
+  // A root may be forgotten/replaced while this read-only diagnostic runs.
+  // Never return evidence gathered from a disconnected or superseded root.
+  const currentRoot = root ? await getAgentRootState('codex') : null;
+  if (root && (currentRoot?.rootId !== root.rootId || currentRoot.paused)) {
+    evidence.clear();
+    for (const fileKey of wanted) sourceStatus.set(fileKey, 'source_access_changed');
+  }
+  const byTask = new Map(tasks.map(task => [task.url, []]));
+  const rows = selected.map(turn => {
+    const sessionId = (() => { try { return JSON.parse(turn.sessionKey)[2]; } catch { return null; } })();
+    const item = turn.provider === 'codex' ? evidence.get(JSON.stringify([turn.sourceFileKey, sessionId, turn.upstreamTurnId])) : null;
+    const reason = turn.provider !== 'codex' ? 'provider_matching_not_supported'
+      : sourceStatus.get(turn.sourceFileKey) === 'read' ? 'turn_evidence_missing'
+      : sourceStatus.get(turn.sourceFileKey) || (root?.paused ? 'source_paused' : 'source_missing');
+    const match = explainAgentMatch(turn, item ?? { error: reason }, tasks, { partial });
+    if (match.matchedUrl) byTask.get(match.matchedUrl)?.push(turn);
+    if (semantic) semanticEntries.push({ turn, item, match });
+    return { turnId: turn.upstreamTurnId, provider: turn.provider, startedAt: turn.startedAt, endedAt: turn.endedAt,
+      elapsedMs: turn.elapsedMs, status: turn.status, durationSource: turn.durationSource, timingConfidence: turn.timingConfidence, providerDurationMs: turn.providerDurationMs, anchored: turn.anchored, ...match };
+  });
+  let preview;
+  if (semantic) {
+    // Titles are available locally; issue body fetch is optional and may fail.
+    if (loadDescription && !partial && tasks.length <= 10) await Promise.all(tasks.map(async task => {
+      try { task.description = redactSemanticText(await loadDescription(task.url), 1600)?.text ?? null; }
+      catch { task.description = null; }
+    }));
+    const latest = root ? await getAgentRootState('codex') : null;
+    if (root && (latest?.rootId !== root.rootId || latest.paused)) throw new Error('Agent source access changed');
+    preview = { rootId: root?.rootId ?? null, ...(partial ? { batches: [], skipped: selected.map(t=>t.upstreamTurnId) } : makeSemanticBatches(tasks, semanticEntries)) };
+  }
+  return { ...(semantic ? { preview } : {}), ruleVersion: MATCH_RULE_VERSION, providers, totalTurns: relevantTurns.length, outsideTurns: dayTurns.length - relevantTurns.length, omittedTurns: relevantTurns.length - selected.length,
+    bytesRead, partial, dayStart, dayEnd, tasks: tasks.map(task => ({
+      ...task, timeline: buildTaskTimeline(task.intervals, byTask.get(task.url), dayStart, dayEnd),
+      observedTimeline: buildObservedTaskTimeline(task, rows, dayStart, dayEnd),
+    })), rows };
 }

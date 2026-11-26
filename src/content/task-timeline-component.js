@@ -4767,6 +4767,13 @@
     @media(prefers-color-scheme:dark) { .clockoli-github-favicon { filter:var(--clockoli-github-favicon-filter,brightness(0) invert(1)) } }
     /* A 12px description only fits blocks taller than the title and time lines. */
     .calendar-task { container-type: size; }
+    .calendar-task.clockoli-has-ai .calendar-task-name,.calendar-task.clockoli-has-ai .calendar-task-time { margin-right:14px; }
+    .clockoli-ai-rail { position:absolute;right:3px;top:0;bottom:0;width:9px;overflow:hidden;pointer-events:none;border-radius:3px;background:color-mix(in srgb,var(--tt-muted) 8%,transparent); }
+    .clockoli-ai-segment { position:absolute;left:0;right:0;display:block;border-radius:1px; }
+    .clockoli-ai-segment.is-unassigned { background:color-mix(in srgb,var(--tt-muted) 48%,transparent); }
+    .clockoli-ai-segment.is-matched { background:var(--fgColor-success,#1a7f37);z-index:1; }
+    .clockoli-ai-label { position:absolute;left:5px;right:16px;bottom:6px;font-size:11px;line-height:14px;font-weight:600;color:var(--tt-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none; }
+    @container (max-height: 62px) { .clockoli-ai-label { display:none; } }
     @container (max-height: 63px) { .clockoli-calendar-description { display:none !important; } }
     @container (max-height: 35px) { .calendar-task-time { display:none; } }
     .calendar-day-tracked { font-size: 12px; font-weight: 400; }
@@ -4871,6 +4878,7 @@
     const editStates = new Map();
 
     let originalItems = new Map();
+    let agentActivity = null, agentActivityRevision = 0;
     let styleObserver = null;
     let detailsObserver = null;
     let suppressViewportScroll = true;
@@ -5493,10 +5501,88 @@
       return svg;
     }
 
+    // Read-only overlay inside the real calendar entry. Keep this in the
+    // adapter; the vendored timeline and all drag/edit behavior stay intact.
+    function styleAgentActivity(element, item) {
+      if (!element.classList.contains('calendar-task')) return;
+      const start = Number(element.dataset.segmentStart), end = Number(element.dataset.segmentEnd);
+      const height = element.clientHeight;
+      const signature = [agentActivityRevision, start, end, height, item?.url].join('|');
+      if (element.dataset.clockoliAiSignature === signature) return;
+      element.dataset.clockoliAiSignature = signature;
+      element.querySelector('.clockoli-ai-rail')?.remove();
+      element.querySelector('.clockoli-ai-label')?.remove();
+      element.classList.remove('clockoli-has-ai');
+      if (!agentActivity || !item?.url || !Number.isFinite(start) || !(end > start) || !height) return;
+      const canonical = url => /^https:\/\/github\.com\/[^/]+\/[^/]+\/(?:issues|pull)\/\d+\/?$/i.test(url)
+        ? url.toLowerCase().replace(/\/$/, '') : url;
+      const key = canonical(item.url);
+      const segments = [];
+      for (const entry of agentActivity.entries) {
+        if (canonical(entry.url) !== key) continue;
+        for (const segment of entry.segments) {
+          if (!segment.matched && !agentActivity.showUnmatched) continue;
+          const a = Math.max(start, entry.start, segment.start);
+          const b = Math.min(end, entry.end, segment.end);
+          if (Number.isFinite(a) && Number.isFinite(b) && b >= a && a < end &&
+              (b > a || (segment.start === segment.end && a === segment.start))) {
+            segments.push({ start: a, end: b, matched: segment.matched });
+          }
+        }
+      }
+      if (!segments.length) return;
+      const metrics = timeline._calendarMetrics;
+      const day = timeline._floorDay(start), next = timeline._addDaysLocal(day, 1);
+      const y = t => metrics?.verticalMap
+        ? metrics.verticalMap.toY(timeline._calendarMinutesOfDay(t, day, next))
+        : t;
+      const top = y(start), span = y(end) - top;
+      if (!(span > 0)) return;
+      const rail = document.createElement('div');
+      rail.className = 'clockoli-ai-rail';
+      rail.setAttribute('aria-hidden', 'true');
+      // Paint unresolved spans first so a matched turn is never hidden by a
+      // concurrent, potentially hours-long unresolved interval.
+      for (const segment of segments.sort((a,b)=>Number(a.matched)-Number(b.matched)||a.start-b.start)) {
+        const mark = document.createElement('i');
+        mark.className = 'clockoli-ai-segment';
+        if (segment.matched) mark.classList.add('is-matched');
+        else mark.classList.add('is-unassigned');
+        mark.dataset.start = String(segment.start);
+        mark.dataset.end = String(segment.end);
+        const lo = Math.max(0, Math.min(height-1, (y(segment.start)-top)/span*height));
+        const hi = Math.max(lo, Math.min(height, (y(segment.end)-top)/span*height));
+        mark.style.top = lo+'px';
+        mark.style.height = Math.min(height-lo, Math.max(1,hi-lo))+'px';
+        rail.append(mark);
+      }
+      element.append(rail);
+      element.classList.add('clockoli-has-ai');
+      const union = [];
+      for (const segment of segments.slice().sort((a,b)=>a.start-b.start||a.end-b.end)) {
+        const last = union.at(-1);
+        if (last && segment.start <= last.end) last.end = Math.max(last.end,segment.end);
+        else union.push({start:segment.start,end:segment.end});
+      }
+      const ms = union.reduce((sum,s)=>sum+s.end-s.start,0);
+      const seconds = Math.floor(ms/1000);
+      const duration = ms > 0 && seconds === 0 ? '<1s' : [
+        Math.floor(seconds/3600) ? Math.floor(seconds/3600)+'h' : '',
+        Math.floor(seconds%3600/60) ? Math.floor(seconds%3600/60)+'m' : '',
+        seconds%60 ? seconds%60+'s' : '',
+      ].filter(Boolean).join(' ') || '0s';
+      const label = document.createElement('div');
+      label.className = 'clockoli-ai-label';
+      label.textContent = 'AI '+duration+' · '+segments.length+' turn'+(segments.length===1?'':'s');
+      label.title = (agentActivity.showUnmatched?'Observed overlapping':'Proposed matched')+' AI elapsed intervals; overlapping time counted once. Not verified developer idle time.';
+      element.append(label);
+    }
+
     function styleTasks() {
       if (destroyed) return;
       for (const element of timeline.shadow.querySelectorAll('.task[data-task-key], .calendar-task[data-task-key]')) {
         const item = sourceItem(element.dataset.taskKey);
+        styleAgentActivity(element, item);
         element.style.setProperty('--clockoli-task-color', resolveColor(item || { id: element.dataset.taskKey }));
         if (element.classList.contains('task')) {
           const viewportRect = timeline.viewport.getBoundingClientRect();
@@ -6054,6 +6140,11 @@
       setCalendarRange(range) { timeline.setCalendarRange(range); },
       shiftCalendar(direction) { timeline.shiftCalendar(direction); },
       getCalendarRange() { return timeline.getCalendarRange(); },
+      setAgentActivity(value) {
+        agentActivity = value && Array.isArray(value.entries) ? value : null;
+        agentActivityRevision++;
+        styleTasks();
+      },
       __timeline: timeline,
     };
     return timelineApi;

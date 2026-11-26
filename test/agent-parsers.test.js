@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseAgentRow, projectAgentTurns } from '../src/agents/parsers.js';
+import { markStaleOpenAgentTurns, summarizeAgentTurns } from '../src/agents/metrics.js';
 
 const at = (second) => `2026-11-24T12:00:${String(second).padStart(2, '0')}Z`;
 const codex = (type, turnId, second, duration_ms) => parseAgentRow('codex', {
@@ -79,8 +80,11 @@ test('Claude excludes tool-result-only input, connects cross-file sidechains by 
   assert.equal(turns[0].status, 'completed');
   assert.equal(turns[0].providerDurationMs, 2600);
   assert.equal(turns[0].durationSource, 'provider_duration');
-  assert.equal(turns[0].startedAt, null);
-  assert.equal(turns[0].endedAt, null);
+  assert.equal(turns[0].startedAt, '2026-11-24T12:00:01.000Z');
+  assert.equal(turns[0].endedAt, '2026-11-24T12:00:05.000Z');
+  assert.equal(turns[0].elapsedMs, 4000);
+  assert.equal(turns[0].anchored, false);
+  assert.equal(summarizeAgentTurns(turns).claude.time.wallClockMs, 0);
   assert.equal(turns[0].projectId, null);
   assert.equal(sessions.length, 1);
   assert.equal(sessions[0].sourceFileKey, 'opaque-file-A');
@@ -96,8 +100,27 @@ test('Claude unknown user end and orphan duration remain distinct unknown/measur
   assert.equal(turns.length, 2);
   assert.equal(turns.find(t => t.upstreamTurnId === 'user-1').status, 'open');
   assert.equal(turns.find(t => t.upstreamTurnId === 'user-1').durationSource, 'none');
-  assert.equal(turns.find(t => t.upstreamTurnId === 'missing-assistant').providerDurationMs, 0);
+  const orphan = turns.find(t => t.upstreamTurnId === 'missing-assistant');
+  assert.equal(orphan.providerDurationMs, 0);
+  assert.equal(orphan.startedAt, null);
+  assert.equal(orphan.endedAt, '2026-11-24T12:00:03.000Z');
+  assert.equal(orphan.anchored, false);
+  const aged = markStaleOpenAgentTurns(turns, Date.parse('2026-11-26T12:00:00Z'));
+  assert.equal(aged.find(t => t.upstreamTurnId === 'user-1').status, 'stale_unknown');
   assert.equal(unknownEvents, 1);
+});
+
+test('Claude matching observed bounds anchor measured provider duration', () => {
+  const events = [scoped(claude('user', 'u', null, 1)),
+    scoped(claude('assistant', 'a', 'u', 2)),
+    scoped(claude('system', 'd', 'a', 5, { subtype: 'turn_duration', durationMs: 4000 }))];
+  const { turns } = projectAgentTurns('claude', events);
+  assert.equal(turns[0].anchored, true);
+  assert.equal(turns[0].elapsedMs, 4000);
+  const { time } = summarizeAgentTurns(turns).claude;
+  assert.equal(time.agentMs, 4000);
+  assert.equal(time.wallClockMs, 4000);
+  assert.equal(time.unanchoredMeasuredTurns, 0);
 });
 
 test('projection rejects unscoped or unsafe events without leaking arbitrary caller keys', () => {

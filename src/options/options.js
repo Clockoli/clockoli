@@ -3471,7 +3471,7 @@ function renderAgent(provider) {
   const count = key => safeAgentCount(status?.[key]);
   const code = typeof status?.errorCode === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(status.errorCode)
     ? status.errorCode : 'none';
-  diagnostics.textContent = `Files visited: ${count('filesVisited')} · Advanced: ${count('filesAdvanced')} · Bytes read: ${count('bytesRead')} · Backlog: ${status?.backlog ? 'yes' : 'no'} · Blocked: ${count('blockedFiles')} · Runs: ${count('runNumber')} · Error code: ${code}`;
+  diagnostics.textContent = `Files visited: ${count('filesVisited')} · Advanced: ${count('filesAdvanced')} · Bytes read: ${count('bytesRead')} · Backlog: ${status?.backlog ? 'yes' : 'no'} · Blocked: ${count('blockedFiles')} · Archived: ${count('archivedFiles')} (incomplete: ${count('archivedIncompleteFiles')}, older parser: ${count('archivedOlderParserFiles')}) · Runs: ${count('runNumber')} · Error code: ${code}`;
 }
 
 async function refreshAgentStatus() {
@@ -3522,7 +3522,7 @@ async function withAgentAction(provider, action) {
       }
       await setAgentRoot(provider, handle);
       agentRoots[provider] = handle;
-      agentFeedback(provider, 'Scanning local metadata…');
+      agentFeedback(provider, 'Folder connected. For background access, reopen Settings after closing all Clockoli pages. If access is needed, choose Restore access and Allow on every visit if Chrome offers it.');
       await send({ type: 'AGENT_COLLECTOR_CONTROL', provider, action: 'scan' });
     } else if (action === 'restore') {
       const handle = agentRoots[provider];
@@ -3532,7 +3532,7 @@ async function withAgentAction(provider, action) {
         agentFeedback(provider, 'Read access was not granted. Try Restore access again.', 'error');
         return;
       }
-      agentFeedback(provider, 'Scanning local metadata…');
+      agentFeedback(provider, 'Access restored for now. Close all Clockoli pages to check whether background access persists; Chrome controls persistent permission.');
       await send({ type: 'AGENT_COLLECTOR_CONTROL', provider, action: 'scan' });
     } else {
       if (action === 'scan' || action === 'resume') agentFeedback(provider, 'Scanning local metadata…');

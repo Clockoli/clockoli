@@ -149,10 +149,15 @@ export async function commitAgentBatch({ provider, rootId, generation, files, pr
       if (file.remove) { fileStore.delete(key); continue; }
       fileStore.put({ provider, generation, fileKey: file.fileKey, cursor: file.cursor,
         events: file.events, unknownEvents: file.unknownEvents || 0,
+        sourceMissing: Boolean(file.sourceMissing), evidenceGeneration: file.evidenceGeneration ?? generation,
         revision: file.expectedRevision + 1 }, key);
     }
     projectionStore.put({ provider, generation, revision: expectedProjectionRevision + 1,
       turns: projection.turns, sessions: projection.sessions,
+      projectionVersion: projection.projectionVersion ?? 0,
+      archivedFiles: projection.archivedFiles || 0,
+      archivedIncompleteFiles: projection.archivedIncompleteFiles || 0,
+      archivedOlderParserFiles: projection.archivedOlderParserFiles || 0,
       unknownEvents: projection.unknownEvents || 0 }, projectionKey);
     if (activate) stateStore.put({ ...state, activeGeneration: generation }, `state:${provider}`);
     await done;

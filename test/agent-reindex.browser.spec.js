@@ -38,7 +38,7 @@ async function observation(page, scan = false) {
     return { health: response.data.providers.claude, coverage: response.data.coverage.claude,
       state, projections: projections.map(compact),
       files: files.map(rows => rows.map(row => ({ key: row.fileKey, offset: row.cursor.offset,
-        size: row.cursor.size, revision: row.revision }))) };
+        size: row.cursor.size, revision: row.revision, sourceMissing: row.sourceMissing, evidenceGeneration: row.evidenceGeneration }))) };
   }, scan);
 }
 
@@ -46,13 +46,13 @@ function assertActive(snapshot, generation, keys) {
   expect(snapshot.state.activeGeneration).toBe(generation);
   expect(snapshot.health.activeGeneration).toBe(generation);
   expect(snapshot.coverage.scan.parserGeneration).toBe(generation);
-  expect(snapshot.coverage.turns).toMatchObject({ discovered: 2, measured: 1, unknown: 1 });
-  expect(snapshot.coverage.time.agentMs).toBe(3000);
+  expect(snapshot.coverage.turns).toMatchObject({ discovered: 3, measured: 2, unknown: 1 });
+  expect(snapshot.coverage.time.agentMs).toBe(4000);
   expect(snapshot.projections[generation - 1].keys).toEqual(keys);
-  expect(new Set(keys).size).toBe(2);
-  expect(snapshot.projections[generation - 1].measured).toBe(1);
-  expect(snapshot.projections[generation - 1].durations).toEqual([3000]);
-  expect(snapshot.projections[generation - 1].sourceFiles).toBe(1);
+  expect(new Set(keys).size).toBe(3);
+  expect(snapshot.projections[generation - 1].measured).toBe(2);
+  expect(snapshot.projections[generation - 1].durations).toEqual([1000, 3000]);
+  expect(snapshot.projections[generation - 1].sourceFiles).toBe(2);
 }
 
 test('FULL Claude parser reindex stages across a >16 MiB journal, survives two browser restarts, then prunes v1', async () => {
@@ -90,6 +90,12 @@ test('FULL Claude parser reindex stages across a >16 MiB journal, survives two b
           subtype: 'turn_duration', durationMs: 3000,
         }));
       await linkedWriter.close();
+      const archive = await folder.getFileHandle('archivable.jsonl', { create: true });
+      const archiveWriter = await archive.createWritable();
+      await archiveWriter.write(row('system', 'archived-duration', 'missing-assistant', {
+        subtype: 'turn_duration', durationMs: 1000, sessionId: 'archived-session',
+      }));
+      await archiveWriter.close();
       await store.setAgentRoot('claude', folder);
       return { bytes: (await longFile.getFile()).size, linkedBytes: (await linkedFile.getFile()).size };
     });
@@ -103,12 +109,21 @@ test('FULL Claude parser reindex stages across a >16 MiB journal, survives two b
       if (v1.health.complete) break;
     }
     expect(v1.health.complete).toBe(true);
-    expect(v1.files[0]).toHaveLength(2);
+    expect(v1.files[0]).toHaveLength(3);
     expect(v1.files[0].every(file => file.offset === file.size)).toBe(true);
     const keys = v1.projections[0].keys;
     assertActive(v1, 1, keys);
     expect(v1.projections[1]).toBeNull();
     expect(v1.coverage.scan.unknownEvents).toBe(270);
+    await browser.page.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const folder = await root.getDirectoryHandle('synthetic-claude');
+      await folder.removeEntry('archivable.jsonl');
+    });
+    v1 = await observation(browser.page, true);
+    assertActive(v1, 1, keys);
+    expect(v1.coverage.scan.archivedFiles).toBe(1);
+    expect(v1.coverage.scan.archivedOlderParserFiles).toBe(0);
 
     await browser.context.close();
     browser = undefined;
@@ -153,13 +168,17 @@ test('FULL Claude parser reindex stages across a >16 MiB journal, survives two b
     for (let attempt = 0; attempt < 6; attempt++) {
       v2 = await observation(browser.page, true);
       expect(v2.health.errorCode).toBeNull();
-      if (v2.health.complete) break;
+      if (v2.state.activeGeneration === 2) break;
       assertActive(v2, 1, keys);
     }
-    expect(v2.health.complete).toBe(true);
+    expect(v2.health.complete).toBe(false); // Missing source cannot be revalidated by v2.
+    expect(v2.health.backlog).toBe(false);
+    expect(v2.coverage.scan.archivedFiles).toBe(1);
+    expect(v2.coverage.scan.archivedOlderParserFiles).toBe(1);
     expect(v2.state.desiredGeneration).toBe(2);
     assertActive(v2, 2, keys);
-    expect(v2.files[1]).toHaveLength(2);
+    expect(v2.files[1]).toHaveLength(3);
+    expect(v2.files[1].find(file => file.sourceMissing).evidenceGeneration).toBe(1);
     expect(v2.files[1].every(file => file.offset === file.size)).toBe(true);
     expect(v2.files[0]).toEqual([]);
     expect(v2.projections[0]).toBeNull();
@@ -172,6 +191,21 @@ test('FULL Claude parser reindex stages across a >16 MiB journal, survives two b
     expect(repeat.files[0]).toEqual([]);
     expect(repeat.projections[0]).toBeNull();
     expect(repeat.coverage.scan.unknownEvents).toBe(270);
+    await browser.page.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const folder = await root.getDirectoryHandle('synthetic-claude');
+      const file = await folder.getFileHandle('archivable.jsonl', { create: true });
+      const writer = await file.createWritable();
+      await writer.write(JSON.stringify({ type: 'system', uuid: 'archived-duration',
+        parentUuid: 'missing-assistant', sessionId: 'archived-session',
+        timestamp: '2026-01-01T00:00:01.000Z', subtype: 'turn_duration', durationMs: 1000 }) + '\n');
+      await writer.close();
+    });
+    const restored = await observation(browser.page, true);
+    assertActive(restored, 2, keys);
+    expect(restored.health.complete).toBe(true);
+    expect(restored.coverage.scan.archivedFiles).toBe(0);
+    expect(restored.coverage.scan.archivedOlderParserFiles).toBe(0);
     expect(errors).toEqual([]);
   } finally {
     await browser?.context.close().catch(() => {});
