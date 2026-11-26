@@ -1153,7 +1153,45 @@ export class TrackerService {
     return null;
   }
 
+  // A recovered Stop must use the reviewed active blob and the original
+  // completed interval, rather than rebasing the interval onto a changed timer.
+  async ensureRetriedStop(operation) {
+    const history = await this.readRecoveryHistory();
+    const { remote, index, entries, snapshot } = history;
+    const expected = operation.entry, activePath = activeRecordPath(this.user);
+    const monthly = entries.filter(entry => entry._path === operation.monthlyPath);
+    if (hasSavedCompletion(index, entries, expected.id)) {
+      const saved = this.verifiedSavedCompletion(expected, { entries: monthly }, index);
+      if (!saved || entries.filter(entry => entry.id === expected.id).length !== 1
+          || sameTimer(remote, expected)) {
+        throw new TrackerConflictError('The saved completion or active timer does not match the queued Stop. Local time was kept.');
+      }
+      await this.assertRecoverySnapshotCurrent(history);
+      operation.activeSha = null; operation.activeCleared = true;
+      return saved;
+    }
+    if (!sameTimer(remote, expected) || remote._sha !== operation.activeSha) {
+      throw new TrackerConflictError('The active timer changed before the queued Stop could be retried. Local time was kept.',
+        remote ? 'active_changed_no_completion' : 'active_missing_no_completion');
+    }
+    assertNoCompletedOverlap(expected, entries);
+    const fileSha = snapshot.files.find(file => file.path === operation.monthlyPath)?.sha ?? null;
+    const proposed = [...monthly, expected];
+    const result = await this.updateCompletedRecords([
+      { path: operation.monthlyPath, sha: fileSha, text: serializeMonthlyRecords(proposed) },
+      { path: activePath, sha: remote._sha, text: null },
+    ], `time: ${this.user} tracked ${trackedDurationLabel(expected)} on ${taskLabel(expected)}`, {
+      add: [expected], indexFile: index, expectedHeadSha: snapshot.headSha,
+    });
+    operation.activeSha = null; operation.activeCleared = true;
+    return parseMonthlyRecords(serializeMonthlyRecords(proposed), {
+      user: this.user, month: monthFromPath(operation.monthlyPath, this.user),
+      path: operation.monthlyPath, sha: result.blobShas[operation.monthlyPath],
+    }).find(entry => entry.id === expected.id);
+  }
+
   async ensureEntry(operation) {
+    if (operation.retryStopRecovery) return this.ensureRetriedStop(operation);
     let [file, indexFile] = await Promise.all([
       this.readMonthly(operation.monthlyPath),
       this.readTaskIndex(),
@@ -1410,7 +1448,17 @@ export class TrackerService {
             && operation.requested?.length > 0
             && operation.requested.every(item => item.startTime === '09:00')
             && !operation.autoReplanAttempted;
-          if (retryOldDayRange) {
+          // A conflict can outlive the remote change that caused it. If the
+          // original timer is back, retry its Stop without asking the user.
+          let recoveredStop = null;
+          if (['completeTimer', 'completeTimerAndStart'].includes(operationType)
+              && ['verifyActive', 'appendMonthly', 'commitCompletion'].includes(operation.stage)) {
+            try { recoveredStop = await this.queueMatchingStopRetry(operation.id); }
+            catch { break; } // A failed check must not turn a conflict into an unchecked write.
+          }
+          if (recoveredStop) {
+            Object.assign(operation, recoveredStop);
+          } else if (retryOldDayRange) {
             // Older extension versions could queue 09:00–13:00 again after
             // saving a first 09:00–13:00 batch. Give the shared planner one
             // automatic recovery attempt after upgrading, not endless retries.
@@ -2035,6 +2083,46 @@ export class TrackerService {
     return { deleted: true };
   }
 
+  // Requeue only a Stop whose timer is still active. Background recovery
+  // requires an unchanged timer; explicit retry is bound to the reviewed SHA.
+  async queueMatchingStopRetry(operationId, reviewedActiveSha = null) {
+    const state = await this.store.getState(), queue = state.pendingWrites ?? [];
+    const parts = pendingCompletionConflictParts(queue, operationId, state.activeCache);
+    if (!parts?.safe) return null;
+    const { stop, index: position } = parts;
+    const remote = await this.readRemoteActive();
+    if (!sameTimer(remote, stop.entry) || !remote._sha
+        || (reviewedActiveSha !== null ? remote._sha !== reviewedActiveSha
+          : serializeActiveRecord(remote) !== serializeActiveRecord(stop.activeSnapshot))) return null;
+    validateEntry(stop.entry);
+    const history = await this.readRecoveryHistory();
+    if (history.remote?._sha !== remote._sha
+        || hasSavedCompletion(history.index, history.entries, stop.entry.id)) return null;
+    if (history.entries.some(entry => Date.parse(entry.startedAt) < Date.parse(stop.entry.endedAt)
+        && Date.parse(entry.endedAt) > Date.parse(stop.entry.startedAt))) return null;
+    const recovered = { ...stop, stage: 'commitCompletion', status: 'pending',
+      lastError: '', conflictReason: '', conflictWith: null, retryStopRecovery: true,
+      activeSnapshot: stripInternal(remote), activeSha: remote._sha,
+      activeCleared: false, preserveActive: false,
+      ...(stop.nextActive ? { requireNoOverlap: true, alignmentRequiresEmptyRemote: true } : {}) };
+    await this.mutateState(latest => {
+      assertRecoveryStateUnchanged(latest, state, 'The queued Stop changed. No tracked time was discarded.');
+      const pendingWrites = [...queue];
+      pendingWrites[position] = recovered;
+      return { pendingWrites };
+    });
+    return recovered;
+  }
+
+  async retryPendingCompletionConflict(operationId, reviewedActiveSha) {
+    validateEntryId(operationId);
+    if (!reviewedActiveSha || !await this.queueMatchingStopRetry(operationId, reviewedActiveSha)) {
+      throw new TrackerConflictError('The active timer or queued Stop changed, or the time is no longer free. Recheck GitHub; no local time was discarded.');
+    }
+    const remaining = await this.syncPending();
+    return { resolved: !remaining.some(item => item.id === operationId) };
+  }
+
   // The original active timer disappeared or was replaced before its Stop
   // could be saved. Preserve the stopped entry; it is a separate completed
   // record, not an instruction to overwrite the newer remote active timer.
@@ -2054,13 +2142,21 @@ export class TrackerService {
     const remoteSameTimer = sameTimer(remote, stop.entry);
     const available = Boolean(parts.safe && !alreadySaved && !remoteSameTimer);
     const canConfirm = Boolean(parts.safe && matchingSaved && !remoteSameTimer);
+    const overlapsSaved = saved.files.some(file => file.entries.some(entry => entry.id !== stop.entry.id
+      && Date.parse(entry.startedAt) < Date.parse(stop.entry.endedAt)
+      && Date.parse(entry.endedAt) > Date.parse(stop.entry.startedAt)));
+    const canRetry = Boolean(parts.safe && !alreadySaved && remoteSameTimer && remote._sha && !overlapsSaved);
     return {
       kind: 'pending_completion', id: operationId,
       blocked: recoveryRecordFields(stop.entry), remote: recoveryRecordFields(remote),
       next: recoveryRecordFields(stop.nextActive), switching: stop.operation === 'completeTimerAndStart',
-      canEdit: available, canDelete: available, canConfirm,
-      reason: parts.reason || (remoteSameTimer
-        ? 'This timer is still running on GitHub. Review it before changing the queued Stop.'
+      canEdit: available, canDelete: available, canConfirm, canRetry,
+      ...(canRetry ? { activeSha: remote._sha } : {}),
+      reason: parts.reason || (canRetry
+        ? 'This timer is still running on GitHub. Retry Stop to save the pending time shown above.'
+        : remoteSameTimer
+          ? (overlapsSaved ? 'The pending time overlaps saved time. Resolve the overlap and recheck GitHub.'
+            : 'This timer is still running on GitHub, but its Stop cannot safely be retried. Recheck GitHub.')
         : matchingSaved
           ? 'The completion matches GitHub. Confirm saved time to clear this local conflict.'
           : alreadySaved
