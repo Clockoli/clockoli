@@ -1,7 +1,7 @@
 import { createSemanticExtractor, semanticContext, makeSemanticBatches, redactSemanticText } from './semantic-matching.js';
 import { scanAgentJsonl } from './jsonl-reader.js';
 import { parseAgentRow, projectAgentTurns } from './parsers.js';
-import { extractCodexMatchingRow, matchingEvidenceByTurn, matchingTasks, explainAgentMatch, MATCH_RULE_VERSION } from './task-matching.js';
+import { extractCodexMatchingRow, matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline, MATCH_RULE_VERSION } from './task-matching.js';
 import { markStaleOpenAgentTurns, summarizeAgentTurns, summarizeAgentWorkflow } from './metrics.js';
 import {
   acquireAgentLease, beginAgentReindex, commitAgentBatch, forgetAgentRoot,
@@ -350,7 +350,7 @@ export async function controlAgentCollector(provider, action) {
 // An explicit diagnostic, not another continuous collector. Re-read only files
 // containing already observed turns for the selected day. No new persisted
 // fields, reindex, raw prompt export, or automatic writes to time records.
-export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { partial = false, thresholdMinutes = 15, semantic = false, loadDescription = null } = {}) {
+export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { partial = false, semantic = false, loadDescription = null } = {}) {
   const tasks = matchingTasks(records, dayStart, dayEnd);
   const taskLimit = 100;
   if (tasks.length > taskLimit) throw new Error('Too many task candidates for a single day');
@@ -364,7 +364,8 @@ export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { p
       permission: health?.permission || 'unknown' };
     for (const turn of projection?.turns || []) {
       const date = Date.parse(turn.startedAt ?? turn.endedAt);
-      if (date >= dayStart && date < dayEnd) dayTurns.push(turn);
+      const end = Date.parse(turn.endedAt);
+      if ((date >= dayStart && date < dayEnd) || (date < dayEnd && end > dayStart)) dayTurns.push(turn);
     }
   }
   dayTurns.sort((a, b) => Date.parse(a.startedAt ?? a.endedAt) - Date.parse(b.startedAt ?? b.endedAt) || a.key.localeCompare(b.key));
@@ -432,7 +433,7 @@ export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { p
     if (match.matchedUrl) byTask.get(match.matchedUrl)?.push(turn);
     if (semantic) semanticEntries.push({ turn, item, match });
     return { turnId: turn.upstreamTurnId, provider: turn.provider, startedAt: turn.startedAt, endedAt: turn.endedAt,
-      elapsedMs: turn.elapsedMs, status: turn.status, ...(semantic ? { durationSource: turn.durationSource, timingConfidence: turn.timingConfidence, providerDurationMs: turn.providerDurationMs, anchored: turn.anchored } : {}), ...match };
+      elapsedMs: turn.elapsedMs, status: turn.status, durationSource: turn.durationSource, timingConfidence: turn.timingConfidence, providerDurationMs: turn.providerDurationMs, anchored: turn.anchored, ...match };
   });
   let preview;
   if (semantic) {
@@ -446,7 +447,7 @@ export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { p
     preview = { rootId: root?.rootId ?? null, ...(partial ? { batches: [], skipped: selected.map(t=>t.upstreamTurnId) } : makeSemanticBatches(tasks, semanticEntries)) };
   }
   return { ...(semantic ? { preview } : {}), ruleVersion: MATCH_RULE_VERSION, providers, totalTurns: dayTurns.length, omittedTurns: dayTurns.length - selected.length,
-    bytesRead, partial, tasks: tasks.map(task => ({
-      ...task, summary: summarizeAgentWorkflow(byTask.get(task.url), { period: 'all', provider: 'all', thresholdMinutes }),
+    bytesRead, partial, dayStart, dayEnd, tasks: tasks.map(task => ({
+      ...task, timeline: buildTaskTimeline(task.intervals, byTask.get(task.url), dayStart, dayEnd),
     })), rows };
 }

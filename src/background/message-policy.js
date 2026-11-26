@@ -74,13 +74,12 @@ export function agentMatchingRequest(message, sender, extensionOrigin) {
   if (!['AGENT_MATCHING_DIAGNOSTICS', 'AGENT_SEMANTIC_PREVIEW'].includes(message?.type)
       || assertMessageAllowed(message.type, sender, extensionOrigin) !== 'extension'
       || sender?.url !== extensionOrigin + 'src/times/times.html'
-      || Object.keys(message).sort().join(',') !== 'date,thresholdMinutes,type'
-      || typeof message.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(message.date)
-      || ![5, 15, 30].includes(message.thresholdMinutes)) throw new Error('Invalid matching diagnostic request');
+      || Object.keys(message).sort().join(',') !== 'date,type'
+      || typeof message.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(message.date)) throw new Error('Invalid matching diagnostic request');
   const utc = new Date(message.date + 'T00:00:00.000Z');
   if (!Number.isFinite(utc.getTime()) || utc.toISOString().slice(0, 10) !== message.date ||
       utc.getUTCFullYear() < 1970 || utc.getUTCFullYear() > 9998) throw new Error('Invalid matching date');
-  return { date: message.date, thresholdMinutes: message.thresholdMinutes };
+  return { date: message.date };
 }
 
 export function agentWorkflowRequest(message, sender, extensionOrigin) {

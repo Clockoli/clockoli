@@ -96,8 +96,8 @@ export function makeSemanticBatches(tasks, entries) {
   for (const e of entries) {
     if (!e.item || e.item.error || e.item.semanticOmitted || e.item.startedAt !== Date.parse(e.turn.startedAt) ||
         e.item.endedAt !== Date.parse(e.turn.endedAt) || !['completed','interrupted'].includes(e.turn.status) ||
-        e.turn.anchored === false || !Number.isFinite(e.turn.elapsedMs) || e.turn.elapsedMs < 0 || e.turn.elapsedMs > 3600000 ||
-        !e.match.candidates.some(c => c.contained) || (!e.item.semanticMessages?.length && !e.item.previousContext?.length)) {
+        e.turn.anchored === false || !Number.isFinite(e.turn.elapsedMs) || e.turn.elapsedMs < 0 ||
+        !e.match.candidates.some(c => c.contained || c.overlapMs > 0) || (!e.item.semanticMessages?.length && !e.item.previousContext?.length)) {
       skipped.push(e.turn.upstreamTurnId); continue;
     }
     const key = e.turn.sessionKey;
@@ -110,7 +110,7 @@ export function makeSemanticBatches(tasks, entries) {
     for (let offset = 0; offset < group.length; offset += 6) pending.push(group.slice(offset, offset + 6));
     while (pending.length) {
       const entries = pending.shift();
-      const urls = [...new Set(entries.flatMap(e => e.match.candidates.filter(c => c.contained).map(c => c.url)))];
+      const urls = [...new Set(entries.flatMap(e => e.match.candidates.filter(c => c.contained || c.overlapMs > 0).map(c => c.url)))];
       if (batches.length >= 30) { skipped.push(...entries.map(e => e.turn.upstreamTurnId)); continue; }
       if (urls.length > 10) {
         if (entries.length > 1) { const mid = Math.ceil(entries.length / 2); pending.unshift(entries.slice(0, mid), entries.slice(mid)); }
@@ -125,7 +125,7 @@ export function makeSemanticBatches(tasks, entries) {
       const turns = entries.map((e,i) => ({ id: 't'+(i+1),
         repository: e.item.repository, branchIssueNumbers: e.item.branchNumbers,
         messages: e.item.semanticMessages || [], previousContext: e.item.previousContext || [],
-        candidates: candidates.filter((_,j) => e.match.candidates.some(c => c.contained && c.url === urls[j])).map(c => c.id),
+        candidates: candidates.filter((_,j) => e.match.candidates.some(c => (c.contained || c.overlapMs > 0) && c.url === urls[j])).map(c => c.id),
       }));
       const payload = { tasks: candidates, turns };
       if (JSON.stringify(payload).length > MAX_BATCH_CHARS) {

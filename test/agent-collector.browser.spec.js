@@ -209,7 +209,7 @@ test('malformed source quarantines its cursor, preserves other files, and recove
   }
 });
 
-test('Activity displays local workflow distribution, filters and exclusions without disclosing source identifiers', async () => {
+test('Activity shows task matching instead of global workflow; local aggregate remains private', async () => {
   await mkdir(scratch, { recursive: true });
   const profile = await mkdtemp(join(scratch, 'clockoli-agent-workflow-'));
   let browser;
@@ -242,18 +242,9 @@ test('Activity displays local workflow distribution, filters and exclusions with
     const errors = [];
     browser.page.on('pageerror', error => errors.push(error.message));
     await browser.page.goto(`chrome-extension://${new URL(browser.worker.url()).host}/src/times/times.html`);
-    const panel = browser.page.locator('#agent-workflow');
-    await expect(panel).toBeVisible();
-    await browser.page.locator('#agent-workflow-period').selectOption('all');
-    await expect(browser.page.locator('#agent-workflow-time')).toHaveText('58m');
-    await expect(browser.page.locator('#agent-workflow-turns')).toHaveText('3 / 5');
-    await expect(browser.page.locator('#agent-workflow-median')).toHaveText('10m');
-    await expect(browser.page.locator('#agent-workflow-share')).toHaveText('22.4%');
-    await expect(browser.page.locator('#agent-workflow-extended')).toHaveText('1');
-    await expect(browser.page.locator('#agent-workflow-status')).toContainText('1 extended turns excluded');
-    await expect(browser.page.locator('#agent-workflow-status')).toContainText('1 turns have unknown');
-    await browser.page.locator('#agent-workflow-threshold').selectOption('5');
-    await expect(browser.page.locator('#agent-workflow-share')).toHaveText('5.2%');
+    await expect(browser.page.locator('#agent-matching')).toBeVisible();
+    await expect(browser.page.locator('#agent-workflow')).toHaveCount(0);
+    await expect(browser.page.locator('#agent-matching-threshold')).toHaveCount(0);
     const data = await browser.page.evaluate(() => chrome.runtime.sendMessage({
       type: 'AGENT_WORKFLOW_SUMMARY', period: 'all', provider: 'codex', thresholdMinutes: 15,
     }));
@@ -264,11 +255,6 @@ test('Activity displays local workflow distribution, filters and exclusions with
     expect(JSON.stringify(data)).not.toContain('private-turn-');
     expect(JSON.stringify(data)).not.toContain('PRIVATE_PAYLOAD');
     expect(JSON.stringify(data)).not.toContain('fileKey');
-    await browser.page.locator('#agent-workflow-provider').selectOption('claude');
-    await expect(browser.page.locator('#agent-workflow-results')).toBeHidden();
-    await expect(browser.page.locator('#agent-workflow-status')).toContainText('not connected');
-    await browser.page.locator('#agent-workflow-provider').selectOption('codex');
-    await expect(browser.page.locator('#agent-workflow-time')).toHaveText('58m');
     expect(errors).toEqual([]);
   } finally {
     await browser?.context.close().catch(() => {});
@@ -324,7 +310,8 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
     expect(outcome.result.rows.map(row => row.reason)).toEqual([
       'time_only', 'repository_branch_and_containment', 'repository_branch_and_containment',
     ]);
-    expect(outcome.result.tasks[0].summary).toMatchObject({ totalTurns: 2, eligibleMs: 6000, shortSharePct: 100 });
+    expect(outcome.result.tasks[0].timeline).toMatchObject({ matchedTurns: 2, observedTurnMs: 6000, coveredMs: 6000, trackedMs: 7200000 });
+    expect(outcome.result.tasks[0].timeline.windows[0].segments).toHaveLength(2);
     expect(outcome.preview.preview.batches).toHaveLength(3);
     expect(outcome.preview.preview.batches.flatMap(b=>b.payload.turns).every(t=>t.messages.length===1)).toBe(true);
     expect(outcome.preview.preview.batches[0].payload.tasks[0].description).toBe('Hybrid retrieval');

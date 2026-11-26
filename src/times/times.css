@@ -180,3 +180,9 @@ body.activity-rate-limit-visible #activity-running-status .running-status-error[
 .agent-match-row ul{margin:5px 0;padding-left:22px;font-size:12px}
 .agent-match-row.is-matched summary{color:var(--fgColor-success)}
 .agent-match-row.is-unassigned summary{color:var(--fgColor-muted)}
+
+.agent-task-window{margin:10px 0 14px;padding:8px;border:1px solid var(--borderColor-muted);border-radius:6px}
+.agent-task-bar{position:relative;background:var(--bgColor-muted);border-radius:3px;overflow:hidden;margin:8px 0}
+.agent-task-turn{position:absolute;height:12px;background:var(--fgColor-success);border-radius:2px;box-sizing:border-box}
+.agent-task-interval-list summary{font-size:12px;font-weight:500}
+.agent-task-interval-list ul{padding-left:18px;font-size:12px;overflow-wrap:anywhere}

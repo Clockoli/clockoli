@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { githubTask, githubRepository, branchIssueNumbers, extractCodexMatchingRow,
-  matchingEvidenceByTurn, matchingTasks, explainAgentMatch } from '../src/agents/task-matching.js';
+  matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline } from '../src/agents/task-matching.js';
 
 const date = '2026-11-25T';
 const at = time => date + time + 'Z';
@@ -73,10 +73,10 @@ test('context change, changed lifecycle, missing evidence, incomplete task histo
   assert.equal(explainAgentMatch(turn, null, tasks).reason, 'source_evidence_unavailable');
   assert.equal(explainAgentMatch({ ...turn, endedAt: at('18:28:44') }, evidence(), tasks).reason, 'source_lifecycle_changed');
   const crossed = { ...turn, endedAt: at('19:01:00') };
-  assert.equal(explainAgentMatch(crossed, { ...evidence(), endedAt: Date.parse(crossed.endedAt) }, tasks).reason, 'identity_outside_tracked_interval');
+  assert.equal(explainAgentMatch(crossed, { ...evidence(), endedAt: Date.parse(crossed.endedAt) }, tasks).reason, 'repository_branch_and_overlap');
   assert.equal(explainAgentMatch({ ...turn, anchored: false }, evidence(), tasks).reason, 'interval_unverified');
   const long = { ...turn, startedAt: at('18:00:00'), endedAt: at('19:30:00') };
-  assert.equal(explainAgentMatch(long, { ...evidence(), startedAt: Date.parse(long.startedAt), endedAt: Date.parse(long.endedAt) }, tasks).reason, 'extended_turn');
+  assert.equal(explainAgentMatch(long, { ...evidence(), startedAt: Date.parse(long.startedAt), endedAt: Date.parse(long.endedAt) }, tasks).reason, 'repository_branch_and_overlap');
 });
 
 test('unscoped user messages and tool outputs cannot establish task identity', () => {
@@ -90,4 +90,26 @@ test('matching candidates include intervals crossing the local day, but never un
     startedAt: '2026-11-24T00:00:00Z', endedAt: '2026-11-24T01:00:00Z' }], start, end);
   assert.equal(result.length, 2);
   assert.deepEqual(result[0].intervals, [{ start, end: Date.parse(at('19:00:00')), active: false }]);
+});
+
+test('timeline preserves long and overlapping turns, exact gaps, and original boundaries',()=>{
+  const t=(id,a,b)=>({turnId:id,provider:'codex',startedAt:new Date(a).toISOString(),endedAt:new Date(b).toISOString(),elapsedMs:b-a,status:'completed',timingConfidence:'high'});
+  const h=3600000;
+  const turns=[t('long',h/2,2*h),t('parallel',h,2.5*h),t('last',3*h,5*h),{...t('uncertain',0,h),anchored:false}];
+  const result=buildTaskTimeline([{start:0,end:4*h}],turns,0,4*h);
+  assert.equal(result.trackedMs,4*h);
+  assert.equal(result.coveredMs,3*h);
+  assert.equal(result.uncoveredMs,h);
+  assert.equal(result.coveragePct,75);
+  assert.equal(result.unverified.length,1);
+  assert.deepEqual(result.windows[0].gaps,[{start:0,end:h/2},{start:2.5*h,end:3*h}]);
+  assert.equal(result.windows[0].segments[2].end,5*h);
+  assert.equal(result.windows[0].segments[2].visibleEnd,4*h);
+});
+test('selected-day clipping and multiple task timers exclude untracked gaps and retain exact source interval',()=>{
+  const turn={turnId:'cross-day',provider:'codex',startedAt:new Date(100).toISOString(),endedAt:new Date(900).toISOString(),elapsedMs:800,status:'completed',timingConfidence:'high'};
+  const result=buildTaskTimeline([{start:0,end:400},{start:600,end:1000}],[turn],200,800);
+  assert.equal(result.trackedMs,400);assert.equal(result.coveredMs,400);assert.equal(result.observedTurnMs,800);
+  assert.deepEqual(result.windows.map(w=>[w.start,w.end,w.trackedStart,w.trackedEnd]),[[200,400,0,400],[600,800,600,1000]]);
+  assert.equal(buildTaskTimeline([{start:0,end:100}],[],0,100).windows[0].gaps[0].end,100);
 });

@@ -1136,7 +1136,7 @@ async function handle(message, sender) {
     return classifySemantic(request, { hasPermission: origin => chrome.permissions.contains({ origins: [origin] }) });
   }
   if (message.type === 'AGENT_MATCHING_DIAGNOSTICS' || message.type === 'AGENT_SEMANTIC_PREVIEW') {
-    const { date, thresholdMinutes } = agentMatchingRequest(message, sender, extensionOrigin);
+    const { date } = agentMatchingRequest(message, sender, extensionOrigin);
     const day = new Date(date + 'T00:00:00');
     const next = new Date(day); next.setDate(next.getDate() + 1);
     const monday = new Date(date + 'T00:00:00Z');
@@ -1149,7 +1149,7 @@ async function handle(message, sender) {
     const records = [...(loaded.recent || [])];
     if (state.active) records.push({ ...state.active, endedAt: new Date().toISOString(), active: true });
     return getAgentMatchingDiagnostics(records, day.getTime(), next.getTime(), {
-      partial: !loaded.configured || Boolean(loaded.partial || loaded.conflicts?.length), thresholdMinutes,
+      partial: !loaded.configured || Boolean(loaded.partial || loaded.conflicts?.length),
       semantic: message.type === 'AGENT_SEMANTIC_PREVIEW',
       loadDescription: message.type === 'AGENT_SEMANTIC_PREVIEW' ? async url => {
         const task = githubTask(url);

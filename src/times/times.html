@@ -47,10 +47,9 @@
   <section id="agent-matching" class="agent-workflow" aria-labelledby="agent-matching-title" hidden>
     <details open>
       <summary id="agent-matching-title">AI Task Matching · debug</summary>
-      <p class="agent-workflow-note">Inspect one local calendar day. Only verified, contained Codex turns with strong task identity are matched. This diagnostic does not change tracked time.</p>
+      <p class="agent-workflow-note">Inspect task timers and observed AI intervals on one local calendar day. Matches are proposals; missing AI evidence does not prove human work or inactivity. This diagnostic does not change tracked time.</p>
       <div class="agent-workflow-controls">
         <label>Day <input id="agent-matching-date" type="date" min="1970-01-01"></label>
-        <label>Focus window <select id="agent-matching-threshold"><option value="5">5 min</option><option value="15" selected>15 min</option><option value="30">30 min</option></select></label>
         <button id="agent-matching-run" type="button">Analyze day</button>
         <button id="agent-matching-export" type="button" disabled>Download debug JSON</button>
       </div>
@@ -73,44 +72,6 @@
       </details>
       <p id="agent-matching-status" role="status">Choose a day and analyze to see the task candidates and matching decisions.</p>
       <div id="agent-matching-results"></div>
-    </details>
-  </section>
-  <section id="agent-workflow" class="agent-workflow" aria-labelledby="agent-workflow-title" hidden>
-    <details open>
-      <summary id="agent-workflow-title">AI Workflow</summary>
-      <div class="agent-workflow-controls">
-        <label>Period <select id="agent-workflow-period"><option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="all">All time</option></select></label>
-        <label>Provider <select id="agent-workflow-provider"><option value="all">All connected</option><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
-        <label>Focus window <select id="agent-workflow-threshold"><option value="5">5 min</option><option value="15" selected>15 min</option><option value="30">30 min</option></select></label>
-        <button id="agent-workflow-refresh" type="button">Refresh</button>
-        <a href="../options/options.html">Settings</a>
-      </div>
-      <p id="agent-workflow-status" role="status"></p>
-      <div id="agent-workflow-results" hidden>
-        <div class="agent-workflow-kpis">
-          <div><span>Turn time (≤ 60 min)</span><strong id="agent-workflow-time">—</strong></div>
-          <div><span>Included / observed turns</span><strong id="agent-workflow-turns">—</strong></div>
-          <div><span>Median included turn</span><strong id="agent-workflow-median">—</strong></div>
-          <div><span>Short-turn time share</span><strong id="agent-workflow-share">—</strong></div>
-        </div>
-        <div class="agent-workflow-windows">
-          <span>Short windows: <strong id="agent-workflow-short">—</strong></span>
-          <span>Long windows: <strong id="agent-workflow-long">—</strong></span>
-        </div>
-        <meter id="agent-workflow-share-meter" min="0" max="100" value="0" aria-label="Share of included duration in short turns"></meter>
-        <table class="agent-workflow-table">
-          <thead><tr><th scope="col">Turn duration</th><th scope="col">Distribution</th><th scope="col">Turns</th><th scope="col">Time</th></tr></thead>
-          <tbody id="agent-workflow-buckets">
-        <tr><th scope="row">Under 1 min</th><td><progress aria-label="Under 1 min turn count" max="1" value="0"></progress></td><td data-count>0</td><td data-time>0s</td></tr>
-        <tr><th scope="row">1–5 min</th><td><progress aria-label="1–5 min turn count" max="1" value="0"></progress></td><td data-count>0</td><td data-time>0s</td></tr>
-        <tr><th scope="row">5–15 min</th><td><progress aria-label="5–15 min turn count" max="1" value="0"></progress></td><td data-count>0</td><td data-time>0s</td></tr>
-        <tr><th scope="row">15–30 min</th><td><progress aria-label="15–30 min turn count" max="1" value="0"></progress></td><td data-count>0</td><td data-time>0s</td></tr>
-        <tr><th scope="row">30–60 min</th><td><progress aria-label="30–60 min turn count" max="1" value="0"></progress></td><td data-count>0</td><td data-time>0s</td></tr>
-          </tbody>
-          <tfoot><tr><th scope="row" colspan="2">Extended / unverified (&gt; 60 min)</th><td id="agent-workflow-extended">0</td><td>Excluded</td></tr></tfoot>
-        </table>
-        <p class="agent-workflow-note">Short turns are below the focus-window threshold; long turns are at or above it. Whole turns are grouped by local completion date (or last known start). Durations can include pauses and can overlap. Potential focus windows are not proven human waiting or AI compute time.</p>
-      </div>
     </details>
   </section>
   <div id="activity-sync-status"></div>

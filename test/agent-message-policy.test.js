@@ -46,9 +46,9 @@ test('workflow summary is read-only, Activity-only and accepts only exact filter
   assert.throws(() => assertMessageAllowed('AGENT_WORKFLOW_SUMMARY', content, origin));
 });
 
-test('matching diagnostic is Activity-only with an exact date and threshold', () => {
-  const request = { type: 'AGENT_MATCHING_DIAGNOSTICS', date: '2026-11-25', thresholdMinutes: 15 };
-  assert.deepEqual(agentMatchingRequest(request, activity, origin), { date: '2026-11-25', thresholdMinutes: 15 });
+test('matching diagnostic is Activity-only with an exact date', () => {
+  const request = { type: 'AGENT_MATCHING_DIAGNOSTICS', date: '2026-11-25' };
+  assert.deepEqual(agentMatchingRequest(request, activity, origin), { date: '2026-11-25' });
   for (const sender of [settings, content, { url: origin + 'src/times/times.html/extra' }]) {
     assert.throws(() => agentMatchingRequest(request, sender, origin));
   }
@@ -60,7 +60,7 @@ test('matching diagnostic is Activity-only with an exact date and threshold', ()
 });
 
 test('semantic preview and classification are Activity-only; no caller-specified URL', () => {
-  const preview={type:'AGENT_SEMANTIC_PREVIEW',date:'2026-11-25',thresholdMinutes:15};
+  const preview={type:'AGENT_SEMANTIC_PREVIEW',date:'2026-11-25'};
   assert.equal(agentMatchingRequest(preview,activity,origin).date,preview.date);
   assert.throws(()=>agentMatchingRequest(preview,content,origin));
   const request={type:'AGENT_SEMANTIC_CLASSIFY',provider:'openrouter',model:'test-model',apiKey:'fixture-only-key',

@@ -16,10 +16,10 @@ const permanentHostPermissions = [
 const forbiddenPermissions = new Set(['<all_urls>', 'cookies', 'downloads', 'webRequest']);
 const forbiddenBroadHostPatterns = [/<all_urls>/i, /:\/\/\*\//, /:\/\/\*\./, /^https?:\/\/[^/]*\*[^/]*\//i];
 
-test('manifest grants Clockify only as the exact optional host origin', async () => {
+test('manifest grants only exact optional Clockify and semantic API host origins', async () => {
   const manifest = await readManifest();
 
-  assert.deepEqual(manifest.optional_host_permissions, ['https://app.clockify.me/*']);
+  assert.deepEqual(manifest.optional_host_permissions, ['https://app.clockify.me/*', 'https://openrouter.ai/*', 'https://api.openai.com/*', 'https://api.anthropic.com/*']);
   assert.deepEqual(manifest.host_permissions, permanentHostPermissions);
   assert.equal(manifest.permissions.includes('storage'), false, 'the preview handoff uses privileged IndexedDB, not chrome.storage');
   assert.equal(manifest.permissions.some(permission => forbiddenPermissions.has(permission)), false);

@@ -7,7 +7,7 @@ const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const validId = value => typeof value === 'string' && SAFE_ID.test(value) ? value : null;
 const boundedString = (value, max) => typeof value === 'string' && value.length <= max ? value : null;
 const ms = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
-export const MATCH_RULE_VERSION = 1;
+export const MATCH_RULE_VERSION = 2;
 
 export function githubTask(value) {
   const match = typeof value === 'string' && value.match(TASK);
@@ -150,7 +150,7 @@ export function explainAgentMatch(turn, evidence, tasks, { partial = false } = {
     return { url: task.url, title: task.title, overlapMs, contained, repository, branch, explicit };
   });
   let reason = 'no_strong_identity', matchedUrl = null, state = 'unassigned';
-  const strong = candidates.filter(c => c.contained && (c.explicit || c.branch));
+  const strong = candidates.filter(c => (c.contained || c.overlapMs > 0) && (c.explicit || c.branch));
   const explicitIdentity = refs.length === 1 ? githubTask(refs[0]) : null;
   const contradictoryBranch = Boolean(explicitIdentity && repo && evidence?.branchNumbers?.length &&
     (explicitIdentity.repository !== repo || explicitIdentity.kind !== 'issues' ||
@@ -161,13 +161,12 @@ export function explainAgentMatch(turn, evidence, tasks, { partial = false } = {
   else if (!evidence || evidence.error) reason = evidence?.error || 'source_evidence_unavailable';
   else if (evidence.startedAt !== start || evidence.endedAt !== end) reason = 'source_lifecycle_changed';
   else if (!validInterval || !['completed', 'interrupted'].includes(turn.status) || turn.anchored === false) reason = 'interval_unverified';
-  else if (end - start > 60 * 60_000) reason = 'extended_turn';
   else if (evidence.promptScanIncomplete) reason = 'prompt_reference_scan_incomplete';
   else if (evidence.cwdMismatch) reason = 'working_directory_changed';
   else if (explicitConflict || branchConflict || strong.length > 1) reason = 'conflicting_identity';
   else if (strong.length === 1 && (strong[0].explicit || evidence.contextSeen)) {
     state = 'matched'; matchedUrl = strong[0].url;
-    reason = strong[0].explicit ? 'explicit_url_and_containment' : 'repository_branch_and_containment';
+    reason = strong[0].explicit ? (strong[0].contained ? 'explicit_url_and_containment' : 'explicit_url_and_overlap') : (strong[0].contained ? 'repository_branch_and_containment' : 'repository_branch_and_overlap');
   } else if (strong.length) reason = 'session_context_unverified';
   else if (candidates.some(c => c.explicit || c.branch)) reason = 'identity_outside_tracked_interval';
   else if (candidates.some(c => c.contained && c.repository)) reason = 'repository_only';
@@ -178,4 +177,52 @@ export function explainAgentMatch(turn, evidence, tasks, { partial = false } = {
     explicitTaskUrls: refs, contextSeen: Boolean(evidence?.contextSeen),
     cwdMismatch: Boolean(evidence?.cwdMismatch), client: evidence?.client ?? null,
   } };
+}
+
+// Exact interval arithmetic. No duration cap, no inference of developer idle
+// time. A selected day clips only the view; original boundaries are retained.
+function unionIntervals(intervals) {
+  const sorted = intervals.filter(i => i.end > i.start).sort((a,b) => a.start-b.start || a.end-b.end);
+  const merged = [];
+  for (const i of sorted) {
+    const last = merged.at(-1);
+    if (last && i.start <= last.end) last.end = Math.max(last.end,i.end);
+    else merged.push({start:i.start,end:i.end});
+  }
+  return merged;
+}
+const intervalTotal = intervals => intervals.reduce((sum,i)=>sum+i.end-i.start,0);
+export function buildTaskTimeline(intervals, turns, dayStart, dayEnd) {
+  const observed = [], unverified = [], seen = new Set();
+  for (const t of turns) {
+    const id = t.key ?? t.turnId ?? t.upstreamTurnId;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const start=ms(t.startedAt),end=ms(t.endedAt);
+    const turn={turnId:t.turnId??t.upstreamTurnId??id,provider:t.provider,start,end,
+      elapsedMs:t.elapsedMs??null,providerDurationMs:t.providerDurationMs??null,status:t.status};
+    // Only observed anchored lifecycle intervals count toward coverage.
+    // Preserve any contradictory provider duration as distinct evidence.
+    if (start===null || end===null || end<start || t.anchored===false ||
+        !['completed','interrupted'].includes(t.status) ||
+        !['high','medium'].includes(t.timingConfidence) ||
+        t.elapsedMs!==end-start) {unverified.push(turn);continue;}
+    observed.push(turn);
+  }
+  const windows = intervals.filter(i=>i.end>dayStart && i.start<dayEnd).map(i=>{
+    const start=Math.max(i.start,dayStart),end=Math.min(i.end,dayEnd);
+    const segments=observed.filter(t=>t.start<end && (t.end>start || (t.start===t.end && t.start>=start))).map(t=>({...t,visibleStart:Math.max(start,t.start),visibleEnd:Math.min(end,t.end)}))
+      .sort((a,b)=>a.visibleStart-b.visibleStart||a.visibleEnd-b.visibleEnd);
+    const covered=unionIntervals(segments.map(t=>({start:t.visibleStart,end:t.visibleEnd})));
+    const gaps=[];
+    let cursor=start;
+    for(const i of covered){if(i.start>cursor)gaps.push({start:cursor,end:i.start});cursor=i.end;}
+    if(cursor<end)gaps.push({start:cursor,end});
+    return {start,end,trackedStart:i.start,trackedEnd:i.end,active:i.active,segments,gaps,
+      trackedMs:end-start,coveredMs:intervalTotal(covered),uncoveredMs:intervalTotal(gaps)};
+  }).sort((a,b)=>a.start-b.start||a.end-b.end);
+  const trackedMs=intervalTotal(unionIntervals(windows));
+  const coveredMs=intervalTotal(unionIntervals(windows.flatMap(w=>w.segments.map(t=>({start:t.visibleStart,end:t.visibleEnd})))));
+  return {windows,unverified,trackedMs,coveredMs,uncoveredMs:trackedMs-coveredMs,coveragePct:trackedMs?100*coveredMs/trackedMs:null,
+    matchedTurns:observed.length+unverified.length,observedTurnMs:observed.reduce((sum,t)=>sum+t.end-t.start,0)};
 }
