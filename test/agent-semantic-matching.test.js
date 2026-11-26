@@ -52,3 +52,10 @@ test('batch only verified contained turns, separate provider task IDs from local
   assert.equal(result.batches.length,1);assert.deepEqual(result.skipped,['b']);
   assert.equal(JSON.stringify(result.batches[0].payload).includes(task.url),false);
 });
+
+test('redaction covers encoded working-copy metadata and shell credential assignments',()=>{
+  const value='workingCopy=v1_Zml4dHVyZQ APP_KEY=base64:fixture-value DB_PASSWORD=fixture-password /private/tmp/fixture.json';
+  const safe=redactSemanticText(value).text;
+  for(const secret of ['v1_Zml4dHVyZQ','base64:fixture-value','fixture-password','/private/tmp/fixture.json'])assert.equal(safe.includes(secret),false);
+  assert.match(safe,/\[REDACTED\]/);
+});

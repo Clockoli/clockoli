@@ -147,3 +147,19 @@ test('tracked entries define scope before diagnostics; half-open boundaries and 
   assert.equal(turnOverlapsTrackedIntervals(t(99,101),intervals,200,1000),false);
   assert.equal(turnOverlapsTrackedIntervals(t(0,1000),intervals,200,800),true);
 });
+
+test('semantic rejection is distinct from unresolved evidence and leaves factual timing intact',()=>{
+  const task={url:'task-a',intervals:[{start:0,end:10000}]};
+  const make=(id,a,b,matchedUrl=null)=>({turnId:id,provider:'codex',startedAt:new Date(a).toISOString(),endedAt:new Date(b).toISOString(),elapsedMs:b-a,status:'completed',timingConfidence:'high',matchedUrl});
+  const rows=[make('old',0,2000,'task-a'),make('new',3000,4000),make('unclear',5000,7000),make('not-analyzed',8000,9000)];
+  const before=buildObservedTaskTimeline(task,rows,0,10000);
+  const after=buildObservedTaskTimeline(task,rows,0,10000,new Map([
+    ['old',{url:null,reason:'unrelated',confidence:'high'}],['new',{url:'task-a',reason:'context',confidence:'medium'}],
+    ['unclear',{url:null,reason:'unrelated',confidence:'low'}],
+  ]));
+  assert.equal(before.matchedCoveredMs,2000);
+  assert.equal(after.matchedCoveredMs,1000);
+  assert.equal(before.coveredMs,after.coveredMs);
+  assert.equal(after.rejectedTurns,1);assert.equal(after.unresolvedTurns,2);
+  assert.deepEqual(after.windows[0].segments.map(s=>s.attribution),['model_unrelated','matched','model_unassigned','unassigned']);
+});

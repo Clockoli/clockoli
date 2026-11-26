@@ -232,8 +232,10 @@ export function buildTaskTimeline(intervals, turns, dayStart, dayEnd) {
 // time-only observation to a match, including when there is just one timer.
 export function buildObservedTaskTimeline(task, rows, dayStart, dayEnd, assignments = null) {
   const turns = rows.filter(row=>turnOverlapsTrackedIntervals(row,task.intervals,dayStart,dayEnd)).map(row=>{
-    const url=assignments===null ? row.matchedUrl : assignments.get(row.turnId)?.url;
-    const attribution=url===task.url?'matched':url?'other_task':assignments!==null && assignments.has(row.turnId)?'model_unassigned':'unassigned';
+    const decision=assignments?.get(row.turnId);
+    const url=assignments===null ? row.matchedUrl : decision?.url;
+    const rejected=decision?.reason==='unrelated' && ['medium','high'].includes(decision.confidence);
+    const attribution=url===task.url?'matched':url?'other_task':rejected?'model_unrelated':decision?'model_unassigned':'unassigned';
     return {...row,key:JSON.stringify([row.provider,row.turnId]),attribution};
   });
   const timeline=buildTaskTimeline(task.intervals,turns,dayStart,dayEnd);
@@ -241,7 +243,8 @@ export function buildObservedTaskTimeline(task, rows, dayStart, dayEnd, assignme
   return {...timeline,observedTurns:timeline.matchedTurns,matchedTurns:matched.matchedTurns,
     matchedCoveredMs:matched.coveredMs,
     unresolvedTurns:turns.filter(t=>t.attribution==='unassigned'||t.attribution==='model_unassigned').length,
-    otherTaskTurns:turns.filter(t=>t.attribution==='other_task').length};
+    otherTaskTurns:turns.filter(t=>t.attribution==='other_task').length,
+    rejectedTurns:turns.filter(t=>t.attribution==='model_unrelated').length};
 }
 
 /** Half-open Clockoli intervals clipped to the selected day. Unknown

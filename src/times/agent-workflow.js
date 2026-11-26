@@ -26,6 +26,7 @@ const matchingRun = document.getElementById('agent-matching-run');
 const matchingExport = document.getElementById('agent-matching-export');
 let matchingData = null, matchingSequence = 0, overlayState = null;
 const showUnmatched = document.getElementById('agent-show-unmatched');
+const comparison = document.getElementById('agent-matching-comparison');
 showUnmatched.addEventListener('change',()=>publishOverlay());
 function publishOverlay(data,decisions=null) {
   if(data!==undefined)overlayState=data?{data,decisions}:null;
@@ -35,7 +36,7 @@ function publishOverlay(data,decisions=null) {
     for(const task of data.tasks){
       const timeline=buildObservedTaskTimeline(task,data.rows,data.dayStart,data.dayEnd,decisions);
       for(const window of timeline.windows)entries.push({url:task.url,start:window.start,end:window.end,
-        segments:window.segments.filter(t=>t.attribution!=='other_task').map(t=>({start:t.visibleStart,end:t.visibleEnd,matched:t.attribution==='matched'}))});
+        segments:window.segments.filter(t=>!['other_task','model_unrelated'].includes(t.attribution)).map(t=>({start:t.visibleStart,end:t.visibleEnd,matched:t.attribution==='matched'}))});
     }
   }
   globalThis.dispatchEvent(new CustomEvent('clockoli:agent-activity-overlay',{detail:overlayState?{entries,showUnmatched:showUnmatched.checked}:null}));
@@ -88,15 +89,52 @@ function localTime(value) {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, hour12: false,
   }) : '—';
 }
-function renderMatching(data) {
+function compactTime(ms) {
+  if(!Number.isFinite(ms))return '—';
+  if(ms>0&&ms<1000)return '<1s';
+  return time(Math.round(ms/1000)*1000);
+}
+function renderComparison(data,decisions=null) {
+  comparison.replaceChildren();
+  for(const task of data.tasks){
+    for(const interval of task.intervals){
+      if(interval.end<=data.dayStart||interval.start>=data.dayEnd)continue;
+      const entry={...task,intervals:[interval]};
+      const before=buildObservedTaskTimeline(entry,data.rows,data.dayStart,data.dayEnd);
+      const after=decisions===null?before:buildObservedTaskTimeline(entry,data.rows,data.dayStart,data.dayEnd,decisions);
+      const card=node('div',null,comparison,'agent-compact-entry');
+      node('strong',task.title,card);
+      node('span',clockTime(Math.max(interval.start,data.dayStart))+'–'+clockTime(Math.min(interval.end,data.dayEnd))+' · '+compactTime(before.trackedMs)+' tracked',card);
+      node('span',compactTime(before.coveredMs)+' observed AI intervals · '+before.observedTurns+' overlapping turns (all work)',card);
+      const result=node('div',null,card,'agent-match-comparison-line');
+      node('strong',decisions===null?'Rules: '+compactTime(before.matchedCoveredMs)+' · '+before.matchedTurns+' proposed matches':
+        'Rules: '+compactTime(before.matchedCoveredMs)+' / '+before.matchedTurns+' turns → AI: '+compactTime(after.matchedCoveredMs)+' / '+after.matchedTurns+' turns',result);
+      node('span',after.unresolvedTurns+' unresolved · '+after.rejectedTurns+' model-rejected · '+after.otherTaskTurns+' attributed elsewhere',result);
+      if(decisions!==null){
+        const changed=data.rows.filter(r=>turnOverlapsTrackedIntervals(r,[interval],data.dayStart,data.dayEnd)&&decisions.has(r.turnId)&&
+          ((r.matchedUrl===task.url)!==(decisions.get(r.turnId)?.url===task.url)));
+        if(changed.length){
+          const detail=node('details',null,card);
+          node('summary',changed.length+' changed task decisions',detail);
+          for(const row of changed){
+            const d=decisions.get(row.turnId);
+            node('p',clockTime(row.startedAt,true)+' · '+(row.matchedUrl===task.url?'Match':'No match')+' → '+(d.url===task.url?'Match':'No match')+' · '+d.reason+' ('+d.confidence+')',detail);
+          }
+        }
+      }
+    }
+  }
+}
+function renderMatching(data,decisions=null) {
   matchingResults.replaceChildren();
   const warnings = [count(data.rows.length) + ' turns within tracked entries · shown inside calendar blocks for selected day'];
   if (data.partial) warnings.push('Task history incomplete.');
   if (data.omittedTurns) warnings.push(count(data.omittedTurns) + ' overlapping turns omitted by diagnostic limit.');
   if (Object.values(data.providers).some(p => p.connected && !p.complete)) warnings.push('Collector history may be incomplete.');
   matchingStatus.textContent = warnings.join(' · ');
-  publishOverlay(data);
-  renderTrackedEntries(data, matchingResults);
+  publishOverlay(data,decisions);
+  renderComparison(data,decisions);
+  renderTrackedEntries(data, matchingResults,decisions);
   const debug=node('details',null,matchingResults,'agent-matching-debug');
   node('summary','Matching diagnostics',debug);
   node('p',count(data.rows.filter(r=>r.state==='matched').length)+' proposed matches · rules v'+data.ruleVersion+' · '+count(data.bytesRead)+' journal bytes read',debug);
@@ -149,6 +187,7 @@ function clearMatching() {
   matchingRun.disabled = false;
   matchingExport.disabled = true;
   matchingResults.replaceChildren();
+  comparison.replaceChildren();
   matchingStatus.textContent = 'Choose a day and analyze to see the task candidates and matching decisions.';
 }
 matchingDate.addEventListener('change', clearMatching);
@@ -305,9 +344,11 @@ semanticRun.addEventListener('click',async()=>{
       }catch(error){failures.push(index+1);node('p','Batch '+(index+1)+': '+error.message,semanticResults);break;}
     }
     if(generation!==semanticGeneration)return;
-    node('h3','Semantic proposals (not confirmed)',semanticResults);
-    publishOverlay(data,decisions);
-    renderTrackedEntries(data,semanticResults,decisions);
+    // Replace the same entry view instead of rendering a second copy.
+    semanticPreview.hidden=true;
+    renderMatching(data,decisions);
+    document.getElementById('agent-entry-debug').open=false;
+    document.getElementById('semantic-matching-controls').open=false;
     // Normal debug download contains no prompts, model explanations or raw
     // descriptions. Keep only structured decisions and usage.
     const {preview,...safeData}=data;
@@ -319,10 +360,10 @@ semanticRun.addEventListener('click',async()=>{
   }finally{apiKey='';semanticRunning=false;semanticPrepare.disabled=false;syncSemantic();}
 });
 
-const attributionLabels={matched:'Proposed match',unassigned:'Time overlap only / unresolved',model_unassigned:'Model: unassigned',other_task:'Attributed to another task'};
+const attributionLabels={model_unrelated:'Model: unrelated work',matched:'Proposed match',unassigned:'Time overlap only / unresolved',model_unassigned:'Model: unassigned',other_task:'Attributed to another task'};
 function renderTaskTimeline(timeline,parent) {
   const summary=node('div',null,parent,'agent-entry-kpis');
-  for(const [label,value] of [['Tracked time',time(timeline.trackedMs)],['AI turn coverage',time(timeline.coveredMs)+' ('+percent(timeline.coveragePct)+')'],['No AI turn observed',time(timeline.uncoveredMs)],['AI turns',count(timeline.observedTurns)]]){
+  for(const [label,value] of [['Tracked time',time(timeline.trackedMs)],['AI turn coverage (all observed)',time(timeline.coveredMs)+' ('+percent(timeline.coveragePct)+')'],['Proposed task AI time',time(timeline.matchedCoveredMs)],['AI turns',count(timeline.observedTurns)]]){
     const kpi=node('div',null,summary);node('span',label,kpi);node('strong',value,kpi);
   }
   for(const window of timeline.windows){
@@ -353,7 +394,7 @@ function renderTaskTimeline(timeline,parent) {
     const sequence=[...window.covered.map(i=>({...i,ai:true})),...window.gaps.map(i=>({...i,ai:false}))].sort((a,b)=>a.start-b.start);
     const details=node('details',null,block,'agent-task-interval-list');
     details.open=false;
-    node('summary','Activity and gaps ('+sequence.length+' intervals)',details);
+    node('summary','All observed activity and gaps (including rejected turns; '+sequence.length+' intervals)',details);
     const table=node('table',null,details,'agent-entry-sequence');
     const header=node('tr',null,node('thead',null,table));
     for(const label of ['From','To','Duration','Activity'])node('th',label,header);
@@ -368,7 +409,7 @@ function renderTaskTimeline(timeline,parent) {
   if(timeline.unverified.length)node('p',timeline.unverified.length+' observations have unverified timing; see turn details. No duration inferred.',parent);
   const attribution=node('details',null,parent,'agent-matching-debug');
   node('summary','Attribution summary',attribution);
-  node('p',timeline.matchedTurns+' proposed matches · '+timeline.unresolvedTurns+' unresolved · '+timeline.otherTaskTurns+' attributed elsewhere',attribution);
+  node('p',timeline.matchedTurns+' proposed matches · '+timeline.unresolvedTurns+' unresolved · '+timeline.otherTaskTurns+' attributed elsewhere · '+timeline.rejectedTurns+' model-rejected',attribution);
   node('p','Proposed matched coverage: '+time(timeline.matchedCoveredMs)+' · sum of full observed turn durations: '+time(timeline.observedTurnMs),attribution);
 }
 let statusPending=false;

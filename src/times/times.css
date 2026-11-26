@@ -218,3 +218,10 @@ body.activity-rate-limit-visible #activity-running-status .running-status-error[
 #agent-entry-debug>summary,#semantic-matching-controls>summary{font-size:12px;color:var(--fgColor-muted)}
 #agent-entry-debug{margin:5px 0}
 .agent-task-turn.is-unassigned,.agent-task-swatch.is-unassigned,.agent-task-turn.is-model_unassigned,.agent-task-swatch.is-model_unassigned{background:var(--fgColor-muted,#656d76);opacity:.55}
+
+.agent-compact-entry{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:7px 0;border-top:1px solid var(--borderColor-muted)}
+.agent-compact-entry>strong{font-size:13px}
+.agent-compact-entry>span,.agent-match-comparison-line>span{font-size:12px;color:var(--fgColor-muted)}
+.agent-match-comparison-line{flex-basis:100%;display:flex;align-items:baseline;gap:5px 14px;flex-wrap:wrap;font-size:12px}
+.agent-compact-entry details{flex-basis:100%;font-size:12px}
+.agent-task-turn.is-model_unrelated,.agent-task-swatch.is-model_unrelated{background:var(--fgColor-muted,#656d76);opacity:.25}

@@ -27,7 +27,9 @@ export function redactSemanticText(value, limit = MAX_PROMPT) {
     .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,}|AKIA[A-Z0-9]{16})\b/g, '[REDACTED]')
     .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_.=-]{8,}/gi, '[REDACTED]')
     .replace(/(\b(?:password|passwd|api[_ -]?key|access[_ -]?token|secret)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]')
-    .replace(/(?:\/Users\/|\/home\/|[A-Za-z]:\\Users\\)[^\s"'<>]+/g, '[LOCAL_PATH]')
+    .replace(/(\bworkingCopy\s*=\s*)[A-Za-z0-9_+/=-]+/gi, '$1[REDACTED]')
+    .replace(/(\b(?:APP_KEY|DB_PASSWORD|DATABASE_PASSWORD|[A-Z][A-Z0-9_]*(?:_TOKEN|_SECRET|_PASSWORD|_API_KEY))\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s,;"]+)/g, '$1[REDACTED]')
+    .replace(/(?:\/Users\/|\/home\/|\/private\/tmp\/|[A-Za-z]:\\Users\\)[^\s"'<>]+/g, '[LOCAL_PATH]')
     .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '[EMAIL]')
     .trim();
   const truncated = value.length > sample.length || text.length > limit;

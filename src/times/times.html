@@ -47,14 +47,15 @@
   <section id="agent-matching" class="agent-workflow" aria-labelledby="agent-matching-title" hidden>
     <details open>
       <summary id="agent-matching-title">AI activity</summary>
-      <p class="agent-workflow-note">Green: proposed task match. Gray: unassigned AI interval. Only the portion within each calendar entry is shown.</p>
+      <p class="agent-workflow-note">Green: proposed task match. Gray: unresolved overlap. Turns rejected as unrelated by the model are hidden from calendar blocks.</p>
       <div class="agent-workflow-controls">
         <label>Day <input id="agent-matching-date" type="date" min="1970-01-01"></label>
         <button id="agent-matching-run" type="button">Show activity</button>
-        <label class="agent-unmatched-option"><input id="agent-show-unmatched" type="checkbox" checked> Show unassigned turns</label>
+        <label class="agent-unmatched-option"><input id="agent-show-unmatched" type="checkbox" checked> Show unresolved turns</label>
         <button id="agent-matching-export" type="button" disabled>Download debug JSON</button>
       </div>
       <p id="agent-matching-status" role="status">Choose a day to see tracked entries and overlapping AI turns.</p>
+      <div id="agent-matching-comparison"></div>
       <details id="agent-entry-debug"><summary>Detailed intervals &amp; matching diagnostics</summary><div id="agent-matching-results"></div></details>
       <details id="semantic-matching-controls">
         <summary>Semantic matching · experimental (optional paid API)</summary>
