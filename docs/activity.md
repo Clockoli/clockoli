@@ -44,6 +44,12 @@ Rules version 1 matches a single strong identity (exact task URL, or matching re
 
 This is an explicit, bounded, read-only experiment, not a continuous matching engine: at most 300 observed turns and 100 task candidates per day, 16 MiB per journal and 64 MiB total source reads. Missing journals, partial reads and exceeded limits are reported rather than guessed. It neither reindexes nor writes matching results to GitHub, IndexedDB, or tracked-time records. Re-analyze after changing task intervals or collecting new turns.
 
+### Experimental semantic matching
+
+Activity → AI Task Matching → Semantic matching supports OpenRouter, OpenAI and Claude (Anthropic) using a user-supplied model ID and API key for the current run. Prepare preview reads selected Codex journals locally and obtains available current GitHub issue descriptions. The exact classification instructions and data payloads are shown before any LLM request; review the preview, then explicitly consent and grant only the selected API host. Redaction is best effort, not anonymization. Do not send confidential material without authorization. Provider costs and retention policies apply; OpenRouter may route to downstream providers.
+
+Only verified turns contained in task intervals are candidates, including previous rule matches. Requests group up to six turns from the same session and at most two preceding message excerpts per turn. Fallback user-role messages are labelled unverified, never interpreted as authoritative instructions. Journal reads stay bounded (64 MiB total, 16 MiB per line); oversized/unsupported evidence remains unassigned. The API has no tools and can only propose candidate IDs or null. Results are separate from v1, with per-turn explanations, usage and task-level statistics. No automatic tracking or invoice changes. Debug JSON includes normalized decisions, not preview text, issue descriptions, raw model outputs or credentials. Cache is limited to the current Activity page and exact payload/model/provider; no automatic retry, no persisted key or semantic attribution. Claude is supported as an API provider, not yet as a semantic journal source.
+
 ## Timeline and Calendar
 
 Both views display time entries, including work that crosses midnight. An interval contributes time to each day it touches. The running timer appears in the current week.

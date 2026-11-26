@@ -24,7 +24,7 @@ const EXTENSION_MESSAGES = new Set([
   'CLEAR_LOCAL_CONFIGURATION', 'MERGE_TASKS', 'GET_ADDON_SETTINGS', 'SET_ADDON_ENABLED',
   'GET_CLOCKIFY_MIGRATION_PREVIEW', 'GET_CLOCKIFY_MIGRATION_SUGGESTIONS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'CONFIRM_CLOCKIFY_MIGRATION', 'RESTORE_CLOCKIFY_MIGRATION_PREVIEW', 'INVITE_MIGRATED_USER',
   'CLEANUP_CLOCKIFY_TEST_IMPORTS', 'DELETE_ALL_CLOCKOLI_RECORDS',
-  'AGENT_COLLECTOR_STATUS', 'AGENT_COLLECTOR_CONTROL', 'AGENT_WORKFLOW_SUMMARY', 'AGENT_MATCHING_DIAGNOSTICS',
+  'AGENT_COLLECTOR_STATUS', 'AGENT_COLLECTOR_CONTROL', 'AGENT_WORKFLOW_SUMMARY', 'AGENT_MATCHING_DIAGNOSTICS', 'AGENT_SEMANTIC_PREVIEW', 'AGENT_SEMANTIC_CLASSIFY',
 ]);
 const COMPLETED_MUTATION_MESSAGES = new Set([
   'EDIT_ENTRIES', 'QUEUE_ENTRY_EDIT', 'QUEUE_ENTRY_DELETE', 'QUEUE_ENTRIES_EDIT', 'DELETE_ENTRY',
@@ -64,7 +64,7 @@ export function assertMessageAllowed(type, sender, extensionOrigin) {
 }
 
 export function agentMatchingRequest(message, sender, extensionOrigin) {
-  if (message?.type !== 'AGENT_MATCHING_DIAGNOSTICS'
+  if (!['AGENT_MATCHING_DIAGNOSTICS', 'AGENT_SEMANTIC_PREVIEW'].includes(message?.type)
       || assertMessageAllowed(message.type, sender, extensionOrigin) !== 'extension'
       || sender?.url !== extensionOrigin + 'src/times/times.html'
       || Object.keys(message).sort().join(',') !== 'date,thresholdMinutes,type'

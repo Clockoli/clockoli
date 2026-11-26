@@ -1,3 +1,5 @@
+import { CLASSIFIER_INSTRUCTIONS, LLM_HOSTS } from '../agents/semantic-matching.js';
+import { summarizeAgentWorkflow } from '../agents/metrics.js';
 // The Activity page receives aggregates only, never agent journal records or identifiers.
 const panel = document.getElementById('agent-workflow');
 const period = document.getElementById('agent-workflow-period');
@@ -199,6 +201,7 @@ function renderMatching(data) {
   }
 }
 function clearMatching() {
+  clearSemantic();
   matchingSequence++;
   matchingData = null;
   matchingRun.disabled = false;
@@ -234,4 +237,124 @@ matchingExport.addEventListener('click', () => {
   link.download = 'clockoli-matching-' + matchingData.date + '.json';
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+const semanticProvider = document.getElementById('semantic-provider');
+const semanticModel = document.getElementById('semantic-model');
+const semanticKey = document.getElementById('semantic-key');
+const semanticConsent = document.getElementById('semantic-consent');
+const semanticPrepare = document.getElementById('semantic-prepare');
+const semanticRun = document.getElementById('semantic-run');
+const semanticStatus = document.getElementById('semantic-status');
+const semanticPreview = document.getElementById('semantic-preview');
+const semanticResults = document.getElementById('semantic-results');
+let semanticGeneration=0, prepared=null, semanticRunning=false;
+const semanticCache=new Map();
+function clearSemantic() {
+  semanticGeneration++;
+  prepared=null;
+  semanticKey.value='';
+  semanticConsent.checked=false;
+  semanticPreview.textContent='';
+  semanticPreview.hidden=true;
+  semanticResults.replaceChildren();
+  semanticRun.disabled=true;
+  semanticStatus.textContent='';
+}
+function syncSemantic() {
+  semanticRun.disabled=semanticRunning||!prepared?.preview?.batches?.length||!semanticConsent.checked||
+    !semanticKey.value.trim()||!/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$/.test(semanticModel.value.trim());
+}
+for(const input of [semanticModel,semanticKey,semanticConsent])input.addEventListener('input',syncSemantic);
+semanticProvider.addEventListener('change',()=>{semanticConsent.checked=false;semanticKey.value='';syncSemantic();});
+semanticModel.addEventListener('input',()=>{semanticConsent.checked=false;syncSemantic();});
+semanticPrepare.addEventListener('click',async()=>{
+  if(semanticRunning||!matchingDate.value||!matchingDate.reportValidity())return;
+  clearSemantic();
+  const generation=semanticGeneration;
+  semanticPrepare.disabled=true;
+  semanticStatus.textContent='Reading local source and available task descriptions…';
+  try {
+    const data=await send({type:'AGENT_SEMANTIC_PREVIEW',date:matchingDate.value,thresholdMinutes:Number(matchingThreshold.value)});
+    if(generation!==semanticGeneration)return;
+    prepared=data;
+    semanticPreview.hidden=false;
+    semanticPreview.textContent=CLASSIFIER_INSTRUCTIONS+'\n\n'+data.preview.batches.map((b,i)=>'Batch '+(i+1)+'\n'+JSON.stringify(b.payload,null,2)).join('\n\n');
+    semanticStatus.textContent=data.preview.batches.length+' request(s) prepared · '+data.preview.skipped.length+' turns excluded (no verified candidate or context, or diagnostic limit). Review all content before sending.';
+    syncSemantic();
+  }catch{if(generation===semanticGeneration)semanticStatus.textContent='Could not prepare semantic preview.';}
+  finally{semanticPrepare.disabled=false;}
+});
+async function semanticSend(message) {
+  return new Promise((resolve,reject)=>chrome.runtime.sendMessage(message,response=>{
+    if(chrome.runtime.lastError||!response?.ok){
+      const error=typeof response?.error==='string'?response.error:response?.error?.message;
+      // Only surface fixed, non-secret errors; never raw API bodies.
+      const safe=/^(Provider HTTP [0-9]{3}|Provider network error or timeout|Provider returned no complete classification|Model did not return valid JSON|Incomplete model decisions|Invalid model decision|Invalid or oversized provider response|API host permission not granted|Agent source access changed; prepare again)$/.test(error||'')?error:'Semantic request failed';
+      return reject(new Error(safe));
+    }
+    resolve(response.data);
+  }));
+}
+semanticRun.addEventListener('click',async()=>{
+  if(semanticRun.disabled||semanticRunning||!prepared)return;
+  const data=prepared,generation=semanticGeneration,p=semanticProvider.value,model=semanticModel.value.trim();
+  let apiKey=semanticKey.value.trim();
+  semanticKey.value='';semanticConsent.checked=false;
+  semanticRunning=true;semanticPrepare.disabled=true;syncSemantic();
+  semanticResults.replaceChildren();
+  try{
+    if(!await chrome.permissions.request({origins:[LLM_HOSTS[p]]})){semanticStatus.textContent='API host access declined.';return;}
+    if(generation!==semanticGeneration)return;
+    const decisions=new Map(),usage={input:0,output:0,unknown:0},failures=[];
+    for(const [index,batch] of data.preview.batches.entries()){
+      if(generation!==semanticGeneration)break;
+      semanticStatus.textContent='Classifying batch '+(index+1)+' / '+data.preview.batches.length+'…';
+      // Session-page cache; exact model + exact preview; no persistent text or keys.
+      const cacheKey=JSON.stringify([p,model,data.preview.rootId,batch.payload]);
+      try{
+        let result=semanticCache.get(cacheKey);
+        const cached=Boolean(result);
+        if(!result){
+          result=await semanticSend({type:'AGENT_SEMANTIC_CLASSIFY',provider:p,model,apiKey,rootId:data.preview.rootId,payload:batch.payload,confirmed:true});
+          if(semanticCache.size>=30)semanticCache.delete(semanticCache.keys().next().value);
+          semanticCache.set(cacheKey,result);
+          if(result.usage.inputTokens===null||result.usage.outputTokens===null)usage.unknown++;
+          usage.input+=result.usage.inputTokens||0;usage.output+=result.usage.outputTokens||0;
+        }
+        if(generation!==semanticGeneration)break;
+        for(const d of result.decisions){
+          const i=batch.payload.turns.findIndex(t=>t.id===d.turn_id);
+          const j=batch.payload.tasks.findIndex(t=>t.id===d.task_id);
+          if(i>=0)decisions.set(batch.turnIds[i],{...d,url:j>=0?batch.taskUrls[j]:null,cached});
+        }
+        node('p','Batch '+(index+1)+(cached?' · cached':' · '+(result.usage.inputTokens??'—')+' input / '+(result.usage.outputTokens??'—')+' output tokens')+
+          (result.usage.cost===null?'':' · provider cost '+result.usage.cost+' USD'),semanticResults);
+      }catch(error){failures.push(index+1);node('p','Batch '+(index+1)+': '+error.message,semanticResults);break;}
+    }
+    if(generation!==semanticGeneration)return;
+    node('h3','Semantic proposals (not confirmed)',semanticResults);
+    for(const task of data.tasks){
+      const turns=data.rows.filter(r=>decisions.get(r.turnId)?.url===task.url).map(r=>({...r,key:r.turnId}));
+      const summary=summarizeAgentWorkflow(turns,{period:'all',provider:'all',thresholdMinutes:Number(matchingThreshold.value)});
+      node('p',task.title+' · '+summary.totalTurns+' proposed turns · '+time(summary.eligibleMs)+' · short share '+percent(summary.shortSharePct),semanticResults);
+    }
+    for(const row of data.rows){
+      const d=decisions.get(row.turnId);
+      const detail=node('details',null,semanticResults,'agent-match-row');
+      const task=data.tasks.find(t=>t.url===d?.url);
+      node('summary',localTime(row.startedAt??row.endedAt)+' · '+(task?.title??(d?'Unassigned':'Not analyzed'))+' · '+time(row.elapsedMs),detail);
+      node('p','Rule v1: '+row.reason+' · '+(row.matchedUrl||'Unassigned'),detail);
+      node('p','Model: '+(d?d.reason+' · '+d.confidence+' · '+d.explanation:'No model decision'),detail);
+      node('p','Turn ID: '+row.turnId,detail);
+    }
+    // Normal debug download contains no prompts, model explanations or raw
+    // descriptions. Keep only structured decisions and usage.
+    const {preview,...safeData}=data;
+    matchingData={date:matchingDate.value,thresholdMinutes:Number(matchingThreshold.value),...safeData,
+      tasks:safeData.tasks.map(({description,...task})=>task),
+      semantic:{provider:p,model,usage,failures,decisions:[...decisions].map(([turnId,{url,reason,confidence,cached}])=>({turnId,url,reason,confidence,cached}))}};
+    matchingExport.disabled=false;
+    semanticStatus.textContent=decisions.size+' analyzed · '+[...decisions.values()].filter(d=>d.url).length+' proposed matches · '+usage.input+' input / '+usage.output+' output tokens this run'+(usage.unknown?' (some usage unavailable)':'')+(failures.length?' · stopped on error':'');
+  }finally{apiKey='';semanticRunning=false;semanticPrepare.disabled=false;syncSemantic();}
 });

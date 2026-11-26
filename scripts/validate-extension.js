@@ -24,7 +24,7 @@ for (const target of values.target ? [values.target] : TARGETS) {
   for (const permission of manifest.permissions || []) if (!permissions.includes(permission)) fail(`Unexpected permission: ${permission}`);
   if ((manifest.permissions || []).includes('storage')) fail('chrome.storage permission would expose persistent state to content scripts');
 
-  if (JSON.stringify(manifest.optional_host_permissions) !== JSON.stringify(['https://app.clockify.me/*'])) fail('Optional hosts must be limited to Clockify');
+  if (JSON.stringify(manifest.optional_host_permissions) !== JSON.stringify(['https://app.clockify.me/*', 'https://openrouter.ai/*', 'https://api.openai.com/*', 'https://api.anthropic.com/*'])) fail('Optional hosts must be limited to Clockify and explicitly selected semantic matching APIs');
   const actionPopup = manifest.action?.default_popup;
   const referenced = [manifest.background.service_worker, ...(manifest.background.scripts || []), actionPopup, manifest.options_page, 'src/reports/reports.html', 'src/tasks/tasks.html', 'src/times/times.html'].filter(Boolean);
   for (const script of manifest.content_scripts || []) referenced.push(...script.js);

@@ -54,6 +54,23 @@
         <button id="agent-matching-run" type="button">Analyze day</button>
         <button id="agent-matching-export" type="button" disabled>Download debug JSON</button>
       </div>
+      <details id="semantic-matching-controls">
+        <summary>Semantic matching · experimental (optional paid API)</summary>
+        <p class="agent-workflow-note">Prepare a local preview first. Only send after reviewing the exact content. Prompts and issue descriptions can contain confidential information even after automatic redaction. API keys are used for this run only; provider charges and retention policies apply.</p>
+        <div class="agent-workflow-controls">
+          <label>API provider <select id="semantic-provider"><option value="openrouter">OpenRouter</option><option value="openai">OpenAI</option><option value="anthropic">Claude (Anthropic)</option></select></label>
+          <label>Model ID <input id="semantic-model" type="text" maxlength="200" autocomplete="off" placeholder="Provider model ID"></label>
+          <button type="button" id="semantic-prepare">Prepare preview</button>
+        </div>
+        <p id="semantic-status" role="status"></p>
+        <pre id="semantic-preview" style="max-height:280px;overflow:auto;white-space:pre-wrap" hidden></pre>
+        <div class="agent-workflow-controls">
+          <label>API key <input id="semantic-key" type="password" autocomplete="off" maxlength="4096"></label>
+          <label><input type="checkbox" id="semantic-consent"> I reviewed and authorize sending the preview to the selected provider.</label>
+          <button type="button" id="semantic-run" disabled>Classify preview</button>
+        </div>
+        <div id="semantic-results"></div>
+      </details>
       <p id="agent-matching-status" role="status">Choose a day and analyze to see the task candidates and matching decisions.</p>
       <div id="agent-matching-results"></div>
     </details>

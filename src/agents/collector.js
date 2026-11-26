@@ -1,3 +1,4 @@
+import { createSemanticExtractor, semanticContext, makeSemanticBatches, redactSemanticText } from './semantic-matching.js';
 import { scanAgentJsonl } from './jsonl-reader.js';
 import { parseAgentRow, projectAgentTurns } from './parsers.js';
 import { extractCodexMatchingRow, matchingEvidenceByTurn, matchingTasks, explainAgentMatch, MATCH_RULE_VERSION } from './task-matching.js';
@@ -349,7 +350,7 @@ export async function controlAgentCollector(provider, action) {
 // An explicit diagnostic, not another continuous collector. Re-read only files
 // containing already observed turns for the selected day. No new persisted
 // fields, reindex, raw prompt export, or automatic writes to time records.
-export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { partial = false, thresholdMinutes = 15 } = {}) {
+export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { partial = false, thresholdMinutes = 15, semantic = false, loadDescription = null } = {}) {
   const tasks = matchingTasks(records, dayStart, dayEnd);
   const taskLimit = 100;
   if (tasks.length > taskLimit) throw new Error('Too many task candidates for a single day');
@@ -369,6 +370,7 @@ export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { p
   dayTurns.sort((a, b) => Date.parse(a.startedAt ?? a.endedAt) - Date.parse(b.startedAt ?? b.endedAt) || a.key.localeCompare(b.key));
   const selected = dayTurns.slice(0, 300);
   const evidence = new Map(), sourceStatus = new Map();
+  const semanticEntries = [];
   const codexTurns = selected.filter(turn => turn.provider === 'codex');
   const wanted = new Set(codexTurns.map(turn => turn.sourceFileKey));
   let bytesRead = 0;
@@ -388,15 +390,16 @@ export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { p
       for (const entry of selectedFiles.sort((a, b) => a.fileKey.localeCompare(b.fileKey))) {
         try {
           const file = await boundedNative('codex', () => entry.handle.getFile());
-          if (file.size > MAX_FILE_BYTES) { sourceStatus.set(entry.fileKey, 'source_file_too_large'); continue; }
+          if (file.size > (semantic ? MAX_RUN_BYTES : MAX_FILE_BYTES)) { sourceStatus.set(entry.fileKey, 'source_file_too_large'); continue; }
           if (bytesRead + file.size > MAX_RUN_BYTES) { sourceStatus.set(entry.fileKey, 'diagnostic_byte_limit'); continue; }
           const scan = await boundedNative('codex', () => scanAgentJsonl(file, null, {
-            readBudget: MAX_FILE_BYTES, maxLineBytes: MAX_FILE_BYTES, fingerprint,
-            parseRow: extractCodexMatchingRow, deadlineAt: Date.now() + 17_000,
+            readBudget: semantic ? MAX_RUN_BYTES : MAX_FILE_BYTES, maxLineBytes: MAX_FILE_BYTES, fingerprint,
+            parseRow: semantic ? createSemanticExtractor(extractCodexMatchingRow) : extractCodexMatchingRow, deadlineAt: Date.now() + 17_000,
           }));
           bytesRead += scan.bytesRead;
           if (scan.blockedCode || scan.backlog) { sourceStatus.set(entry.fileKey, 'source_scan_incomplete'); continue; }
-          for (const item of matchingEvidenceByTurn(scan.events)) {
+          const items = matchingEvidenceByTurn(scan.events);
+          for (const item of semantic ? semanticContext(items) : items) {
             const sessionId = await hash('session', item.sessionId);
             const turnId = await hash('turn', item.turnId);
             evidence.set(JSON.stringify([entry.fileKey, sessionId, turnId]), item);
@@ -427,10 +430,22 @@ export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { p
       : sourceStatus.get(turn.sourceFileKey) || (root?.paused ? 'source_paused' : 'source_missing');
     const match = explainAgentMatch(turn, item ?? { error: reason }, tasks, { partial });
     if (match.matchedUrl) byTask.get(match.matchedUrl)?.push(turn);
+    if (semantic) semanticEntries.push({ turn, item, match });
     return { turnId: turn.upstreamTurnId, provider: turn.provider, startedAt: turn.startedAt, endedAt: turn.endedAt,
-      elapsedMs: turn.elapsedMs, status: turn.status, ...match };
+      elapsedMs: turn.elapsedMs, status: turn.status, ...(semantic ? { durationSource: turn.durationSource, timingConfidence: turn.timingConfidence, providerDurationMs: turn.providerDurationMs, anchored: turn.anchored } : {}), ...match };
   });
-  return { ruleVersion: MATCH_RULE_VERSION, providers, totalTurns: dayTurns.length, omittedTurns: dayTurns.length - selected.length,
+  let preview;
+  if (semantic) {
+    // Titles are available locally; issue body fetch is optional and may fail.
+    if (loadDescription && !partial && tasks.length <= 10) await Promise.all(tasks.map(async task => {
+      try { task.description = redactSemanticText(await loadDescription(task.url), 1600)?.text ?? null; }
+      catch { task.description = null; }
+    }));
+    const latest = root ? await getAgentRootState('codex') : null;
+    if (root && (latest?.rootId !== root.rootId || latest.paused)) throw new Error('Agent source access changed');
+    preview = { rootId: root?.rootId ?? null, ...(partial ? { batches: [], skipped: selected.map(t=>t.upstreamTurnId) } : makeSemanticBatches(tasks, semanticEntries)) };
+  }
+  return { ...(semantic ? { preview } : {}), ruleVersion: MATCH_RULE_VERSION, providers, totalTurns: dayTurns.length, omittedTurns: dayTurns.length - selected.length,
     bytesRead, partial, tasks: tasks.map(task => ({
       ...task, summary: summarizeAgentWorkflow(byTask.get(task.url), { period: 'all', provider: 'all', thresholdMinutes }),
     })), rows };

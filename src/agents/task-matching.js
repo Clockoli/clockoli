@@ -93,6 +93,14 @@ export function matchingEvidenceByTurn(rows) {
       e.contextSeen ||= Boolean(row.cwd && session.cwd);
       if (row.cwd && session.cwd && row.cwd !== session.cwd) e.cwdMismatch = true;
     } else if (row.type === 'prompt') {
+      if (row.semantic) {
+        e.semanticMessages ||= [];
+        if (!e.semanticMessages.some(m => m.text === row.semantic.text && m.kind === row.semantic.kind)) {
+          e.semanticMessages.push(row.semantic);
+          e.semanticMessages = e.semanticMessages.slice(-4);
+        }
+      }
+      if (row.semanticOmitted) e.semanticOmitted = true;
       e.refs = [...new Set([...e.refs, ...row.refs])].sort();
       e.promptScanIncomplete ||= row.incomplete || e.refs.length > 20;
       if (e.refs.length > 20) e.refs = [];
