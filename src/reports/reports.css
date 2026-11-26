@@ -26,3 +26,5 @@ select{appearance:none;padding-right:32px;background-image:url("data:image/svg+x
   body,main{max-width:none;margin:0;padding:0;background:var(--bgColor-default);color:var(--fgColor-default)}body.printing-invoice,body.printing-invoice main{color-scheme:light;background:#fff;color:#000}
   #report-content{display:block!important}.print-timesheet{display:block}body.printing-invoice .print-timesheet{display:none!important}body.printing-invoice .print-invoice{display:block}
 }
+
+#summary-time-types{margin:4px 0}

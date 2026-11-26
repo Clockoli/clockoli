@@ -73,6 +73,7 @@ test('day-range dispatcher rejects untrusted payloads before routing and queues 
   const worker = await readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   const calls = []; let active = null;
   const context = vm.createContext({ dayRangeForSender, assertMessageAllowed,
+    timeOffTaskForDestination: async () => false,
     chrome: { runtime: { getURL: () => origin } }, store: {},
     resolveStartDestinationId: async (_store, url) => { calls.push(['route', url]); return 'github:1'; },
     activeDestinationId: async () => active,
@@ -92,7 +93,7 @@ test('day-range dispatcher rejects untrusted payloads before routing and queues 
   const result = await context.handle(message, { url: origin + 'src/times/times.html' });
   assert.equal(result.added, 2);
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['route', issue.url], ['add', {
-    taskUrl: issue.url, taskTitle: 'Time off', description: '', dates: ['2026-10-30', '2026-11-01'], durationSeconds: 28800,
+    taskUrl: issue.url, taskTitle: 'Time off', description: '', dates: ['2026-10-30', '2026-11-01'], durationSeconds: 28800, allowFuture: false,
   }], ['sync']]);
 });
 
@@ -100,6 +101,7 @@ test('Add time dispatcher validates before destination selection and schedules a
   const worker = await readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   const calls = [];
   const context = vm.createContext({ addTimeForSender, assertMessageAllowed,
+    timeOffTaskForDestination: async () => false,
     chrome: { runtime: { getURL: () => origin } }, store: {},
     resolveStartDestinationId: async (_store, url) => { calls.push(['route', url]); return 'github:1'; },
     activeDestinationId: async () => null,
@@ -120,6 +122,7 @@ test('Add time routes a selected imported task only to its configured source des
   const worker = await readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   const calls = [];
   const context = vm.createContext({ addTimeForSender, assertMessageAllowed,
+    timeOffTaskForDestination: async () => false,
     chrome: { runtime: { getURL: () => origin } }, store: {},
     requireConfiguredDestinationId: async (_store, id) => { calls.push(['check', id]); if (id !== 'github:2') throw new Error('Not configured'); return id; },
     resolveStartDestinationId: async () => { throw new Error('Imported tasks must not use URL routing'); },

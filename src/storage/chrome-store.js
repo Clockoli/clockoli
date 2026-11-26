@@ -44,7 +44,7 @@ const MIGRATION_KEYS = [
   'config', CONFIGURATION_GENERATION, ...LEGACY_TRACKING_KEYS, 'dataVersion', ...ONBOARDING_KEYS,
   'taskMetadataCache', 'reportCache', 'taskSearchCache', DESTINATION_REGISTRY, DESTINATION_STATES, ACTIVE_TIMER, REPOSITORY_VERIFICATION,
 ];
-const ALL_KEYS = [REPOSITORY_CHOICE, JOIN_INVITATION, IGNORED_JOIN_INVITATIONS, 'config', 'token', AUTH, AUTH_GENERATION, PENDING_AUTH, PENDING_AUTH_GENERATION, DEVICE_ATTEMPT, 'reportCache', 'pageSnapshots', 'taskSearchCache', 'taskMetadataCache', EXCHANGE_RATE_CACHE, ADDON_ENABLED, INTERFACE_WIDTH, TOOLBAR_CLICK_MODE, ACTIVITY_VIEW_MODE, ...ONBOARDING_KEYS, ...SETTINGS_KEYS, CONFIGURATION_GENERATION, ...Object.keys(DEFAULT_STATE), DESTINATION_REGISTRY, DESTINATION_STATES, ACTIVE_TIMER, REPOSITORY_VERIFICATION];
+const ALL_KEYS = [REPOSITORY_CHOICE, JOIN_INVITATION, IGNORED_JOIN_INVITATIONS, 'config', 'token', AUTH, AUTH_GENERATION, PENDING_AUTH, PENDING_AUTH_GENERATION, DEVICE_ATTEMPT, 'reportCache', 'pageSnapshots', 'taskSearchCache', 'taskMetadataCache', 'timeOffTeamYearsV1', EXCHANGE_RATE_CACHE, ADDON_ENABLED, INTERFACE_WIDTH, TOOLBAR_CLICK_MODE, ACTIVITY_VIEW_MODE, ...ONBOARDING_KEYS, ...SETTINGS_KEYS, CONFIGURATION_GENERATION, ...Object.keys(DEFAULT_STATE), DESTINATION_REGISTRY, DESTINATION_STATES, ACTIVE_TIMER, REPOSITORY_VERIFICATION];
 
 function preservedProjectClients(values) {
   if (!(values[BILLING_SETTINGS]?.invoicing?.clients ?? []).some(client => Array.isArray(client.projects) && client.projects.length)) return {};
@@ -432,7 +432,7 @@ export class ChromeStore {
   // refresh replaces them; invalidate summary display and passive-pull ETags.
   // dayRangeIntervals is a durable overlap guard, not a downloaded cache.
   async clearLocalCache() {
-    const caches = ['reportCache', 'pageSnapshots', 'taskMetadataCache', EXCHANGE_RATE_CACHE];
+    const caches = ['reportCache', 'pageSnapshots', 'taskMetadataCache', 'timeOffTeamYearsV1', EXCHANGE_RATE_CACHE];
     // Do not deserialize potentially huge history blobs just to delete them.
     const keys = ['dataVersion', DESTINATION_STATES, 'recentCache', 'summaryCache',
       'pendingWrites', 'taskSearchCache', CONFIGURATION_GENERATION];
@@ -446,6 +446,11 @@ export class ChromeStore {
         }
         const pending = Boolean(state.pendingWrites?.length || state.recentCache?.some(entry => entry?._pending));
         if (pending) retained += 1;
+        // Invalidate the personal PTO snapshot, not the local queue or its
+        // receipts. A stale calendar read cannot restore a cleared snapshot.
+        if (state.timeOffSnapshot) {
+          state = { ...state, timeOffSnapshot: null, timeOffRevision: (state.timeOffRevision ?? 0) + 1 };
+        }
         const summary = state.summaryCache;
         if (!summary) return state;
         const { silentPull, ...rest } = summary;
@@ -831,7 +836,7 @@ export class ChromeStore {
     if (Object.hasOwn(patch, 'dataVersion') && patch.dataVersion !== 5) throw storageFormatError('Destination state data version must remain 5.');
     const entries = { ...values[DESTINATION_STATES].entries };
     const nextEntry = destinationState(entries[destinationId]);
-    for (const key of Object.keys(DESTINATION_STATE_DEFAULT)) {
+    for (const key of [...Object.keys(DESTINATION_STATE_DEFAULT), 'timeOffSnapshot', 'timeOffRevision', 'timeOffReplans']) {
       if (Object.hasOwn(patch, key)) nextEntry[key] = structuredClone(patch[key]);
     }
     entries[destinationId] = nextEntry;

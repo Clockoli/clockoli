@@ -167,7 +167,7 @@ function makeTimerButton(task) {
   const active = sameTask(state.active, task), button = document.createElement('button');
   button.type = 'button'; button.className = 'timer-button'; button.title = active ? 'Stop' : 'Start';
   updateTimerButton(button, active);
-  button.disabled = Boolean(state.busyUrl || state.pendingWrites.some(item => item.status === 'conflict'));
+  button.disabled = Boolean(state.busyUrl || state.pendingWrites.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
   button.addEventListener('click', async () => {
     if (button.disabled) return;
     task = visibleTasks().find(item => trackedTaskKey(item) === trackedTaskKey(task));
@@ -248,7 +248,7 @@ function updateRows() {
     row.classList.toggle('running', active);
     button.title = active ? 'Stop' : 'Start';
     updateTimerButton(button, active);
-    button.disabled = Boolean(!task || state.busyUrl || state.pendingWrites.some(item => item.status === 'conflict'));
+    button.disabled = Boolean(!task || state.busyUrl || state.pendingWrites.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
     if (task) row.querySelector('.tracked-time').textContent = task.untrackedByYou ? '—' : formatClockDuration(taskTotalSeconds(task));
   }
 }
@@ -389,6 +389,7 @@ async function load() {
     $('partial-status').hidden = !state.partial;
     $('partial-status').textContent = !state.partial ? '' : [
       failed ? `${failed} time ${failed === 1 ? 'repository' : 'repositories'} could not be loaded.` : '',
+      result.timeOffSettingsUnavailable?.length ? 'Time off settings could not be verified. Task totals may include time off.' : '',
       conflictCount ? `${conflictCount} conflicting ${conflictCount === 1 ? 'record was' : 'records were'} omitted.` : '',
       'Showing available tracked work.',
     ].filter(Boolean).join(' ');

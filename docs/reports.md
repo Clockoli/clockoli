@@ -24,11 +24,15 @@ The chosen basis also affects rate dates, exchange-rate dates, timesheet exports
 
 ## Filter a report
 
-Filter by **Client**, **People**, **Projects**, **Sources**, and **Time repositories**.
+Filter by **Time type** (All, Work, or Time off), **Client**, **People**, **Projects**, **Sources**, and **Time repositories**.
 
 A **Source** is where the tracked task lives: the GitHub `owner/repository` for an issue or pull request, or the hostname for another website. A **Time repository** is where its record is stored.
 
-The summary shows total tracked time, billable amount, entries, people, and sources. **Non-billable** entries still count toward tracked time, but add nothing to billable amounts. You can mark completed entries non-billable in [Add and edit time](editing-time.md#edit-a-completed-entry).
+The summary shows total tracked time, Work, Time off, Planned time off, billable amount, entries, people, and sources. Total tracked includes completed time off, but not future planned time off. Time off is not billable. **Non-billable** entries still count toward tracked time, but add nothing to billable amounts. You can mark completed entries non-billable in [Add and edit time](editing-time.md#edit-a-completed-entry).
+
+## Team time off
+
+The team calendar, PTO planning, and grouped editing now live in [Time off](time-off.md). Reports continues to display Work, Time off and Planned totals.
 
 ## Explore charts
 
@@ -36,7 +40,7 @@ The controls beside the axes show what you are measuring:
 
 - **Y:** Total time, Avg time per distinct task, Billable amount, or Task count.
 - **X:** Group by day, week, month, person, source, time repository, or task.
-- **Stack by:** Split the bars using a separate grouping.
+- **Stack by:** Split the bars using a separate grouping, including Time type for Work vs Time off.
 
 Use **View analytics data table** to inspect the underlying chart values.
 
@@ -46,7 +50,7 @@ When amounts span several currencies, Reports lets you choose a chart currency a
 
 ## Export a timesheet
 
-- **CSV** or **JSON:** download individual time entries, including task, person, Start, End, duration, billable status, and description. Local rate and amount fields are included when available. A non-billable entry with an applicable rate has a billable amount of zero.
+- **CSV** or **JSON:** download individual time entries, including task, person, Start, End, duration, time type, billable status, and description. Local rate and amount fields are included when available. A non-billable entry with an applicable rate has a billable amount of zero.
 - **PDF:** download a timesheet.
 - **Print:** open the browser's print dialog.
 

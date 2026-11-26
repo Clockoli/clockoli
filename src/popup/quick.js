@@ -109,7 +109,7 @@ function saveDescription() {
   return descriptionSaving;
 }
 function blocked() {
-  return busy || state.pendingWrites?.some(write => write.status === 'conflict');
+  return busy || state.pendingWrites?.some(write => write.status === 'conflict' && ((write.operation ?? write.stage) !== 'timeOffChange' || String(write.conflictReason || '').startsWith('queued_write_')));
 }
 async function readCurrentPage() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

@@ -20,13 +20,13 @@ Each connected repository offers **Check access**, **Open repository**, **Manage
 
 Disconnecting affects this browser only. It does not delete GitHub data or change another teammate's access. You cannot disconnect while it would strand running or unsynced work.
 
-Select **Add time repository** to connect another destination. Repository cards also show collaborator and invitation controls when you have the required permissions.
+Select **Add time repository** to connect another destination. Repository cards also show collaborator and invitation controls when you have the required permissions. Expand **Time off tasks** to see the shared PTO task list. Repository administrators can search and select tasks as in Add time, paste a URL, or remove a task (up to 100), then save the list. These settings live on the repository's default branch, not in local browser preferences.
 
 See [Time repositories](time-data-repository.md) and [Work as a team](teams.md).
 
 ## Interface width
 
-Choose a centered layout or use the available screen width for Activity, Reports, and Top tasks. This preference stays in the current browser and is not included in settings backups.
+Choose a centered layout or use the available screen width for Activity, Reports, Top tasks, and Time off. This preference stays in the current browser and is not included in settings backups.
 
 ![Interface width and toolbar behavior settings](images/interface-settings.png)
 

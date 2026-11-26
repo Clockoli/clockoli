@@ -27,3 +27,5 @@ Search uses a local task catalog backed by GitHub, so matches are usually immedi
 Imported tasks that still have a non-URL identity can be restarted from their existing rows. New tasks entered manually must use HTTP(S) URLs.
 
 If a task is missing, check the selected period, clear the search, or refresh. Titles may be unavailable when GitHub metadata cannot be read; the task URL still works.
+
+Configured time off tasks are excluded from working-time rankings. Use [Time off](time-off.md) to view and manage PTO.

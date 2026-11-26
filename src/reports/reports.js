@@ -13,7 +13,7 @@ const FACET_KEYS = ['people', 'projects', 'repositories', 'timeRepositories'];
 const $ = id => document.getElementById(id);
 const SAFARI_EXTENSION_PROTOCOL = 'safari-web-extension:';
 const state = {
-  records: [], range: null, pendingRange: null, sourceRepository: '', branch: '', sourceRepositories: [], billing: { clientRates: {}, invoicing: invoicingSettings() }, loading: false, stale: false, requestId: 0, analytics: null, partial: false, readStatus: [], pendingCount: 0,
+  records: [], plannedRecords: [], timeType: 'all', range: null, pendingRange: null, sourceRepository: '', branch: '', sourceRepositories: [], billing: { clientRates: {}, invoicing: invoicingSettings() }, loading: false, stale: false, requestId: 0, analytics: null, partial: false, readStatus: [], pendingCount: 0,
   people: new Set(), projects: new Set(), repositories: new Set(), timeRepositories: new Set(), projectDefinitions: [], peopleSearch: '', projectsSearch: '', repositoriesSearch: '', timeRepositoriesSearch: '',
   allSelected: { people: false, projects: true, repositories: true, timeRepositories: true }, otherProjectName: 'Other', otherProjectClient: '', rateClientId: '__project__', clientIdFilter: '',
   exchangeRates: null, exchangeKey: '', analyticsRequestId: 0, progressRequestId: null, progressValue: 0,
@@ -77,7 +77,7 @@ function svg(tag, attributes = {}, text = '') {
 }
 
 const METRIC_LABELS = { 'total-time': 'Total time', 'avg-time': 'Avg time', 'task-count': 'Task count', 'billable-amount': 'Billable amount' };
-const AXIS_LABELS = { day: 'Day', week: 'Week', month: 'Month', person: 'Person', repository: 'Source', 'time-repository': 'Time repository', task: 'Task URL / title' };
+const AXIS_LABELS = { day: 'Day', week: 'Week', month: 'Month', person: 'Person', repository: 'Source', 'time-repository': 'Time repository', task: 'Task URL / title', 'time-type': 'Time type' };
 
 function currencyPosition(currency) {
   return $('billable-currency').selectedOptions[0]?.dataset.position
@@ -275,7 +275,7 @@ function setDownloadsAvailable(available) {
 }
 
 function selectedFilters() {
-  return { people: [...state.people], projects: [...state.projects], repositories: [...state.repositories], timeRepositories: [...state.timeRepositories], projectDefinitions: state.projectDefinitions, otherProjectName: state.otherProjectName, otherProjectClient: state.otherProjectClient, clientIdFilter: state.clientIdFilter, emptyMeansNone: true };
+  return { people: [...state.people], projects: [...state.projects], repositories: [...state.repositories], timeRepositories: [...state.timeRepositories], projectDefinitions: state.projectDefinitions, otherProjectName: state.otherProjectName, otherProjectClient: state.otherProjectClient, clientIdFilter: state.clientIdFilter, timeType: state.timeType, emptyMeansNone: true };
 }
 
 function currentFilteredRecords() { return filterReportRecords(state.records, selectedFilters()); }
@@ -673,6 +673,13 @@ function renderCurrencySelector(filtered) {
 function renderSummary(filtered, totals) {
   const total = filtered.reduce((sum, record) => sum + (Number(record.durationSeconds) || 0), 0);
   $('summary-time').textContent = formatClockDuration(total);
+  const work = filtered.filter(record => !record.isTimeOff).reduce((sum, record) => sum + (Number(record.durationSeconds) || 0), 0);
+  const pto = total - work;
+  const planned = filterReportRecords(state.plannedRecords, selectedFilters())
+    .reduce((sum, record) => sum + (Number(record.durationSeconds) || 0), 0);
+  $('summary-work').textContent = formatClockDuration(work);
+  $('summary-pto').textContent = formatClockDuration(pto);
+  $('summary-planned').textContent = formatClockDuration(planned);
   $('summary-billable').hidden = !Object.values(state.billing.clientRates).some(card => Object.keys(card).length);
   const missingRates = [...new Set(filtered.filter(record => isBillable(record) && !recordRate(record)).map(record => record.user))];
   const amount = filtered.some(isBillable) ? billableSummary(totals) : 'No billable entries';
@@ -892,14 +899,14 @@ async function loadBillableAnalytics(filtered, request, key) {
 
 function render() {
   if (!state.range) return;
-  const facets = buildFacets(state.records, selectedFilters());
+  const facets = buildFacets([...state.records, ...state.plannedRecords], selectedFilters());
   for (const key of FACET_KEYS) {
     renderFacet($(`${key}-facet`), facets[key], state[key], state[`${key}Search`], () => updateSelectionIntent(key));
   }
-  const allPeople = [...new Set(state.records.map(record => record.user))];
+  const allPeople = [...new Set([...state.records, ...state.plannedRecords].map(record => record.user))];
   const allProjects = facets.projects.map(project => project.value);
-  const allRepositories = [...new Set(state.records.map(record => taskSource(record)))];
-  const allTimeRepositories = [...new Set(state.records.map(record => timeRepository(record)))];
+  const allRepositories = [...new Set([...state.records, ...state.plannedRecords].map(record => taskSource(record)))];
+  const allTimeRepositories = [...new Set([...state.records, ...state.plannedRecords].map(record => timeRepository(record)))];
   $('people-all').textContent = allPeople.length && allPeople.every(value => state.people.has(value)) ? 'Unselect all' : 'Select all';
   $('projects-all').textContent = allProjects.length && allProjects.every(value => state.projects.has(value)) ? 'Unselect all' : 'Select all';
   $('repositories-all').textContent = allRepositories.length && allRepositories.every(value => state.repositories.has(value)) ? 'Unselect all' : 'Select all';
@@ -943,7 +950,9 @@ function applyReportResult(result, range, reportingUtc, { cached = false } = {})
     state.range = range; state.pendingRange = null; state.loading = false; state.stale = cached;
     state.exchangeRates = null; state.exchangeKey = '';
     // Project the reporting date once so billing and invoice consumers share the report basis.
-    state.records = result.records.map(record => ({ ...record, entryDate: recordDate(record, reportingUtc) }));
+    const all = result.records.map(record => ({ ...record, entryDate: recordDate(record, reportingUtc) }));
+    state.plannedRecords = all.filter(record => record.isTimeOff && new Date(record.endedAt).getTime() > Date.now());
+    state.records = all.filter(record => !record.isTimeOff || new Date(record.endedAt).getTime() <= Date.now());
     state.sourceRepository = result.sourceRepository; state.branch = result.branch;
     state.sourceRepositories = result.sourceRepositories || (result.sourceRepository ? [result.sourceRepository] : []);
     state.partial = Boolean(result.partial); state.readStatus = result.readStatus || [];
@@ -953,12 +962,12 @@ function applyReportResult(result, range, reportingUtc, { cached = false } = {})
     const failed = state.readStatus.filter(item => item.status === 'error');
     const conflictCount = result.conflicts?.length || 0;
     $('partial-status').hidden = !state.partial;
-    $('partial-status').textContent = !state.partial ? '' : [failed.length ? `${failed.length} time ${failed.length === 1 ? 'repository' : 'repositories'} could not be loaded.` : '', conflictCount ? `${conflictCount} conflicting ${conflictCount === 1 ? 'record was' : 'records were'} omitted.` : '', 'Exports are disabled until the report is complete.'].filter(Boolean).join(' ');
+    $('partial-status').textContent = !state.partial ? '' : [failed.length ? `${failed.length} time ${failed.length === 1 ? 'repository' : 'repositories'} could not be loaded.` : '', conflictCount ? `${conflictCount} conflicting ${conflictCount === 1 ? 'record was' : 'records were'} omitted.` : '', result.timeOffSettingsUnavailable?.length ? 'Time off settings could not be verified. Time and billing classification may be incomplete.' : '', 'Exports are disabled until the report is complete.'].filter(Boolean).join(' ');
     state.billing = { clientRates: result.billing?.clientRates || {}, invoicing: invoicingSettings(result.billing) };
     state.projectDefinitions = result.billing?.projects || [];
     state.otherProjectName = result.billing?.otherProjectName || 'Other';
     state.otherProjectClient = result.billing?.otherProjectClient || '';
-    const available = buildFacets(result.records, { projectDefinitions: state.projectDefinitions, otherProjectName: state.otherProjectName });
+    const available = buildFacets([...state.records, ...state.plannedRecords], { projectDefinitions: state.projectDefinitions, otherProjectName: state.otherProjectName });
     if (firstLoad) {
       state.allSelected = { people: false, projects: true, repositories: true, timeRepositories: true };
       const currentUsers = result.currentUsers ? Object.values(result.currentUsers) : (result.currentUser ? [result.currentUser] : []);
@@ -989,7 +998,7 @@ async function loadRange(range) {
     if (requestId !== state.requestId) return;
     if (!result.configured) {
       $('setup').hidden = false; $('period-card').hidden = true; $('report-content').hidden = true;
-      state.range = null; state.records = []; state.pendingCount = 0; state.stale = false; $('pending-status').hidden = true; return;
+      state.range = null; state.records = []; state.plannedRecords = []; state.pendingCount = 0; state.stale = false; $('pending-status').hidden = true; return;
     }
     showProgress('Preparing report…', 80);
     applyReportResult(result, range, reportingUtc);
@@ -1054,6 +1063,10 @@ $('reporting-utc').addEventListener('change', async () => {
   finally { state.savingBasis = false; $('reporting-utc').disabled = false; }
 });
 for (const id of ['metric', 'billable-currency', 'horizontal-axis', 'stack-by']) $(id).addEventListener('change', render);
+$('time-type-filter').addEventListener('change', () => {
+  state.timeType = $('time-type-filter').value;
+  render();
+});
 $('rate-client').addEventListener('change', () => { state.rateClientId = $('rate-client').value; state.exchangeKey = ''; render(); });
 $('report-client-filter').addEventListener('change', () => { state.clientIdFilter = $('report-client-filter').value; render(); });
 $('analytics-details').addEventListener('toggle', () => { if (state.analytics) renderAnalyticsTable(state.analytics); });

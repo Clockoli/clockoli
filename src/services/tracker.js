@@ -1,6 +1,7 @@
 import { activeRecordPath, assertUserMonthlyRecordsPath, localTimestamp, monthlyRecordsPath, normalizePlainTitle, parseActiveRecord, parseMonthlyRecords, serializeActiveRecord, serializeMonthlyRecords } from '../domain/work-records.js';
 import { applyActiveEdits, applyActiveStartEdit, applyEntryEdits, buildActiveTimer, buildEntry, isBillable, localDateInTimezone, validateActiveTimer, validateEntry } from '../domain/records.js';
 import { parseBulkTimeText } from '../domain/bulk-time.js';
+import { findTimeOffStart, normalizeTimeOffChange, timeOffGroupId, timeOffStartInstant, timeOffWallClock } from '../domain/time-off.js';
 import { applyTaskIndexChanges, parseTaskIndex, serializeTaskIndex, TASK_INDEX_PATH } from '../domain/task-index.js';
 import { createUlid } from '../domain/ulid.js';
 import { entryDateParts, entryDateValue, localDateParts, normalizeStoredTaskIdentity, normalizeTaskUrl, parseGitHubTaskUrl, taskUrlOf, validateEntryId, validatePathSegment } from '../domain/values.js';
@@ -236,6 +237,8 @@ function operationEditsEntry(operation, id) {
   const type = operation?.operation ?? operation?.stage;
   if (type === 'editEntry') return operation.request?.original?.id === id;
   if (type === 'editEntries') return (operation.request?.entries ?? []).some(request => request?.original?.id === id);
+  if (type === 'timeOffChange') return operation.previous?.some(record => record.id === id)
+    || operation.entries?.some(record => record.id === id);
   return false;
 }
 
@@ -427,6 +430,75 @@ function activeStartConflictParts(queue, operationId, activeCache) {
           : !safe ? 'The running timer changed locally after this edit.' : '' };
 }
 
+function timeOffVersion(entry) {
+  return { id: entry.id, date: entry.entryDate, startedAt: entry.startedAt,
+    endedAt: entry.endedAt, updatedAt: entry.updatedAt,
+    taskUrl: taskUrlOf(entry), groupId: timeOffGroupId(entry), description: entry.description ?? '' };
+}
+
+function timeOffDeletionVersion(operation, original) {
+  return { ...original, taskUrl: operation.bulkDayDeletion ? original.taskUrl : operation.taskUrl,
+    groupId: operation.bulkDayDeletion ? original.groupId ?? null : operation.previousGroupId ?? null };
+}
+
+function matchingTimeOffVersion(left, right) {
+  return ['id', 'date', 'startedAt', 'endedAt', 'updatedAt', 'taskUrl', 'groupId']
+    .every(key => left?.[key] === right?.[key])
+    && (right?.description === undefined || left?.description === right.description);
+}
+
+// Only an explicit later day deletion can cancel a failed creation. Other
+// dependent writes must remain intact for review.
+export function cancelledTimeOffCreationIds(queue, index) {
+  const creation = queue[index];
+  if (creation?.operation !== 'timeOffChange' || creation.status !== 'conflict'
+      || creation.previous?.length || !creation.entries?.length) return [];
+  return creation.entries.filter(entry => {
+    const dependencies = queue.slice(index + 1).filter(operation => stoppedOverlapReferencesEntry(operation, entry.id));
+    return dependencies.length > 0 && dependencies.every(operation =>
+      operation.operation === 'timeOffChange' && !operation.entries?.length
+      && (operation.singleDayDeletion || operation.bulkDayDeletion)
+      && operation.previous?.some(original => {
+        const version = timeOffDeletionVersion(operation, original);
+        return version.id === entry.id && version.date === entry.entryDate
+          && version.taskUrl === taskUrlOf(entry) && version.groupId === timeOffGroupId(entry);
+      }));
+  }).map(entry => entry.id);
+}
+
+function timeOffSnapshotFor(state, user, repositoryKey) {
+  const snapshot = state.timeOffSnapshot;
+  return snapshot?.user === user && snapshot.repositoryKey === repositoryKey ? snapshot : null;
+}
+
+function localTimeOffRecords(state, user, repositoryKey, taskUrls) {
+  const snapshot = timeOffSnapshotFor(state, user, repositoryKey);
+  const recent = [...(state.summaryCache?.weekEntries ?? []), ...(state.recentCache ?? [])];
+  const records = snapshot ? [...snapshot.records,
+    ...recent.filter(entry => !snapshot.taskUrls.includes(taskUrlOf(entry))
+      || (snapshot.complete === false && !snapshot.records.some(saved => saved.id === entry.id)))] : recent;
+  return overlayPendingEntries(records, state.pendingWrites ?? [])
+    .filter(entry => entry.user === user && taskUrls.includes(taskUrlOf(entry)));
+}
+
+function timeOffSnapshotPatch(state, user, repositoryKey, savedEntries, removedIds = [], taskUrls = []) {
+  const snapshot = timeOffSnapshotFor(state, user, repositoryKey);
+  if (!snapshot && state.timeOffRevision === undefined && !taskUrls.length) return {};
+  const patch = { timeOffRevision: (state.timeOffRevision ?? 0) + 1 };
+  if (!snapshot && !taskUrls.length) return patch;
+  const urls = [...new Set([...(snapshot?.taskUrls ?? []), ...taskUrls])];
+  const replaced = new Set([...removedIds, ...savedEntries.map(entry => entry.id)]);
+  const records = snapshot?.records ?? (state.recentCache ?? []).filter(entry =>
+    !entry._pending && entry.user === user && urls.includes(taskUrlOf(entry)));
+  patch.timeOffSnapshot = {
+    user, repositoryKey, taskUrls: urls,
+    complete: Boolean(snapshot && snapshot.complete !== false && urls.every(url => snapshot.taskUrls.includes(url))),
+    records: [...records.filter(entry => !replaced.has(entry.id)),
+      ...savedEntries.filter(entry => entry.user === user && urls.includes(taskUrlOf(entry)))],
+  };
+  return patch;
+}
+
 function completedWriteFootprint(operation) {
   const type = operation?.operation ?? operation?.stage;
   const requests = type === 'editEntry' || type === 'deleteEntry' ? [operation.request]
@@ -436,7 +508,9 @@ function completedWriteFootprint(operation) {
     return [original, ...(type === 'deleteEntry' ? [] : [{ ...original,
       startedAt: edits.startedAt ?? original?.startedAt, endedAt: edits.endedAt ?? original?.endedAt }])];
   }).flat() ?? (type === 'addTime' ? [operation.entry]
-    : type === 'bulkAddTimes' ? operation.entries : null);
+    : type === 'bulkAddTimes' ? operation.entries
+      : type === 'timeOffChange' ? [...(operation.previous ?? []), ...(operation.entries ?? [])]
+        : operation.conflictReason === 'completion_time_off_overlap' ? [operation.entry] : null);
   if (!Array.isArray(records) || !records.length) return null;
   const intervals = records.map(record => ({
     id: record?.id, start: new Date(record?.startedAt).getTime(), end: new Date(record?.endedAt).getTime(),
@@ -446,10 +520,28 @@ function completedWriteFootprint(operation) {
   return intervals;
 }
 export function independentCompletedWrite(operation, blockedOperations) {
-  const next = completedWriteFootprint(operation);
+  // Timer writes remain FIFO barriers relative to other timer writes. Only
+  // a blocked completed PTO change is allowed to be bypassed by a timer.
+  const onlyTimeOff = blockedOperations.length > 0 && blockedOperations.every(item =>
+    item.operation === 'timeOffChange' && !String(item.conflictReason || '').startsWith('queued_write_'));
+  let next = completedWriteFootprint(operation);
+  if (!next && onlyTimeOff) {
+    const point = record => ({ id: record?.id, start: Date.parse(record?.startedAt), end: Date.parse(record?.startedAt) + 1 });
+    const interval = record => ({ id: record?.id, start: Date.parse(record?.startedAt), end: Date.parse(record?.endedAt) });
+    if (operation.operation === 'startTimer') next = [point(operation.nextActive)];
+    else if (operation.operation === 'completeTimer') next = [interval(operation.entry)];
+    else if (operation.operation === 'completeTimerAndStart') next = [interval(operation.entry), point(operation.nextActive)];
+    else if (operation.operation === 'discardActive') next = [point(operation.activeSnapshot)];
+    if (next?.some(item => !item.id || !Number.isFinite(item.start) || !Number.isFinite(item.end) || item.end < item.start)) return false;
+  }
   if (!next?.length || !blockedOperations.length) return false;
   for (const blocked of blockedOperations) {
     const earlier = completedWriteFootprint(blocked);
+    // Deleting the PTO that blocks a stopped timer removes the conflict.
+    if (blocked.conflictReason === 'completion_time_off_overlap'
+        && operation.operation === 'timeOffChange' && !operation.entries?.length
+        && operation.previous?.some(item => item.id === blocked.conflictWith?.id)
+        && next.every(candidate => candidate.id !== blocked.entry?.id)) continue;
     if (!earlier?.length || next.some(candidate => earlier.some(prior => candidate.id === prior.id
         || (candidate.start < prior.end && candidate.end > prior.start)))) return false;
   }
@@ -460,7 +552,7 @@ function hasLaterEntryEdit(queue, operationId, id) {
   return index >= 0 && queue.slice(index + 1).some(operation => operationEditsEntry(operation, id));
 }
 
-function completedCacheAfterSync(state, operation) {
+function completedCacheAfterSync(state, operation, now) {
   if (!operation.entry) return state.recentCache ?? [];
   const queue = state.pendingWrites ?? [], position = queue.findIndex(item => item.id === operation.id);
   const later = position < 0 ? [] : queue.slice(position + 1);
@@ -470,12 +562,11 @@ function completedCacheAfterSync(state, operation) {
   const edited = later.some(item => operationEditsEntry(item, id));
   const locallyEdited = edited ? (state.recentCache ?? []).find(item => item.id === id) : null;
   const visible = deleted ? null : locallyEdited ?? operation.entry;
-  return [...(visible ? [visible] : []), ...(state.recentCache ?? []).filter(item =>
-    !sameCompletion(item, operation) && !(item._pending && sameTimer(item, operation.activeSnapshot)))]
-    .sort(newestFirst).slice(0, 50);
+  return recentEntries([...(visible ? [visible] : []), ...(state.recentCache ?? []).filter(item =>
+    !sameCompletion(item, operation) && !(item._pending && sameTimer(item, operation.activeSnapshot)))], now);
 }
 
-function completedCacheAfterAddition(state, operation, savedEntries) {
+function completedCacheAfterAddition(state, operation, savedEntries, now) {
   const cache = state.recentCache ?? [], queue = state.pendingWrites ?? [];
   const index = queue.findIndex(item => item.id === operation.id);
   const later = index >= 0 ? queue.slice(index + 1) : [];
@@ -486,7 +577,7 @@ function completedCacheAfterAddition(state, operation, savedEntries) {
         && item.request?.original?.id === entry.id)) return [];
     return [later.some(item => operationEditsEntry(item, entry.id)) ? inCache.get(entry.id) : entry];
   });
-  return [...updated, ...cache.filter(entry => !ids.has(entry.id))].sort(newestFirst).slice(0, 50);
+  return recentEntries([...updated, ...cache.filter(entry => !ids.has(entry.id))], now);
 }
 
 function retargetLaterEntryEdits(queue, currentIndex, savedEntries) {
@@ -508,6 +599,21 @@ function retargetLaterEntryEdits(queue, currentIndex, savedEntries) {
       ...operation.request,
       entries: (operation.request?.entries ?? []).map(retarget),
     };
+    else if (type === 'timeOffChange' && operation.previous?.length) {
+      // New PTO can be deleted locally before its creation reaches GitHub.
+      // A remote overlap may replan its start time while syncing. Retarget
+      // the later deletion to the exact persisted record, so its optimistic
+      // cancellation survives the first commit and does not falsely conflict.
+      operation.previous = operation.previous.map(original => {
+        const saved = savedById.get(original.id);
+        return saved ? {
+          ...original,
+          date: saved.entryDate, startedAt: saved.startedAt,
+          endedAt: saved.endedAt, updatedAt: saved.updatedAt,
+          ...(original.description !== undefined ? { description: saved.description ?? '' } : {}),
+        } : original;
+      });
+    }
   }
 }
 
@@ -548,6 +654,13 @@ function overlayPendingEntries(entries, pendingWrites) {
         });
       }
     }
+    if (operation.operation === 'timeOffChange') {
+      for (const prior of operation.previous ?? []) byId.delete(prior.id);
+      for (const entry of operation.entries ?? []) byId.set(entry.id, {
+        ...entry, _path: monthlyRecordsPath(entry.user, entry.entryDate),
+        _sha: null, _index: -1, _pending: true,
+      });
+    }
     if (operation.operation === 'deleteEntry') byId.delete(operation.request?.original?.id);
     const requests = operation.operation === 'editEntry' ? [operation.request]
       : operation.operation === 'editEntries' ? operation.request.entries : [];
@@ -571,7 +684,8 @@ function summaryProjection(state, now) {
   const thisWeekStart = localReportDate(now, -((now.getDay() + 6) % 7));
   const pendingWrites = state.pendingWrites ?? [];
   const entries = overlayPendingEntries([...cache.weekEntries, ...(state.recentCache ?? [])], pendingWrites);
-  const trackedMs = start => entries.filter(entry => startDate(entry) >= start && startDate(entry) <= today)
+  const trackedMs = start => entries.filter(entry => startDate(entry) >= start && startDate(entry) <= today
+    && new Date(entry.endedAt).getTime() <= now.getTime())
     .reduce((sum, entry) => sum + Math.max(0, new Date(entry.endedAt) - new Date(entry.startedAt)), 0)
     + runningTrackedMs(state.activeCache, now, start, today);
   return {
@@ -580,6 +694,13 @@ function summaryProjection(state, now) {
   };
 }
 function newestFirst(a, b) { return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(); }
+
+// Scheduled records remain in the queue/snapshot, not ahead of recent work.
+function recentEntries(entries, now, limit = 50) {
+  const instant = new Date(now).getTime();
+  return [...entries].sort((a, b) =>
+    Number(Date.parse(a.startedAt) > instant) - Number(Date.parse(b.startedAt) > instant) || newestFirst(a, b)).slice(0, limit);
+}
 function stripInternal(value) { return Object.fromEntries(Object.entries(value || {}).filter(([key]) => !['_path', '_sha', '_index', '_pending', 'destinationId'].includes(key))); }
 function appendQueueDiagnostic(operation, message) {
   const diagnostics = Array.isArray(operation.diagnostics) ? operation.diagnostics : (operation.diagnostics = []);
@@ -655,11 +776,12 @@ function replaceCachedDeletedFile(cache, saved, path, laterWrites = []) {
 export class TrackerService {
   constructor({
     github, store, reports = null, user, actorId = '', actorName = user, producer, timezone,
-    clock = () => new Date(), idFactory = () => createUlid(), recentDays = 7,
+    clock = () => new Date(), idFactory = () => createUlid(), recentDays = 7, timeOffSettings = null,
   }) {
     this.github = github;
     this.store = store;
     this.reports = reports;
+    this.timeOffSettings = timeOffSettings;
     this.user = validatePathSegment(user, 'user');
     this.actor = { kind: 'human', id: actorId || `clockoli-user:${this.user}`, name: actorName || this.user };
     this.producer = producer;
@@ -721,9 +843,46 @@ export class TrackerService {
       if (index < 0) return null;
       const hasLaterOperation = index < pendingWrites.length - 1;
       if (remove && savedEntries.length) retargetLaterEntryEdits(pendingWrites, index, savedEntries);
-      if (remove) pendingWrites.splice(index, 1); else pendingWrites[index] = structuredClone(operation);
+      if (remove) {
+        pendingWrites.splice(index, 1);
+        if (operation.operation === 'timeOffChange' && !operation.entries?.length) {
+          const deleted = new Set((operation.previous ?? []).map(item => item.id));
+          for (const blocked of pendingWrites.slice(0, index)) {
+            if (blocked.conflictReason === 'completion_time_off_overlap' && deleted.has(blocked.conflictWith?.id)) {
+              blocked.status = 'pending'; blocked.lastError = ''; blocked.conflictReason = ''; blocked.conflictWith = null;
+            }
+          }
+        }
+      } else pendingWrites[index] = structuredClone(operation);
       const resolved = typeof patch === 'function' ? patch(state) : patch;
       if (hasLaterOperation && Object.hasOwn(resolved, 'activeCache')) delete resolved.activeCache;
+      if (remove && (state.timeOffRevision !== undefined || state.timeOffSnapshot || operation.operation === 'timeOffChange'
+          || savedEntries.some(entry => Date.parse(entry.endedAt) > Date.parse(operation.queuedAt)))) {
+        // A remote read started before this commit must not publish its old
+        // snapshot after the corresponding local operation leaves the queue.
+        resolved.timeOffRevision = (state.timeOffRevision ?? 0) + 1;
+        const removed = new Set(operation.operation === 'timeOffChange'
+          ? (operation.previous ?? []).map(item => item.id)
+          : operation.operation === 'deleteEntry' ? [operation.request?.original?.id] : []);
+        Object.assign(resolved, timeOffSnapshotPatch(state, this.user, this.github.repositoryKey ?? '',
+          savedEntries, removed, operation.operation === 'timeOffChange'
+            ? (operation.timeOffTaskUrls ?? [operation.taskUrl]).filter(Boolean)
+            : savedEntries.filter(entry => Date.parse(entry.endedAt) > Date.parse(operation.queuedAt)).map(taskUrlOf)));
+        if (operation.operation === 'timeOffChange') {
+          const originals = new Map((operation.originalEntries ?? []).map(entry => [entry.id, entry]));
+          const aliases = (state.timeOffReplans ?? []).filter(alias =>
+            alias.user === this.user && alias.repositoryKey === (this.github.repositoryKey ?? '')
+            && !removed.has(alias.before.id));
+          for (const saved of savedEntries) {
+            const original = originals.get(saved.id);
+            if (original && !matchingTimeOffVersion(timeOffVersion(original), timeOffVersion(saved))) {
+              aliases.push({ user: this.user, repositoryKey: this.github.repositoryKey ?? '',
+                before: timeOffVersion(original), after: timeOffVersion(saved) });
+            }
+          }
+          resolved.timeOffReplans = aliases.slice(-5000);
+        }
+      }
       return { ...resolved, pendingWrites };
     });
   }
@@ -799,6 +958,7 @@ export class TrackerService {
       if (operation.operation === 'editEntries') {
         return (operation.request?.entries ?? []).map(request => request.original?.id).filter(Boolean);
       }
+      if (operation.operation === 'timeOffChange') return (operation.previous ?? []).map(item => item.id);
       return [];
     });
     return {
@@ -867,28 +1027,28 @@ export class TrackerService {
     };
   }
 
-  async switchTask(taskUrl, taskTitle = '', description, { background = false, billable } = {}) {
+  async switchTask(taskUrl, taskTitle = '', description, { background = false, billable, nextBillable } = {}) {
     const targetUrl = normalizeStoredTaskIdentity(taskUrl);
-    if (background) return this.queueTaskSwitch(targetUrl, taskTitle, description, billable);
+    if (background) return this.queueTaskSwitch(targetUrl, taskTitle, description, billable, nextBillable);
     const current = await this.refreshActive();
-    if (!current) return { stopped: null, active: await this.queueStart(targetUrl, taskTitle, ''), pending: true };
+    if (!current) return { stopped: null, active: await this.queueStart(targetUrl, taskTitle, '', { billable: nextBillable }), pending: true };
     if (taskUrlOf(current) === targetUrl) return { stopped: null, active: current };
     const stopped = await this.stop(description, { billable });
     if (stopped.pending) throw new Error('The previous timer was saved locally but must sync before another timer can start.');
-    return { stopped, active: await this.start(targetUrl, taskTitle, '') };
+    return { stopped, active: await this.start(targetUrl, taskTitle, '', { billable: nextBillable }) };
   }
 
-  async queueTaskSwitch(targetUrl, taskTitle = '', description, billable) {
+  async queueTaskSwitch(targetUrl, taskTitle = '', description, billable, nextBillable) {
     const state = await this.store.getState();
     const current = state.activeCache;
-    if (!current) return { stopped: null, active: await this.queueStart(targetUrl, taskTitle, ''), pending: true };
+    if (!current) return { stopped: null, active: await this.queueStart(targetUrl, taskTitle, '', { billable: nextBillable }), pending: true };
     validateActiveTimer(current);
     if (taskUrlOf(current) === targetUrl) return { stopped: null, active: current, pending: false };
     const changedAt = this.clock(), id = current.id;
     const entry = buildEntry({ active: current, endedAt: changedAt, now: changedAt, description, billable });
     const generatedNextId = this.idFactory(changedAt.getTime());
     const nextId = generatedNextId === id ? createUlid(changedAt.getTime() + 1) : generatedNextId;
-    const nextActive = this.buildActive({ id: nextId, taskUrl: targetUrl, taskTitle, startedAt: changedAt, description: '' });
+    const nextActive = this.buildActive({ id: nextId, taskUrl: targetUrl, taskTitle, startedAt: changedAt, description: '', billable: nextBillable });
     const operation = {
       operation: 'completeTimerAndStart', id, status: 'pending', retryCount: 0, stage: 'verifyActive',
       monthlyPath: monthlyRecordsPath(this.user, current.entryDate), entry, activeSnapshot: stripInternal(current), activeSha: current._sha,
@@ -1153,6 +1313,15 @@ export class TrackerService {
     return null;
   }
 
+  async verifyPlannedTimeOff(entries) {
+    if (!entries.length || !this.timeOffSettings) return null;
+    const { config } = await this.timeOffSettings({ fresh: true });
+    if (entries.some(entry => !config.taskUrls.includes(taskUrlOf(entry)))) {
+      throw new TrackerConflictError('A task is no longer configured for time off on GitHub. Review the local change before retrying.', 'time_off_task_changed');
+    }
+    return config;
+  }
+
   async ensureEntry(operation) {
     let [file, indexFile] = await Promise.all([
       this.readMonthly(operation.monthlyPath),
@@ -1162,9 +1331,25 @@ export class TrackerService {
     if (found) return found;
     const proposed = [...file.entries, operation.entry];
     let overlap = null;
-    if (operation.requireNoOverlap) {
+    let timeOffTasks = [];
+    if (!operation.requireNoOverlap && this.timeOffSettings) {
+      const settings = await this.timeOffSettings({ fresh: true }).catch(() =>
+        this.timeOffSettings({ fresh: false }).catch(() => null));
+      timeOffTasks = settings?.config?.taskUrls ?? [];
+    }
+    const isTimeOff = entry => Boolean(timeOffGroupId(entry) || timeOffTasks.includes(taskUrlOf(entry)));
+    if (operation.requireNoOverlap || timeOffTasks.length || file.entries.some(isTimeOff)) {
       overlap = await this.readEditOverlapFiles([operation.entry]);
-      assertNoCompletedOverlap(operation.entry, overlap.files.flatMap(item => item.entries));
+      const others = overlap.files.flatMap(item => item.entries);
+      if (operation.requireNoOverlap) assertNoCompletedOverlap(operation.entry, others);
+      else {
+        const conflict = runningCompletedOverlap(operation.entry, others.filter(isTimeOff), operation.entry.endedAt);
+        if (conflict && conflict.id !== operation.entry.id) {
+          const error = new TrackerConflictError('Stopped time overlaps scheduled time off. Delete or adjust the time off before retrying.', 'completion_time_off_overlap');
+          error.conflictWith = conflict;
+          throw error;
+        }
+      }
       if (overlap.files.find(item => item.path === file.path)?.sha !== file.sha) {
         throw new TrackerConflictError('Completed time changed while checking the stopped timer.');
       }
@@ -1378,7 +1563,76 @@ export class TrackerService {
     }).then(state => state.pendingWrites ?? []);
   }
 
+  async reconcileCancelledTimeOffCreations(canSync) {
+    const reviewed = await this.store.getState(), queue = reviewed.pendingWrites ?? [];
+    for (let index = 0; index < queue.length; index++) {
+      const creation = queue[index], cancelled = new Set(cancelledTimeOffCreationIds(queue, index));
+      if (!cancelled.size) continue;
+      if (!(await canSync())) return false;
+      // A failed HTTP response is not proof that an atomic write failed.
+      // Check both the monthly records and the canonical task index before
+      // dropping any previously attempted creation.
+      const ids = new Set(creation.entries.map(entry => entry.id));
+      const paths = [...new Set(creation.entries.map(entry => monthlyRecordsPath(this.user, entry.entryDate)))];
+      let taskIndex, files;
+      try {
+        [taskIndex, files] = await Promise.all([
+          this.readTaskIndex(), Promise.all(paths.map(path => this.readMonthly(path))),
+        ]);
+      } catch {
+        // Keep the conflicting operations if their remote state is unknown.
+        // Unrelated queued writes can still use the normal sync path.
+        continue;
+      }
+      const indexed = new Set(Object.values(taskIndex.index.tasks).flatMap(task => task.recordIds));
+      const remote = files.flatMap(file => file.entries).filter(entry => ids.has(entry.id));
+      const anySaved = remote.length || [...ids].some(id => indexed.has(id));
+      // If the whole atomic creation is already present, let the normal
+      // idempotent commit path confirm it and then run the queued deletions.
+      const fullySaved = anySaved && creation.entries.every(entry => indexed.has(entry.id)
+        && remote.some(saved => matchingTimeOffVersion(timeOffVersion(entry), timeOffVersion(saved))
+          && saved.description === entry.description));
+      if (anySaved && !fullySaved) continue;
+      let changed = false;
+      await this.mutateState(latest => {
+        if (!sameValue(latest.pendingWrites, queue)) return null;
+        const pendingWrites = structuredClone(queue);
+        const operation = pendingWrites[index];
+        operation.status = 'pending'; operation.lastError = ''; operation.conflictReason = '';
+        if (!fullySaved) {
+          operation.entries = operation.entries.filter(entry => !cancelled.has(entry.id));
+          const remainingDates = new Set(operation.entries.map(entry => entry.entryDate));
+          operation.autoDates = (operation.autoDates ?? []).filter(date => remainingDates.has(date));
+          if (operation.originalEntries) operation.originalEntries = operation.originalEntries
+            .filter(entry => !cancelled.has(entry.id));
+          for (const later of pendingWrites.slice(index + 1)) {
+            if (later.operation === 'timeOffChange' && !later.entries?.length
+                && (later.singleDayDeletion || later.bulkDayDeletion)) {
+              later.previous = (later.previous ?? []).filter(original => !cancelled.has(original.id));
+            }
+          }
+        }
+        changed = true;
+        return { pendingWrites: pendingWrites.filter(item => item.operation !== 'timeOffChange'
+          || item.entries?.length || item.previous?.length),
+          ...(!fullySaved ? {
+            recentCache: (latest.recentCache ?? []).filter(entry => !cancelled.has(entry.id)),
+            dayRangeIntervals: updateDayRangeIntervals(latest.dayRangeIntervals, [], cancelled),
+            ...(latest.summaryCache?.weekEntries ? { summaryCache: { ...latest.summaryCache,
+              weekEntries: latest.summaryCache.weekEntries.filter(entry => !cancelled.has(entry.id)) } } : {}),
+          } : {}) };
+      });
+      if (changed) return true;
+    }
+    return false;
+  }
+
   async syncPending({ canSync = async () => true } = {}) {
+    // A cancellation accepted after an earlier conflict can make that
+    // creation unnecessary. Never perform this repair over newer local work.
+    while (await this.reconcileCancelledTimeOffCreations(canSync)) {
+      // Each pass removes cancelled records or restores one retryable write.
+    }
     const queue = await this.compactPendingQueue();
     const blockedOperations = [];
     for (const operation of [...queue]) {
@@ -1448,7 +1702,7 @@ export class TrackerService {
             saved = (await this.addTime({
               taskUrl: entry.taskUrl, taskTitle: entry.taskTitle, startedAt: entry.startedAt,
               endedAt: entry.endedAt, description: entry.description, billable: isBillable(entry),
-            }, { fixedId: entry.id, acceptedEntry: entry, updateCache: false })).entry;
+            }, { fixedId: entry.id, acceptedEntry: entry, updateCache: false, queuedAt: operation.queuedAt })).entry;
           } catch (error) {
             if (/Select an existing imported task/i.test(error.message || '')) {
               throw new TrackerConflictError(error.message, 'add_time_invalid_identity');
@@ -1459,7 +1713,7 @@ export class TrackerService {
           if (index >= 0) queue.splice(index, 1);
           await this.persistQueueOperation(operation, {
             remove: true, savedEntries: [saved],
-            patch: state => ({ recentCache: completedCacheAfterAddition(state, operation, [saved]) }),
+            patch: state => ({ recentCache: completedCacheAfterAddition(state, operation, [saved], this.clock()) }),
           });
           continue;
         }
@@ -1502,7 +1756,7 @@ export class TrackerService {
             } : null;
             result = await this.bulkAddTimes('', {
               requested: operation.requested, ids: operation.entries.map(entry => entry.id),
-              acceptedEntries: operation.entries, updateCache: false, includeEntries: true, onRelocated,
+              acceptedEntries: operation.entries, updateCache: false, includeEntries: true, onRelocated, queuedAt: operation.queuedAt,
             });
           } catch (error) {
             if (error instanceof TrackerConflictError) throw error;
@@ -1517,10 +1771,44 @@ export class TrackerService {
           await this.persistQueueOperation(operation, {
             remove: true, savedEntries: saved,
             patch: state => ({
-              recentCache: completedCacheAfterAddition(state, operation, saved),
+              recentCache: completedCacheAfterAddition(state, operation, saved, this.clock()),
               ...(operation.requested?.every(item => item.startTime === '09:00')
                 ? { dayRangeIntervals: rememberDayRangeIntervals(state.dayRangeIntervals, saved) } : {}),
             }),
+          });
+          continue;
+        }
+        if (operation.operation === 'timeOffChange') {
+          const saved = await this.commitTimeOffChange(operation);
+          const index = queue.findIndex(item => item.id === operation.id);
+          // The current sync iterates a frozen in-memory queue snapshot. Keep
+          // its dependent operations aligned with the persisted IndexedDB
+          // queue before proceeding to the next operation in the same run.
+          if (index >= 0 && saved.length) retargetLaterEntryEdits(queue, index, saved);
+          if (index >= 0) queue.splice(index, 1);
+          await this.persistQueueOperation(operation, {
+            remove: true, savedEntries: saved,
+            patch: state => {
+              const removed = new Set((operation.previous ?? []).map(item => item.id));
+              const updated = new Map(saved.map(item => [item.id, item]));
+              const prior = (state.recentCache ?? []).filter(item => !removed.has(item.id) && !updated.has(item.id));
+              const at = (state.pendingWrites ?? []).findIndex(item => item.id === operation.id);
+              const later = at < 0 ? [] : state.pendingWrites.slice(at + 1);
+              const projected = overlayPendingEntries([...saved, ...prior], later);
+              const cancelled = new Set(later.flatMap(item => item.operation === 'timeOffChange'
+                ? (item.previous ?? []).map(entry => entry.id)
+                : item.operation === 'deleteEntry' ? [item.request?.original?.id] : []));
+              const intervals = saved.filter(entry => !cancelled.has(entry.id));
+              return {
+                recentCache: recentEntries(projected, this.clock()),
+                dayRangeIntervals: rememberDayRangeIntervals(
+                  updateDayRangeIntervals(state.dayRangeIntervals, [], [...removed, ...cancelled]), intervals),
+                ...(state.summaryCache?.weekEntries ? { summaryCache: { ...state.summaryCache,
+                  weekEntries: state.summaryCache.weekEntries.filter(entry => !removed.has(entry.id))
+                    .map(entry => updated.get(entry.id) ?? entry),
+                } } : {}),
+              };
+            },
           });
           continue;
         }
@@ -1554,6 +1842,8 @@ export class TrackerService {
                 const remaining = pendingWrites.filter(item => !batchIds.has(item.id));
                 return {
                   pendingWrites: remaining,
+                  ...timeOffSnapshotPatch(latest, this.user, this.github.repositoryKey ?? '', saved),
+                  dayRangeIntervals: updateDayRangeIntervals(latest.dayRangeIntervals, saved),
                   recentCache: (latest.recentCache ?? []).map(entry => {
                     const persisted = savedById.get(entry.id);
                     return persisted && !remaining.some(item => operationEditsEntry(item, entry.id))
@@ -1563,7 +1853,10 @@ export class TrackerService {
               });
               for (const item of batch) {
                 const index = queue.findIndex(candidate => candidate.id === item.id);
-                if (index !== -1) queue.splice(index, 1);
+                if (index !== -1) {
+                  retargetLaterEntryEdits(queue, index, saved);
+                  queue.splice(index, 1);
+                }
               }
               continue;
             } catch (error) {
@@ -1753,7 +2046,7 @@ export class TrackerService {
           patch: latest => ({
             activeCache: nextActive,
             // An edit or delete accepted while Stop synced is still authoritative.
-            recentCache: completedCacheAfterSync(latest, operation),
+            recentCache: completedCacheAfterSync(latest, operation, this.clock()),
           }),
         });
       } catch (caughtError) {
@@ -1794,6 +2087,9 @@ export class TrackerService {
         appendQueueDiagnostic(operation, `Sync attempt finished in ${elapsedMs}ms.`);
         this.currentQueueDiagnostic = null;
       }
+    }
+    if (await this.reconcileCancelledTimeOffCreations(canSync)) {
+      return this.syncPending({ canSync });
     }
     return (await this.store.getState()).pendingWrites ?? [];
   }
@@ -2701,11 +2997,70 @@ export class TrackerService {
     return { savedLocally: true, resolved: !remaining.some(item => item.id === addition.id) };
   }
 
+  // Explicit conflict recovery: discard the local change, never the remote data.
+  async keepGitHubTimeOff(state, operation) {
+    const queue = state.pendingWrites ?? [];
+    const ids = new Set([...(operation.previous ?? []), ...(operation.entries ?? [])].map(entry => entry.id));
+    if (!ids.size || queue.some(item => item.id !== operation.id
+        && [...ids].some(id => stoppedOverlapReferencesEntry(item, id)))) {
+      throw new TrackerConflictError('Another queued operation depends on this time off. Review those changes first.');
+    }
+    const before = await this.github.listTextFilesSnapshot('times/');
+    const paths = before.files.map(file => file.path).filter(path => {
+      try { monthFromPath(path, this.user); return true; } catch { return false; }
+    });
+    const records = [];
+    for (let offset = 0; offset < paths.length; offset += 4) {
+      const files = await Promise.all(paths.slice(offset, offset + 4).map(path => this.readMonthly(path)));
+      records.push(...files.flatMap(file => file.entries).filter(entry => ids.has(entry.id)));
+    }
+    const taskIndex = await this.readTaskIndex();
+    const after = await this.github.listTextFilesSnapshot('times/');
+    const beforeFiles = before.files.map(file => [file.path, file.sha]).sort();
+    const afterFiles = after.files.map(file => [file.path, file.sha]).sort();
+    if ((before.headSha && after.headSha && before.headSha !== after.headSha)
+        || !sameValue(beforeFiles, afterFiles)) {
+      throw new TrackerConflictError('GitHub time changed while reviewing this conflict. Retry without discarding local work.');
+    }
+    for (const id of ids) {
+      const matches = records.filter(entry => entry.id === id);
+      const indexed = Object.entries(taskIndex.index.tasks).filter(([, task]) => task.recordIds.includes(id));
+      if (matches.length > 1 || indexed.length !== matches.length
+          || (matches.length && indexed[0][0] !== taskUrlOf(matches[0]))) {
+        throw new TrackerConflictError('The GitHub record and task index disagree. Local time off was not discarded.');
+      }
+    }
+    await this.mutateState(latest => {
+      assertRecoveryStateUnchanged(latest, state, 'The local queue changed before time off recovery. Nothing was discarded.');
+      const snapshot = timeOffSnapshotFor(latest, this.user, this.github.repositoryKey ?? '');
+      const replace = rows => (rows ?? []).filter(entry => !ids.has(entry.id));
+      const weekStart = localReportDate(this.clock(), -((this.clock().getDay() + 6) % 7));
+      const remaining = latest.pendingWrites.filter(item => item.id !== operation.id);
+      return {
+        pendingWrites: remaining,
+        recentCache: recentEntries([...replace(latest.recentCache), ...records], this.clock()),
+        dayRangeIntervals: rememberDayRangeIntervals(updateDayRangeIntervals(latest.dayRangeIntervals, [], ids), records),
+        timeOffRevision: (latest.timeOffRevision ?? 0) + 1,
+        timeOffReplans: (latest.timeOffReplans ?? []).filter(alias => !ids.has(alias.before.id)),
+        ...(latest.summaryCache?.weekEntries ? { summaryCache: { ...latest.summaryCache,
+          weekEntries: [...replace(latest.summaryCache.weekEntries), ...records.filter(entry => entry.entryDate >= weekStart)],
+        } } : {}),
+        ...(snapshot ? { timeOffSnapshot: { ...snapshot, records: [
+          ...replace(snapshot.records), ...records.filter(entry => snapshot.taskUrls.includes(taskUrlOf(entry))),
+        ] } } : {}),
+      };
+    });
+    return { resolved: true, discarded: true };
+  }
+
   async resolvePendingConflict(id, action = '') {
     validateEntryId(id);
     const state = await this.store.getState();
     const operation = (state.pendingWrites ?? []).find(item => item.id === id);
     if (!operation || operation.status !== 'conflict') throw new Error('Only a pending conflict can be resolved');
+    if (operation.operation === 'timeOffChange' && action === 'keep_github_time_off') {
+      return this.keepGitHubTimeOff(state, operation);
+    }
     if (operation.operation === 'completeTimerAndStart'
         && ['clearActive', 'startNext'].includes(operation.stage)) {
       if (action && action !== 'recover_next_timer') {
@@ -3148,8 +3503,8 @@ export class TrackerService {
         return null;
       }
       return {
-        recentCache: overlayPendingEntries(remoteEntries, state.pendingWrites ?? [])
-          .filter(entry => dateSet.has(startDate(entry))).sort(newestFirst).slice(0, limit),
+        recentCache: recentEntries(overlayPendingEntries(remoteEntries, state.pendingWrites ?? [])
+          .filter(entry => dateSet.has(startDate(entry))), now, limit),
         summaryCache,
       };
     });
@@ -3237,7 +3592,7 @@ export class TrackerService {
       applied = true;
       return {
         activeCache: remoteActive,
-        recentCache: remoteEntries.filter(entry => days.has(startDate(entry))).sort(newestFirst).slice(0, 50),
+        recentCache: recentEntries(remoteEntries.filter(entry => days.has(startDate(entry))), now),
         summaryCache: {
           reportDate: today,
           weekEntries: remoteEntries.filter(entry => startDate(entry) >= thisWeekStart),
@@ -3535,6 +3890,7 @@ export class TrackerService {
     const normalized = { ...edits, ...(taskUrl ? { taskUrl } : {}) };
     const updated = applyEntryEdits(source.entries[position], normalized, editClock(this.clock, source.entries[position]));
     const timeChanged = updated.startedAt !== source.entries[position].startedAt || updated.endedAt !== source.entries[position].endedAt;
+    if (Date.parse(updated.endedAt) > this.clock().getTime()) await this.verifyPlannedTimeOff([updated]);
     const active = timeChanged ? await this.readRemoteActive() : null;
     if (timeChanged) assertNoActiveOverlap([updated], active);
     const guards = timeChanged ? [{ path: activeRecordPath(this.user), sha: active?._sha ?? null }] : [];
@@ -3656,6 +4012,7 @@ export class TrackerService {
       entry.entryDate = startDate(entry);
       updated.push(entry);
     }
+    await this.verifyPlannedTimeOff(updated.filter(entry => Date.parse(entry.endedAt) > this.clock().getTime()));
     const changedTimes = updated.filter((entry, index) => entry.startedAt !== requests[index].originalEntry.startedAt
       || entry.endedAt !== requests[index].originalEntry.endedAt);
     const active = changedTimes.length ? await this.readRemoteActive() : null;
@@ -3832,18 +4189,318 @@ export class TrackerService {
     return { files: await Promise.all(paths.map(path => this.readMonthly(path))), headSha: snapshot?.headSha || null };
   }
 
-  async queueAddTime({ taskUrl, taskTitle = '', startedAt, endedAt = null, description = '', billable }) {
+  // Seed the local overlap hints from the same user history already loaded by
+  // My time off. This adds no extra GitHub read and leaves pending writes intact.
+  async getTimeOffRevision() {
+    return (await this.mutateState(state => state.timeOffRevision === undefined ? { timeOffRevision: 0 } : null)).timeOffRevision ?? 0;
+  }
+
+  async getLocalTimeOffRecords(taskUrls) {
+    const state = await this.store.getState();
+    const snapshot = timeOffSnapshotFor(state, this.user, this.github.repositoryKey ?? '');
+    return { records: localTimeOffRecords(state, this.user, this.github.repositoryKey ?? '', taskUrls),
+      complete: Boolean(snapshot && snapshot.complete !== false && taskUrls.every(url => snapshot.taskUrls.includes(url))) };
+  }
+
+  async rememberTimeOffOccupancy(records, { taskUrls, expectedRevision } = {}) {
+    const intervals = (records ?? []).slice(-MAX_LOCAL_DAY_RANGE_INTERVALS);
+    let applied = false;
+    await this.mutateState(state => {
+      if (expectedRevision !== undefined && (state.timeOffRevision ?? 0) !== expectedRevision) return null;
+      applied = true;
+      // A full personal history read supersedes deleted/moved remote intervals.
+      // Overlay the still-pending queue before replacing the local working set.
+      const authoritative = Array.isArray(taskUrls) && taskUrls.length > 0;
+      const projected = authoritative ? overlayPendingEntries(records ?? [], state.pendingWrites ?? []) : [];
+      const byId = new Map(projected.map(entry => [entry.id, entry]));
+      const reconcile = rows => (rows ?? []).flatMap(entry => byId.has(entry.id) ? [byId.get(entry.id)] : []);
+      return {
+        dayRangeIntervals: authoritative ? rememberDayRangeIntervals([], projected)
+          : rememberDayRangeIntervals(state.dayRangeIntervals, intervals),
+        ...(authoritative ? { recentCache: reconcile(state.recentCache),
+          ...(state.summaryCache?.weekEntries ? { summaryCache: { ...state.summaryCache,
+            weekEntries: reconcile(state.summaryCache.weekEntries) } } : {}) } : {}),
+        ...(taskUrls ? {
+          timeOffSnapshot: { user: this.user, repositoryKey: this.github.repositoryKey ?? '',
+            taskUrls: [...taskUrls], records: records.filter(entry => entry.user === this.user
+              && taskUrls.includes(taskUrlOf(entry))) },
+          timeOffRevision: (state.timeOffRevision ?? 0) + 1,
+        } : {}),
+      };
+    });
+    return applied;
+  }
+
+  // PTO edits are one local operation and one guarded GitHub commit across all touched months.
+  // An omitted startTime asks Clockoli to find a contiguous free slot automatically.
+  async queueTimeOffChange(raw, { taskUrls } = {}) {
+    const change = normalizeTimeOffChange(raw);
+    const configuredTasks = taskUrls ?? [change.taskUrl];
+    const timezone = change.timezone || this.timezone;
+    const queuedAt = this.clock();
+    let accepted = null, groupId = '';
+    await this.mutateState(state => {
+      // A page can still display the pre-sync version after automatic
+      // placement moved a record. Only rebase against a locally recorded
+      // receipt of that exact move; unrelated remote edits still conflict.
+      change.previous = change.previous.map(original => {
+        const version = timeOffDeletionVersion({ ...change, previousGroupId: change.groupId }, original);
+        const alias = (state.timeOffReplans ?? []).find(item => item.user === this.user
+          && item.repositoryKey === (this.github.repositoryKey ?? '')
+          && matchingTimeOffVersion(item.before, version));
+        return alias ? { ...original, date: alias.after.date, startedAt: alias.after.startedAt,
+          endedAt: alias.after.endedAt, updatedAt: alias.after.updatedAt } : original;
+      });
+      if (!change.previous.length && change.days.length) {
+        const occupied = new Set(localTimeOffRecords(state, this.user, this.github.repositoryKey ?? '', configuredTasks)
+          .map(entry => entry.entryDate));
+        if (change.days.some(day => occupied.has(day.date))) {
+          throw new TrackerConflictError('You already have time off on a selected day.', 'time_off_duplicate_day');
+        }
+      }
+      groupId = change.groupId || createUlid(queuedAt.getTime() + (state.pendingWrites?.length ?? 0) + 1);
+      const priorIds = new Set(change.previous.map(item => item.id));
+      const known = knownLocalIntervals(state).filter(item => !priorIds.has(item.id));
+      const usedIds = new Set([...known.map(item => item.id), ...change.previous.map(item => item.id)]);
+      const entries = [], autoDates = [];
+      const running = state.activeCache && Date.parse(state.activeCache.startedAt) <= queuedAt.getTime()
+        ? { startedAt: state.activeCache.startedAt, endedAt: new Date(8.64e15) } : null;
+      for (const item of change.days) {
+        const unchanged = change.previous.find(previous => previous.date === item.date
+          && (item.startTime === undefined || timeOffWallClock(previous.startedAt, timezone) === item.startTime)
+          && Date.parse(previous.endedAt) - Date.parse(previous.startedAt) === item.durationSeconds * 1000);
+        const start = unchanged ? new Date(unchanged.startedAt)
+          : item.startTime !== undefined ? timeOffStartInstant(item.date, item.startTime, timezone)
+            : findTimeOffStart(item.date, item.durationSeconds, timezone,
+              running && item.date <= localDateInTimezone(queuedAt, timezone) ? [...known, running] : known);
+        const end = new Date(start.getTime() + item.durationSeconds * 1000);
+        if (!unchanged && item.startTime === undefined) autoDates.push(item.date);
+        const id = this.uniqueRecordId(start.getTime(), usedIds);
+        const active = this.buildActive({
+          id, taskUrl: change.taskUrl, taskTitle: change.taskTitle, description: change.description,
+          startedAt: start, entryDate: item.date, timezone, billable: false,
+          metadata: { clockoli: { timeOffGroupId: groupId } },
+        });
+        const entry = buildEntry({ active, endedAt: end,
+          now: new Date(Math.max(start.getTime(), queuedAt.getTime())), description: change.description });
+        validateEntry(entry);
+        const overlaps = known.some(other =>
+          Date.parse(other.startedAt) < end.getTime() && Date.parse(other.endedAt) > start.getTime());
+        if (overlaps) throw new TrackerConflictError(
+          'Time off on ' + item.date + ' overlaps existing time. Choose fewer hours or edit that time.',
+          'time_off_overlap',
+        );
+        if (running && start.getTime() <= queuedAt.getTime()
+            && end.getTime() > Date.parse(running.startedAt)) {
+          throw new TrackerConflictError('Time off overlaps the current running timer.', 'time_off_overlap');
+        }
+        known.push(entry);
+        entries.push(entry);
+      }
+      const pendingWrites = [...(state.pendingWrites ?? []), {
+        id: createUlid(queuedAt.getTime() + (state.pendingWrites?.length ?? 0) + 2),
+        operation: 'timeOffChange', status: 'pending', stage: 'timeOffChange',
+        groupId, previousGroupId: change.groupId, singleDayDeletion: change.singleDayDeletion,
+        bulkDayDeletion: change.bulkDayDeletion, taskUrl: change.taskUrl,
+        previous: structuredClone(change.previous), entries: entries.map(stripInternal),
+        autoDates, timeOffTaskUrls: [...configuredTasks], queuedAt: queuedAt.toISOString(), lastError: '',
+      }];
+      const newIds = new Set(entries.map(entry => entry.id));
+      const resultEntries = entries.map(entry => ({
+        ...entry, _path: monthlyRecordsPath(this.user, entry.entryDate),
+        _sha: null, _index: -1, _pending: true,
+      }));
+      accepted = resultEntries;
+      return {
+        pendingWrites,
+        recentCache: recentEntries([...resultEntries, ...(state.recentCache ?? []).filter(
+          item => !priorIds.has(item.id) && !newIds.has(item.id))], queuedAt),
+        dayRangeIntervals: rememberDayRangeIntervals(
+          updateDayRangeIntervals(state.dayRangeIntervals, [], [...priorIds]), entries),
+      };
+    });
+    return { pending: true, groupId, added: accepted.length, entries: accepted };
+  }
+
+  async commitTimeOffChange(operation) {
+    const previous = operation.previous ?? [];
+    let proposed = operation.entries ?? [];
+    if (operation.singleDayDeletion && (previous.length !== 1 || proposed.length)) {
+      throw new TrackerConflictError('A one-day deletion must target exactly one original PTO record.', 'time_off_invalid');
+    }
+    if (operation.bulkDayDeletion && (operation.singleDayDeletion || !previous.length
+        || previous.length > 200 || proposed.length || previous.some(item =>
+          !item.taskUrl || !('groupId' in item)))) {
+      throw new TrackerConflictError('Invalid multi-day PTO deletion.', 'time_off_invalid');
+    }
+    const anchor = proposed.length ? proposed : previous.map(item => ({ ...item, entryDate: item.date }));
+    if (!anchor.length) throw new TrackerConflictError('Empty time off change.', 'time_off_invalid');
+    const overlap = await this.readEditOverlapFiles(anchor);
+    const files = new Map(overlap.files.map(file => [file.path, file]));
+    const touched = new Set([
+      ...previous.map(item => monthlyRecordsPath(this.user, item.date)),
+      ...proposed.map(item => monthlyRecordsPath(this.user, item.entryDate)),
+    ]);
+    for (const path of touched) if (!files.has(path)) files.set(path, await this.readMonthly(path));
+    const expected = new Set(previous.map(item => item.id));
+    const originals = [];
+    for (const item of previous) {
+      const file = files.get(monthlyRecordsPath(this.user, item.date));
+      const current = file.entries.find(entry => entry.id === item.id);
+      if (!current) continue;
+      if (current.entryDate !== item.date || current.startedAt !== item.startedAt
+          || current.endedAt !== item.endedAt || current.updatedAt !== item.updatedAt
+          || (item.description !== undefined && (current.description ?? '') !== item.description)
+          || taskUrlOf(current) !== (operation.bulkDayDeletion ? item.taskUrl : operation.taskUrl)
+          || (operation.bulkDayDeletion
+            ? timeOffGroupId(current) !== item.groupId
+            : operation.previousGroupId
+              ? timeOffGroupId(current) !== operation.previousGroupId
+              : timeOffGroupId(current) !== null)) {
+        throw new TrackerConflictError('Time off changed on GitHub. Reload before editing.', 'time_off_changed');
+      }
+      originals.push(current);
+    }
+    const alreadySaved = proposed.every(entry => {
+      const file = files.get(monthlyRecordsPath(this.user, entry.entryDate));
+      const current = file?.entries.find(item => item.id === entry.id);
+      return current && current.startedAt === entry.startedAt && current.endedAt === entry.endedAt
+        && current.description === entry.description && timeOffGroupId(current) === operation.groupId;
+    });
+    if (originals.length === 0 && alreadySaved && previous.length > 0
+        || previous.length === 0 && alreadySaved && proposed.length > 0) {
+      if (previous.length) {
+        const index = await this.readTaskIndex();
+        if (Object.values(index.index.tasks).some(task => task.recordIds.some(id => expected.has(id)))) {
+          throw new TrackerConflictError('Time off was moved or changed on GitHub. Reload before deleting.', 'time_off_changed');
+        }
+      }
+      return proposed.map(entry => files.get(monthlyRecordsPath(this.user, entry.entryDate)).entries.find(item => item.id === entry.id));
+    }
+    if (originals.length !== expected.size) {
+      throw new TrackerConflictError('Time off entries were changed or removed on GitHub. Reload before saving.', 'time_off_changed');
+    }
+    const verifiedConfig = await this.verifyPlannedTimeOff(proposed);
+    const alreadyIds = new Set(originals.map(entry => entry.id));
+    if (proposed.some(entry => [...files.values()].some(file => file.entries.some(item => item.id === entry.id)))) {
+      throw new TrackerConflictError('Time off record ID already exists on GitHub.', 'time_off_changed');
+    }
+    // Do not accidentally erase other dates from the same group if the editor loaded only part of it.
+    if (operation.previousGroupId && !operation.singleDayDeletion && !operation.bulkDayDeletion) {
+      const unexpected = [...files.values()].flatMap(file => file.entries).filter(entry =>
+        timeOffGroupId(entry) === operation.previousGroupId
+        && !alreadyIds.has(entry.id)
+        && !proposed.some(item => item.id === entry.id));
+      // A partial group edit is allowed only for dates already taken; they remain untouched.
+      if (unexpected.some(entry => Date.parse(entry.endedAt) > Date.parse(operation.queuedAt))) {
+        throw new TrackerConflictError('Additional planned days exist in this time off group. Reload before editing.', 'time_off_changed');
+      }
+    }
+    if (!previous.length && proposed.length) {
+      const taskUrls = verifiedConfig?.taskUrls ?? operation.timeOffTaskUrls ?? [operation.taskUrl];
+      const dates = new Set(proposed.map(entry => entry.entryDate));
+      if ([...files.values()].some(file => file.entries.some(entry =>
+        dates.has(entry.entryDate) && taskUrls.includes(taskUrlOf(entry))))) {
+        throw new TrackerConflictError('You already have time off on a selected day on GitHub.', 'time_off_duplicate_day');
+      }
+    }
+    const active = await this.readRemoteActive();
+    // When work from another device was absent from our local cache, re-place
+    // only automatically scheduled days. Save the revised queue before the
+    // atomic GitHub commit so replay after a lost response is deterministic.
+    const autoDates = new Set(operation.autoDates ?? []);
+    if (autoDates.size) {
+      const occupied = [...files.values()].flatMap(file => file.entries)
+        .filter(entry => !alreadyIds.has(entry.id));
+      let changed = false;
+      const revised = proposed.map(entry => {
+        const activeForDay = active && entry.entryDate <= localDateInTimezone(this.clock(), entry.timezone)
+          ? { startedAt: active.startedAt, endedAt: new Date(8.64e15) } : null;
+        const blockers = activeForDay ? [...occupied, activeForDay] : occupied;
+        const overlaps = blockers.some(item => Date.parse(item.startedAt) < Date.parse(entry.endedAt)
+          && Date.parse(item.endedAt) > Date.parse(entry.startedAt));
+        if (!overlaps || !autoDates.has(entry.entryDate)) {
+          occupied.push(entry);
+          return entry;
+        }
+        let start;
+        try { start = findTimeOffStart(entry.entryDate, entry.durationSeconds, entry.timezone, blockers); }
+        catch (error) { throw new TrackerConflictError(error.message, 'time_off_overlap'); }
+        const startMs = start.getTime();
+        const moved = validateEntry({
+          ...entry, startedAt: start.toISOString(),
+          endedAt: new Date(startMs + entry.durationSeconds * 1000).toISOString(),
+          createdAt: start.toISOString(),
+          updatedAt: new Date(Math.max(startMs, Date.parse(operation.queuedAt))).toISOString(),
+        });
+        changed = true;
+        occupied.push(moved);
+        return moved;
+      });
+      if (changed) {
+        const updatedById = new Map(revised.map(entry => [entry.id, entry]));
+        operation.originalEntries ??= proposed.map(stripInternal);
+        operation.entries = revised.map(stripInternal);
+        await this.persistQueueOperation(operation, { patch: state => ({
+          recentCache: (state.recentCache ?? []).map(item =>
+            updatedById.has(item.id) ? { ...item, ...updatedById.get(item.id) } : item),
+          dayRangeIntervals: updateDayRangeIntervals(state.dayRangeIntervals, revised),
+        }) });
+        proposed = revised;
+      }
+    }
+    for (const entry of proposed) {
+      const start = Date.parse(entry.startedAt), end = Date.parse(entry.endedAt);
+      if (active && start <= this.clock().getTime()
+          && end > Date.parse(active.startedAt)) {
+        throw new TrackerConflictError('Time off overlaps a running timer on GitHub.', 'time_off_overlap');
+      }
+      const others = [...files.values()].flatMap(file => file.entries).filter(item => !alreadyIds.has(item.id));
+      assertNoCompletedOverlap(entry, [...others, ...proposed.filter(other => other.id !== entry.id)]);
+    }
+    const changes = [...touched].map(path => {
+      const file = files.get(path);
+      const remaining = file.entries.filter(entry => !alreadyIds.has(entry.id));
+      const updated = [...remaining, ...proposed.filter(entry => monthlyRecordsPath(this.user, entry.entryDate) === path)]
+        .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+      return { path, sha: file.sha, text: serializeMonthlyRecords(updated) || null };
+    });
+    try {
+      const { blobShas } = await this.updateCompletedRecords(changes,
+        'time off: update ' + this.user + ' ' + operation.groupId, {
+          remove: originals, add: proposed,
+          guards: [...files.values()].filter(file => !touched.has(file.path))
+            .map(file => ({ path: file.path, sha: file.sha })),
+          expectedHeadSha: overlap.headSha,
+        });
+      const saved = [];
+      for (const change of changes) {
+        if (!change.text) continue;
+        const file = files.get(change.path);
+        saved.push(...parseMonthlyRecords(change.text, {
+          user: this.user, month: file.month, path: change.path, sha: blobShas[change.path] ?? null,
+        }).filter(item => proposed.some(entry => entry.id === item.id)));
+      }
+      return saved;
+    } catch (error) {
+      if (isConflict(error)) throw new TrackerConflictError('Time off changed on GitHub. Reload and review the group.', 'time_off_changed');
+      throw error;
+    }
+  }
+
+  async queueAddTime({ taskUrl, taskTitle = '', startedAt, endedAt = null, description = '', billable }, { allowFuture = false } = {}) {
     const canonical = normalizeStoredTaskIdentity(taskUrl);
     const now = this.clock(), start = startedAt == null ? now : new Date(startedAt);
     const end = endedAt == null ? null : new Date(endedAt);
     const startMs = start.getTime(), endMs = end?.getTime();
-    if (!Number.isFinite(startMs) || startMs > now.getTime()) throw new Error('Start time must be valid and not in the future.');
-    if (end && (!Number.isFinite(endMs) || endMs <= startMs || endMs > now.getTime())) throw new Error('End time must be after Start and not in the future.');
+    if (!Number.isFinite(startMs) || (!allowFuture && startMs > now.getTime())) throw new Error('Start time must be valid and not in the future.');
+    if (end && (!Number.isFinite(endMs) || endMs <= startMs || (!allowFuture && endMs > now.getTime()))) throw new Error('End time must be after Start and not in the future.');
     if ((endMs ?? now.getTime()) - startMs > 24 * 60 * 60 * 1000) throw new Error('One Add time entry cannot exceed 24 hours.');
     if (typeof taskTitle !== 'string' || taskTitle.length > 500 || typeof description !== 'string' || description.length > 2000) {
       throw new Error('Task title or description is too long.');
     }
     if (!end) {
+      if (startMs > now.getTime()) throw new Error('A future time off entry needs an End time.');
       const state = await this.store.getState();
       if (state.activeCache) throw new Error(`A timer is already tracking ${taskLabel(state.activeCache)}`);
       const active = await this.queueStart(canonical, taskTitle, description, { startedAt: start, requireNoOverlap: true, billable });
@@ -3851,7 +4508,8 @@ export class TrackerService {
     }
     let acceptedEntry;
     await this.mutateState(state => {
-      if (state.activeCache && endMs > new Date(state.activeCache.startedAt).getTime()) {
+      if (state.activeCache && endMs > new Date(state.activeCache.startedAt).getTime()
+          && !(allowFuture && startMs > now.getTime())) {
         throw new Error('Added time would overlap the running timer.');
       }
       const known = knownLocalIntervals(state);
@@ -3862,7 +4520,7 @@ export class TrackerService {
       const usedIds = new Set(known.map(item => item.id));
       const record = this.buildActive({ id: this.uniqueRecordId(startMs, usedIds), taskUrl: canonical,
         taskTitle, startedAt: start, description, billable });
-      const entry = buildEntry({ active: record, endedAt: end, now, description });
+      const entry = buildEntry({ active: record, endedAt: end, now: end > now ? end : now, description });
       const path = monthlyRecordsPath(this.user, entry.entryDate);
       acceptedEntry = { ...entry, _path: path, _sha: null, _index: -1, _pending: true };
       const pendingWrites = [...(state.pendingWrites ?? []), {
@@ -3872,22 +4530,21 @@ export class TrackerService {
       }];
       return {
         pendingWrites,
-        recentCache: [acceptedEntry, ...(state.recentCache ?? []).filter(item => item.id !== entry.id)]
-          .sort(newestFirst).slice(0, 50),
+        recentCache: recentEntries([acceptedEntry, ...(state.recentCache ?? []).filter(item => item.id !== entry.id)], now),
       };
     });
     return { entry: acceptedEntry, pending: true };
   }
 
   async addTime({ taskUrl, taskTitle = '', startedAt, endedAt = null, description = '', billable }, {
-    background = false, fixedId = null, acceptedEntry = null, updateCache = true,
+    background = false, fixedId = null, acceptedEntry = null, updateCache = true, allowFuture = false, queuedAt = null,
   } = {}) {
-    if (background) return this.queueAddTime({ taskUrl, taskTitle, startedAt, endedAt, description, billable });
+    if (background) return this.queueAddTime({ taskUrl, taskTitle, startedAt, endedAt, description, billable }, { allowFuture });
     const canonical = normalizeStoredTaskIdentity(taskUrl);
     const now = this.clock(), start = startedAt == null ? now : new Date(startedAt);
     const startMs = start.getTime(), end = endedAt == null ? null : new Date(endedAt), endMs = end?.getTime();
-    if (!Number.isFinite(startMs) || startMs > now.getTime()) throw new Error('Start time must be valid and not in the future.');
-    if (end && (!Number.isFinite(endMs) || endMs <= startMs || endMs > now.getTime())) throw new Error('End time must be after Start and not in the future.');
+    if (!Number.isFinite(startMs) || (!allowFuture && !fixedId && startMs > now.getTime())) throw new Error('Start time must be valid and not in the future.');
+    if (end && (!Number.isFinite(endMs) || endMs <= startMs || (!allowFuture && !fixedId && endMs > now.getTime()))) throw new Error('End time must be after Start and not in the future.');
     // Previously accepted work must still synchronize after a restart or a long offline period.
     if (!fixedId && (endMs ?? now.getTime()) - startMs > 24 * 60 * 60 * 1000) throw new Error('One Add time entry cannot exceed 24 hours.');
     const accepted = acceptedEntry ? validateEntry(stripInternal(acceptedEntry)) : null;
@@ -3903,11 +4560,13 @@ export class TrackerService {
       throw new Error('Task title or description is too long.');
     }
     const state = await this.store.getState();
+    if (!end && startMs > now.getTime()) throw new Error('A future time off entry needs an End time.');
     if (state.activeCache && !end) throw new Error(`A timer is already tracking ${taskLabel(state.activeCache)}`);
     if (state.pendingWrites?.length && !fixedId) throw new Error('Pending time writes must sync before adding time.');
     const indexFile = /^https?:\/\//.test(canonical) ? null : await this.assertKnownImportedTask(canonical);
     const active = fixedId ? await this.readRemoteActive() : await this.refreshActive();
-    if (active && (!end || endMs > new Date(active.startedAt).getTime())) throw new Error('Added time would overlap the running timer.');
+    if (active && (!end || endMs > new Date(active.startedAt).getTime())
+        && !(end && startMs > now.getTime() && (allowFuture || fixedId))) throw new Error('Added time would overlap the running timer.');
     const { files, headSha } = await this.readAddTimeOverlapFiles(originalDay, now,
       localDateInTimezone(end ?? now, accepted?.timezone ?? this.timezone), end ?? now);
     if (files.some(file => file.entries.some(entry => entry.id !== fixedId
@@ -3938,6 +4597,7 @@ export class TrackerService {
       }
       return { entry: previouslySaved, pending: false };
     }
+    if (endMs > (queuedAt ? Date.parse(queuedAt) : now.getTime())) await this.verifyPlannedTimeOff([entry]);
     const entries = [...file.entries, entry].sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
     const text = serializeMonthlyRecords(entries);
     parseMonthlyRecords(text, { user: this.user, month: file.month, path });
@@ -3982,7 +4642,10 @@ export class TrackerService {
       const occupied = existing.map(entry => ({
         start: new Date(entry.startedAt).getTime(), end: new Date(entry.endedAt).getTime(),
       }));
-      if (activeStartMs < limitMs) occupied.push({ start: activeStartMs, end: Infinity });
+      // A running timer has no known end, but must not block planning on a future day.
+      // A later work completion is still checked against stored PTO intervals.
+      const futureDay = item.allowFuture === true && item.date > localDateInTimezone(this.clock(), this.timezone);
+      if (!futureDay && activeStartMs < limitMs) occupied.push({ start: activeStartMs, end: Infinity });
       occupied.sort((a, b) => a.start - b.start);
       const overlaps = (start, end, interval) => durationMs > 0
         && interval.start < end && interval.end > start;
@@ -4057,7 +4720,7 @@ export class TrackerService {
     return added;
   }
 
-  async addDayRange({ taskUrl, taskTitle = '', description = '', dates, durationSeconds, billable }) {
+  async addDayRange({ taskUrl, taskTitle = '', description = '', dates, durationSeconds, billable, allowFuture = false }) {
     const canonical = normalizeStoredTaskIdentity(taskUrl);
     const validDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
       && Number.isFinite(Date.parse(`${value}T00:00:00.000Z`))
@@ -4065,15 +4728,15 @@ export class TrackerService {
     if (!Array.isArray(dates) || !dates.length || dates.length > 500
         || dates.some((date, index) => !validDate(date) || index > 0 && date <= dates[index - 1])
         || (Date.parse(`${dates.at(-1)}T00:00:00.000Z`) - Date.parse(`${dates[0]}T00:00:00.000Z`)) / 86400000 >= 500
-        || dates.at(-1) > localDateInTimezone(this.clock(), this.timezone)
+        || (!allowFuture && dates.at(-1) > localDateInTimezone(this.clock(), this.timezone))
         || !Number.isSafeInteger(durationSeconds) || durationSeconds < 0 || durationSeconds > 86400
         || typeof taskTitle !== 'string' || taskTitle.length > 500
         || typeof description !== 'string' || description.length > 2000) throw new Error('Invalid selected days or hours per day.');
     const requested = dates.map((date, index) => ({
       line: index + 1, date,
-      taskUrl: canonical, taskTitle, description, durationSeconds, startTime: '09:00', billable,
+      taskUrl: canonical, taskTitle, description, durationSeconds, startTime: '09:00', billable, ...(allowFuture ? { allowFuture: true } : {}),
     }));
-    return this.queueBulkAddTimes('', requested, { noFuture: true });
+    return this.queueBulkAddTimes('', requested, { noFuture: !allowFuture });
   }
 
   async queueBulkAddTimes(text, requested = parseBulkTimeText(text), { noFuture = false } = {}) {
@@ -4092,7 +4755,8 @@ export class TrackerService {
         if (!files.has(path)) files.set(path, { path, month: item.date.slice(0, 7), entries: [] });
       }
       const planned = this.planBulkRows(requested, files, state.activeCache);
-      if (noFuture && planned.some(entry => new Date(entry.endedAt) > queuedAt)) {
+      if (planned.some((entry, index) => new Date(entry.endedAt) > queuedAt
+          && (noFuture || requested[index]?.allowFuture === false))) {
         throw new Error('Day range would add time in the future. No entries were added.');
       }
       accepted = planned.map(entry => ({
@@ -4106,8 +4770,7 @@ export class TrackerService {
       const newIds = new Set(accepted.map(entry => entry.id));
       return {
         pendingWrites,
-        recentCache: [...accepted, ...(state.recentCache ?? []).filter(entry => !newIds.has(entry.id))]
-          .sort(newestFirst).slice(0, 50),
+        recentCache: recentEntries([...accepted, ...(state.recentCache ?? []).filter(entry => !newIds.has(entry.id))], queuedAt),
         ...(noFuture ? { dayRangeIntervals: rememberDayRangeIntervals(state.dayRangeIntervals, planned) } : {}),
       };
     });
@@ -4115,7 +4778,7 @@ export class TrackerService {
   }
 
   async bulkAddTimes(text, { background = false, requested = null, billable = true, ids = null, acceptedEntries = null,
-    updateCache = true, includeEntries = false, onRelocated = null } = {}) {
+    updateCache = true, includeEntries = false, onRelocated = null, queuedAt = null } = {}) {
     if (background) return this.queueBulkAddTimes(text, requested ?? parseBulkTimeText(text, { billable }));
     requested ||= parseBulkTimeText(text, { billable });
     if (ids && requested.some((item, index) => item.startTime === '09:00'
@@ -4166,6 +4829,8 @@ export class TrackerService {
     }
     const added = this.planBulkRows(requested, files, activeTimer, ids, acceptedEntries,
       { replanAccepted: Boolean(ids && onRelocated) });
+    const acceptedAt = queuedAt ? Date.parse(queuedAt) : this.clock().getTime();
+    await this.verifyPlannedTimeOff(added.filter(entry => Date.parse(entry.endedAt) > acceptedAt));
     if (ids && onRelocated && added.some((entry, index) =>
       entry.startedAt !== acceptedEntries[index].startedAt || entry.endedAt !== acceptedEntries[index].endedAt)) {
       // Persist the revised accepted instants before the guarded GitHub write.

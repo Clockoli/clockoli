@@ -580,6 +580,207 @@ function renderRemoval(container, destination) {
   return panel;
 }
 
+
+function renderTimeOffTaskSettings(destination) {
+  const section = document.createElement('details'); section.className = 'repository-time-off';
+  const heading = document.createElement('summary'); heading.textContent = 'Time off tasks';
+  const help = document.createElement('p'); help.className = 'help';
+  help.textContent = 'Select tasks from this time repository or paste a task URL. Up to 100 tasks. Existing entries on these tasks also count as time off.';
+  const picker = document.createElement('div'); picker.className = 'repository-time-off-picker'; picker.hidden = true;
+  const label = document.createElement('label'); label.textContent = 'Find a task';
+  const search = document.createElement('input'); search.type = 'search';
+  search.id = 'time-off-search-' + destination.id.replace(/[^a-z0-9-]/gi, '-');
+  search.placeholder = 'Search title or URL, or paste a URL';
+  search.autocomplete = 'off'; search.maxLength = 2048;
+  search.setAttribute('role', 'combobox'); search.setAttribute('aria-autocomplete', 'list');
+  label.htmlFor = search.id;
+  const suggestions = document.createElement('div'); suggestions.className = 'repository-time-off-suggestions';
+  suggestions.id = search.id + '-suggestions'; suggestions.setAttribute('role', 'listbox'); suggestions.hidden = true;
+  search.setAttribute('aria-controls', suggestions.id); search.setAttribute('aria-expanded', 'false');
+  const add = document.createElement('button'); add.type = 'button'; add.className = 'secondary repository-time-off-add';
+  add.textContent = 'Add task'; add.disabled = true;
+  const searchRow = document.createElement('div'); searchRow.className = 'repository-time-off-search';
+  searchRow.append(search, add);
+  const searchStatus = document.createElement('p'); searchStatus.className = 'help';
+  searchStatus.setAttribute('role', 'status');
+  const searchWrap = document.createElement('div'); searchWrap.className = 'repository-time-off-search-wrap';
+  searchWrap.append(searchRow, suggestions);
+  picker.append(label, searchWrap, searchStatus);
+  const count = document.createElement('p'); count.className = 'help repository-time-off-count';
+  const selected = document.createElement('div'); selected.className = 'repository-time-off-selected';
+  const feedback = document.createElement('p'); feedback.className = 'form-feedback';
+  feedback.setAttribute('role', 'status');
+  const save = document.createElement('button'); save.type = 'button';
+  save.className = 'secondary repository-time-off-save'; save.textContent = 'Save time off tasks'; save.disabled = true;
+  section.append(heading, help, picker, count, selected, feedback, save);
+
+  let urls = [], savedUrls = [], sha = null, loaded = false, canEdit = false, saving = false;
+  let results = [], searchTimer = null, searchVersion = 0, loading = false;
+  let shownSuggestions = [], activeSuggestion = -1;
+  const titles = new Map();
+  const validUrl = value => {
+    try { return normalizeTaskUrl(value); } catch { return ''; }
+  };
+  const taskSearch = globalThis.ClockoliTaskSearch.mount(search, { onInput: onSearchInput });
+  const setFeedback = (value, error = false) => {
+    feedback.textContent = value;
+    feedback.className = error ? 'form-feedback error' : 'form-feedback';
+  };
+  const refreshControls = () => {
+    const full = urls.length >= 100;
+    picker.hidden = !loaded || !canEdit;
+    search.disabled = !loaded || !canEdit || saving || full;
+    add.disabled = search.disabled || !validUrl(search.value.trim()) || urls.includes(validUrl(search.value.trim()));
+    save.disabled = !loaded || !canEdit || saving || JSON.stringify(urls) === JSON.stringify(savedUrls);
+    count.textContent = urls.length + ' / 100 tasks';
+  };
+  const renderSelected = () => {
+    selected.replaceChildren();
+    if (!urls.length) {
+      const empty = document.createElement('p'); empty.className = 'help'; empty.textContent = 'No time off tasks yet.';
+      selected.append(empty);
+    }
+    for (const url of urls) {
+      const row = document.createElement('div'); row.className = 'repository-time-off-task';
+      const identity = document.createElement('div'); identity.className = 'repository-time-off-task-identity';
+      const title = titles.get(url);
+      if (title) {
+        const name = document.createElement('strong'); name.textContent = title; identity.append(name);
+      }
+      const link = document.createElement('a'); link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+      link.textContent = url; identity.append(link);
+      row.append(identity);
+      if (canEdit) {
+        const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'secondary repository-time-off-remove';
+        remove.append(removeIcon()); remove.setAttribute('aria-label', 'Remove time off task ' + url);
+        remove.disabled = saving;
+        remove.addEventListener('click', () => {
+          urls = urls.filter(item => item !== url);
+          setFeedback(''); renderSelected(); renderSuggestions();
+        });
+        row.append(remove);
+      }
+      selected.append(row);
+    }
+    refreshControls();
+  };
+  const renderSuggestions = () => {
+    suggestions.replaceChildren();
+    const query = search.value.trim();
+    const matches = query && !validUrl(query) && canEdit
+      ? taskSearch.matches(results, task => !urls.includes(task.taskUrl), 8) : [];
+    shownSuggestions = matches;
+    activeSuggestion = -1;
+    search.removeAttribute('aria-activedescendant');
+    for (const [index, task] of matches.entries()) {
+      const option = document.createElement('button'); option.type = 'button';
+      option.className = 'repository-time-off-option'; option.setAttribute('role', 'option');
+      option.id = suggestions.id + '-option-' + index;
+      option.setAttribute('aria-selected', 'false');
+      const title = document.createElement('strong'); title.textContent = task.title || task.taskUrl;
+      const url = document.createElement('span'); url.textContent = task.taskUrl;
+      option.append(title, url);
+      option.addEventListener('click', () => addTask(task.taskUrl, task.title));
+      suggestions.append(option);
+    }
+    suggestions.hidden = !matches.length;
+    search.setAttribute('aria-expanded', String(matches.length > 0));
+    refreshControls();
+  };
+  const clearSearch = () => {
+    clearTimeout(searchTimer); searchVersion++;
+    search.value = ''; results = []; searchStatus.textContent = '';
+    shownSuggestions = []; activeSuggestion = -1;
+    search.removeAttribute('aria-activedescendant');
+    suggestions.replaceChildren(); suggestions.hidden = true; search.setAttribute('aria-expanded', 'false');
+    refreshControls();
+  };
+  const addTask = (value, title = '') => {
+    const url = validUrl(value);
+    if (!url) { setFeedback('Enter a valid task URL.', true); return; }
+    if (urls.includes(url)) { setFeedback('This task is already in the list.', true); return; }
+    if (urls.length >= 100) { setFeedback('Maximum 100 time off tasks per repository.', true); return; }
+    if (title) titles.set(url, title);
+    urls.push(url); setFeedback(''); clearSearch(); renderSelected();
+    search.focus();
+  };
+  function onSearchInput() {
+    clearTimeout(searchTimer); const version = ++searchVersion;
+    results = []; searchStatus.textContent = ''; renderSuggestions();
+    const query = search.value.trim();
+    if (!loaded || !canEdit || !query || validUrl(query)) return;
+    if (query.length > 300) {
+      searchStatus.textContent = 'Paste a valid URL, or use a shorter search term.'; return;
+    }
+    searchStatus.textContent = 'Searching tasks…';
+    searchTimer = setTimeout(async () => {
+      try {
+        const response = await send({ type: 'SEARCH_TASKS', query, destinationId: destination.id });
+        if (version !== searchVersion || !section.open || !section.isConnected) return;
+        results = (response.tasks || []).filter(task => {
+          if (typeof task.taskUrl !== 'string' || !validUrl(task.taskUrl)) return false;
+          return task.destinationId === destination.id || task.destinationIds?.includes(destination.id);
+        });
+        searchStatus.textContent = response.partial ? 'Search results may be incomplete. You can paste a URL.' : '';
+        renderSuggestions();
+      } catch (error) {
+        if (version === searchVersion) searchStatus.textContent = error.message || 'Could not search tasks. You can paste a URL.';
+      }
+    }, 180);
+  }
+  add.addEventListener('click', () => addTask(search.value.trim()));
+  search.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !suggestions.hidden) {
+      event.preventDefault(); clearSearch(); search.focus();
+    } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp')
+        && !suggestions.hidden && shownSuggestions.length) {
+      event.preventDefault();
+      activeSuggestion = (activeSuggestion + (event.key === 'ArrowDown' ? 1 : -1)
+        + shownSuggestions.length) % shownSuggestions.length;
+      for (const [i, option] of [...suggestions.children].entries()) {
+        const active = i === activeSuggestion;
+        option.classList.toggle('active', active);
+        option.setAttribute('aria-selected', String(active));
+      }
+      search.setAttribute('aria-activedescendant', suggestions.children[activeSuggestion].id);
+      suggestions.children[activeSuggestion].scrollIntoView({ block: 'nearest' });
+    } else if (event.key === 'Enter' && activeSuggestion >= 0 && !suggestions.hidden) {
+      event.preventDefault();
+      addTask(shownSuggestions[activeSuggestion].taskUrl, shownSuggestions[activeSuggestion].title);
+    } else if (event.key === 'Enter' && !add.disabled) {
+      event.preventDefault(); addTask(search.value.trim());
+    }
+  });
+  section.addEventListener('toggle', async () => {
+    if (!section.open) { clearSearch(); return; }
+    if (loaded || loading) return;
+    loading = true; setFeedback('Loading time off tasks…');
+    try {
+      const response = await send({ type: 'GET_TIME_OFF_SETTINGS', destinationId: destination.id });
+      if (!section.isConnected) return;
+      urls = [...response.config.taskUrls]; savedUrls = [...urls]; sha = response.sha;
+      canEdit = response.canEdit === true; loaded = true;
+      setFeedback(canEdit ? '' : 'Only repository administrators can edit this list.');
+      renderSelected();
+    } catch (error) { setFeedback(error.message || 'Could not load time off tasks.', true); }
+    finally { loading = false; }
+  });
+  save.addEventListener('click', async () => {
+    if (save.disabled || !loaded || !canEdit) return;
+    saving = true; refreshControls(); renderSelected(); setFeedback('Saving…');
+    try {
+      const response = await send({ type: 'SAVE_TIME_OFF_SETTINGS', destinationId: destination.id,
+        taskUrls: [...urls], expectedSha: sha });
+      sha = response.sha; urls = [...response.config.taskUrls]; savedUrls = [...urls];
+      setFeedback('Time off tasks saved for the team.');
+    } catch (error) {
+      setFeedback(error.message || 'Could not save time off tasks.', true);
+    } finally { saving = false; renderSelected(); }
+  });
+  renderSelected();
+  return section;
+}
+
 function renderDestinationCard(destination, isDefault) {
   const article = document.createElement('details'); article.className = 'time-repository'; article.dataset.destinationId = destination.id;
   const header = document.createElement('summary'); header.className = 'repository-card-heading';
@@ -681,6 +882,7 @@ function renderDestinationCard(destination, isDefault) {
   howText.textContent = 'A GitHub invitation grants repository write access, but the recipient must accept it and join Clockoli themselves. Access to this repository also allows reading teammates’ stored time.';
   how.append(howTitle, howText); team.append(how);
   article.append(team);
+  article.append(renderTimeOffTaskSettings(destination));
   const removalPanel = renderRemoval(article, destination);
   remove.addEventListener('click', () => { removalPanel.hidden = false; removalPanel.focus?.(); });
   return article;

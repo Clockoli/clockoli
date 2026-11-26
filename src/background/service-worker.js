@@ -5,6 +5,9 @@ import {
   GITHUB_AUTHORIZATIONS_URL, GITHUB_NEW_REPOSITORY_URL, GITHUB_NEW_ORGANIZATION_REPOSITORY_URL,
 } from '../config/github-app.js';
 import { activeRecordPath } from '../domain/work-records.js';
+import { localDateInTimezone } from '../domain/records.js';
+import { classifyTimeOffRecords, isTimeOffTask, normalizeTimeOffConfig, normalizeTimeOffChange } from '../domain/time-off.js';
+import { parseBulkTimeText } from '../domain/bulk-time.js';
 import { createUlid } from '../domain/ulid.js';
 import { isUrlTaskIdentity, normalizeTaskUrl, parseGitHubProjectPaneIssueUrl, taskUrlOf } from '../domain/values.js';
 import { aggregateTaskParticipants, aggregateTrackedTasks } from '../domain/tasks.js';
@@ -27,10 +30,13 @@ import '../services/clockify-identity-mapping.js';
 import '../services/clockify-import-cleanup.js';
 import { importClockifyOrganization } from '../services/clockify-organization-import.js';
 import '../services/clockify-record-import.js';
-import { independentCompletedWrite, TrackerService } from '../services/tracker.js';
+import { cancelledTimeOffCreationIds, independentCompletedWrite, TrackerService } from '../services/tracker.js';
 import { ConfigurationService } from '../services/configuration.js';
 import { annotateDestinationRecord, loadDestinationRecords, mergeDestinationRecords, mergeDestinationTaskSummaries, ReportService, withoutInternalMetadata } from '../services/reports.js';
 import { ExchangeRateService } from '../services/exchange-rates.js';
+import { readTimeOffSettings, saveTimeOffSettings } from '../services/time-off-settings.js';
+import { teamTimeOffCacheScope, readCachedTeamTimeOff, saveCachedTeamTimeOff,
+  invalidateCachedTeamTimeOff, getTeamTimeOffCacheRevision } from '../services/time-off-year-cache.js';
 import { TaskMetadataService } from '../services/task-metadata.js';
 import { mergeTaskCatalogIndexes, taskCandidates } from '../services/task-catalog.js';
 import { InstallationDiscoveryService, RepositoryInitializer } from '../services/github-app-onboarding.js';
@@ -59,6 +65,7 @@ const ACTION_CONTEXT_KEY = 'clockoli-toolbar-task-context';
 const TOOLBAR_POPUP_PATH = 'src/popup/quick.html';
 // Reuse Clockoli's privileged IndexedDB; do not expand extension permissions.
 const actionContextBackend = new IndexedDbBackend();
+const timeOffCacheBackend = new IndexedDbBackend();
 const currentCredentialProvider = new CredentialBroker({ clientId: GITHUB_APP_CLIENT_ID, store });
 const configuration = new ConfigurationService({
   store,
@@ -131,6 +138,60 @@ async function verifyCrossAccountRestore(auth, destinations) {
     // An installation can change independently of the repository and branch.
     config.installationId = candidate.installationId;
   }
+}
+
+// Only verified default-branch settings define PTO. The local projection is an
+// offline hint for routine tracking; future time and final reports use fresh GitHub reads.
+// Read-start ordering, not completion ordering, decides which remote snapshot
+// can update the local settings. A successful settings save also bumps revision.
+function nextTimeOffSettingsRead() {
+  const startedAt = Math.max(Date.now(), (nextTimeOffSettingsRead.last ?? 0) + 1);
+  nextTimeOffSettingsRead.last = startedAt;
+  return startedAt;
+}
+
+async function timeOffSettingsForDestination(destinationId, { fresh = false, signal } = {}) {
+  const startedAt = nextTimeOffSettingsRead();
+  const registry = await store.getDestinationRegistry();
+  const configured = registry?.destinations?.[destinationId];
+  if (!configured) throw new Error('Time repository is no longer configured.');
+  const destination = { id: destinationId, ...configured };
+  const key = `time-off-config:${destinationId}`;
+  const matching = cached => cached?.repoId === destination.repoId && cached?.defaultBranch === destination.defaultBranch;
+  const cachedResult = cached => {
+    if (matching(cached)) {
+      try { return { config: normalizeTimeOffConfig(cached.config), sha: cached.sha ?? null, cached: true }; }
+      catch { /* Stale or malformed local cache must not be trusted. */ }
+    }
+    return { config: normalizeTimeOffConfig(), sha: null, cached: false };
+  };
+  const initial = await timeOffCacheBackend.getMany([key, 'configurationGeneration']);
+  if (!fresh) return cachedResult(initial[key]);
+  const revision = initial[key]?.revision ?? 0;
+  const github = githubForConfig(destination).forBranch(destination.defaultBranch || destination.branch || 'main', 'default');
+  const result = await readTimeOffSettings(github, { signal });
+  signal?.throwIfAborted();
+  return timeOffCacheBackend.mutateMany([key, 'configurationGeneration'], current => {
+    signal?.throwIfAborted();
+    if ((initial.configurationGeneration ?? 0) !== (current.configurationGeneration ?? 0)) {
+      throw new DOMException('Time repository configuration changed.', 'AbortError');
+    }
+    const cached = current[key];
+    if ((cached?.revision ?? 0) !== revision || (cached?.startedAt ?? 0) > startedAt) {
+      const newer = cachedResult(cached);
+      if (!newer.cached) throw new DOMException('Time off settings changed.', 'AbortError');
+      return { result: newer };
+    }
+    return { set: { [key]: {
+      repoId: destination.repoId, defaultBranch: destination.defaultBranch,
+      config: result.config, sha: result.sha, revision, startedAt,
+    } }, result };
+  });
+}
+
+async function timeOffTaskForDestination(destinationId, taskUrl, { fresh = false } = {}) {
+  const settings = await timeOffSettingsForDestination(destinationId, { fresh });
+  return isTimeOffTask(taskUrl, settings.config);
 }
 
 async function remoteActiveProbe({ config, auth, state, credentialProvider = currentCredentialProvider }) {
@@ -321,7 +382,8 @@ async function contextForDestination(destinationId, { localOnly = false, persist
   return {
     config, destinationId,
     reports,
-    tracker: new TrackerService({ github, store: destinationStore, reports, user, actorId: Number.isSafeInteger(storageUserId) ? `github:${storageUserId}` : `clockoli:${config.repoId}:${user}`, actorName: user, recentDays: config.recentDays || 7 }),
+    tracker: new TrackerService({ github, store: destinationStore, reports, user, actorId: Number.isSafeInteger(storageUserId) ? `github:${storageUserId}` : `clockoli:${config.repoId}:${user}`, actorName: user, recentDays: config.recentDays || 7,
+      timeOffSettings: options => timeOffSettingsForDestination(destinationId, options) }),
   };
 }
 
@@ -418,7 +480,7 @@ async function loadReport(message) {
   }
   const controller = new AbortController();
   const promise = (async () => {
-    const currentUsers = {};
+    const currentUsers = {}, timeOffConfigs = {}, timeOffSettingsUnavailable = [];
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       loadCoordinator.assertCurrent(loadEpoch);
       currentUsers[destination.id] = await destinationUser(destination, auth);
@@ -427,9 +489,19 @@ async function loadReport(message) {
         github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
-      return reports.loadRepositoryRange(message.payload || {}, {
-        defaultBranch: destination.defaultBranch || branch, signal, includeStorageMetadata: true,
-      });
+      const [records, settings] = await Promise.all([
+        reports.loadRepositoryRange(message.payload || {}, {
+          defaultBranch: destination.defaultBranch || branch, signal, includeStorageMetadata: true,
+        }),
+        timeOffSettingsForDestination(destination.id, { fresh: true, signal }).catch(async error => {
+          signal?.throwIfAborted();
+          if (error?.name === 'AbortError') throw error;
+          timeOffSettingsUnavailable.push(destination.id);
+          return timeOffSettingsForDestination(destination.id).catch(() => ({ config: normalizeTimeOffConfig() }));
+        }),
+      ]);
+      timeOffConfigs[destination.id] = settings.config;
+      return records;
     }, { signal: controller.signal });
     loadCoordinator.assertCurrent(loadEpoch);
     const users = [...new Set(Object.values(currentUsers).filter(Boolean))];
@@ -445,8 +517,10 @@ async function loadReport(message) {
       sourceRepositories: destinations.map(destination => destination.label),
       currentUsers, currentUser: users[0] || '',
       ...loaded,
-      pendingWrites, pendingCount: pendingWrites.length, partial: loaded.partial || pendingWrites.length > 0,
-      records: loaded.records.map(withoutInternalMetadata),
+      pendingWrites, pendingCount: pendingWrites.length,
+      timeOffSettingsUnavailable,
+      partial: loaded.partial || pendingWrites.length > 0 || timeOffSettingsUnavailable.length > 0,
+      records: classifyTimeOffRecords(loaded.records.map(withoutInternalMetadata), timeOffConfigs),
       billing: await store.getLocalPreferences(),
     };
   })();
@@ -458,6 +532,140 @@ async function loadReport(message) {
     return result;
   }
   finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
+}
+
+async function loadTeamTimeOff(message, sender, extensionOrigin) {
+  const startedAt = Math.max(Date.now(), (loadTeamTimeOff.lastStartedAt ?? 0) + 1);
+  loadTeamTimeOff.lastStartedAt = startedAt;
+  const keys = Object.keys(message).sort().join(',');
+  if (sender?.url !== extensionOrigin + 'src/time-off/time-off.html'
+      || !['endDate,startDate,type', 'endDate,refresh,startDate,type'].includes(keys)
+      || (keys.includes('refresh') && message.refresh !== true)) {
+    throw new Error('Only Time off can load the team calendar.');
+  }
+  const year = typeof message.startDate === 'string' ? message.startDate.slice(0, 4) : '';
+  if (!/^[0-9]{4}$/.test(year) || Number(year) < 1
+      || message.startDate !== year + '-01-01' || message.endDate !== year + '-12-31') {
+    throw new Error('Select one calendar year for team time off.');
+  }
+  const range = { startDate: message.startDate, endDate: message.endDate };
+  const loadEpoch = await loadCoordinator.beginLoad();
+  const snapshot = await configuredSnapshot({ localOnly: true });
+  loadCoordinator.assertCurrent(loadEpoch);
+  const destinations = selectReadDestinations(snapshot);
+  if (!snapshot.auth || !destinations.length) return { configured: false, entries: [] };
+  const scope = teamTimeOffCacheScope(snapshot, destinations);
+  const cacheRevision = await getTeamTimeOffCacheRevision(timeOffCacheBackend);
+  loadCoordinator.assertCurrent(loadEpoch);
+  if (message.refresh !== true) {
+    const cached = await readCachedTeamTimeOff(timeOffCacheBackend, scope, year).catch(() => null);
+    loadCoordinator.assertCurrent(loadEpoch);
+    if (cached) return cached;
+  }
+  const configs = {};
+  const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
+    const settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
+    configs[destination.id] = settings.config;
+    if (!settings.config.taskUrls.length) return [];
+    const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation });
+    // A year can cover many user branches. Refuse an incomplete scan rather
+    // than silently suggesting a day has fewer people off than it really does.
+    return reports.loadRepositoryRange(range, {
+      defaultBranch: destination.defaultBranch || destination.branch || 'main',
+      includeStorageMetadata: true, signal,
+      budgets: { maxUsers: 500, maxTotalFiles: 6500, maxTotalBytes: 350 * 1024 * 1024,
+        maxTotalRecords: 1_000_000 },
+    });
+  });
+  const result = {
+    configured: true, partial: loaded.partial, readStatus: loaded.readStatus,
+    entries: classifyTimeOffRecords(loaded.records.map(withoutInternalMetadata), configs)
+      .filter(entry => entry.isTimeOff),
+  };
+  loadCoordinator.assertCurrent(loadEpoch);
+  await saveCachedTeamTimeOff(timeOffCacheBackend, scope, year, result, startedAt, {
+    expectedRevision: cacheRevision, expectedGeneration: snapshot.generation,
+  }).catch(() => {});
+  loadCoordinator.assertCurrent(loadEpoch);
+  return result;
+}
+
+async function loadMyTimeOff(message, sender, extensionOrigin) {
+  if (sender?.url !== extensionOrigin + 'src/time-off/time-off.html'
+      || !['type', 'refresh,type'].includes(Object.keys(message).sort().join(','))
+      || (Object.hasOwn(message, 'refresh') && message.refresh !== true)) {
+    throw new Error('Only Time off can load personal time off.');
+  }
+  // My time off must include complete groups, including dates years in the
+  // past or future. Bound the file scan instead of silently clipping by date.
+  const range = { startDate: '0001-01-01', endDate: '9999-12-31' };
+  const loadEpoch = await loadCoordinator.beginLoad();
+  const snapshot = await configuredSnapshot({ localOnly: true });
+  const destinations = selectReadDestinations(snapshot);
+  if (!snapshot.auth || !destinations.length) return { configured: false, entries: [], repositories: [] };
+  const configs = {}, currentUsers = {}, cachedDestinations = new Set(), personalDestinations = new Set();
+  const incompleteDestinations = new Set();
+  loadCoordinator.assertCurrent(loadEpoch);
+  const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
+    const user = await destinationUser(destination, snapshot.auth);
+    if (!user) throw new Error('Tracking identity is unavailable.');
+    currentUsers[destination.id] = user;
+    const tracker = await trackerForDestination(destination.id, { localOnly: true });
+    const revision = await tracker.getTimeOffRevision();
+    const cachedSettings = await timeOffSettingsForDestination(destination.id);
+    if (message.refresh !== true && cachedSettings.cached) {
+      const local = await tracker.getLocalTimeOffRecords(cachedSettings.config.taskUrls);
+      if (local.complete) {
+        configs[destination.id] = cachedSettings.config;
+        cachedDestinations.add(destination.id);
+        personalDestinations.add(destination.id);
+        return local.records;
+      }
+    }
+    let settings;
+    try {
+      settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
+      configs[destination.id] = settings.config;
+      const reports = new ReportService({ github: githubForConfig(destination), cache: store,
+        cacheGeneration: snapshot.generation });
+      const records = settings.config.taskUrls.length ? await reports.loadUserRange(range, user, {
+        includeStorageMetadata: true, signal,
+      }, { maxFiles: 240, maxBytes: 100 * 1024 * 1024, maxRecords: 500_000 }) : [];
+      loadCoordinator.assertCurrent(loadEpoch);
+      if (await tracker.rememberTimeOffOccupancy(records, {
+        taskUrls: settings.config.taskUrls, expectedRevision: revision,
+      })) {
+        personalDestinations.add(destination.id);
+        return (await tracker.getLocalTimeOffRecords(settings.config.taskUrls)).records;
+      }
+      // A newer remote commit or refresh superseded this read. Use the
+      // newer local projection instead of resurrecting the old history.
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error?.name === 'AbortError') throw error;
+      loadCoordinator.assertCurrent(loadEpoch);
+      settings ??= cachedSettings;
+      configs[destination.id] = settings.config;
+    }
+    const local = await tracker.getLocalTimeOffRecords(settings.config.taskUrls);
+    cachedDestinations.add(destination.id);
+    incompleteDestinations.add(destination.id);
+    if (local.complete) personalDestinations.add(destination.id);
+    return local.records;
+  });
+  loadCoordinator.assertCurrent(loadEpoch);
+  return {
+    configured: true, partial: loaded.partial || incompleteDestinations.size > 0,
+    readStatus: loaded.readStatus.map(item => cachedDestinations.has(item.destinationId)
+      ? { ...item, status: 'cached' } : item),
+    personalDestinations: [...personalDestinations], currentUsers,
+    repositories: destinations.map(destination => ({
+      id: destination.id, label: destination.label || (destination.owner + '/' + destination.repo),
+      taskUrls: configs[destination.id]?.taskUrls ?? [],
+    })),
+    entries: classifyTimeOffRecords(loaded.records.map(({ _record, ...entry }) => entry), configs)
+      .filter(entry => entry.isTimeOff),
+  };
 }
 
 async function loadTaskParticipants(message, sender, extensionOrigin) {
@@ -528,7 +736,7 @@ async function loadTimes(message, sender) {
   }
   const controller = new AbortController();
   const promise = (async () => {
-    const recoveries = new Map(), currentUsers = {};
+    const recoveries = new Map(), currentUsers = {}, timeOffConfigs = {}, timeOffSettingsUnavailable = [];
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
       const user = await destinationUser(destination, auth);
@@ -541,6 +749,13 @@ async function loadTimes(message, sender) {
       const recent = await reports.loadUserRange(readRange, user, { includeStorageMetadata: true, signal }, {
         maxFiles: weekly ? 240 : 120, maxBytes: 100 * 1024 * 1024, maxRecords: 500000,
       });
+      const settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal }).catch(async error => {
+        signal?.throwIfAborted();
+        if (error?.name === 'AbortError') throw error;
+        timeOffSettingsUnavailable.push(destination.id);
+        return timeOffSettingsForDestination(destination.id).catch(() => ({ config: { version: 1, taskUrls: [] } }));
+      });
+      timeOffConfigs[destination.id] = settings.config;
       const tracker = await trackerForDestination(destination.id, { localOnly: true });
       // Apply pending edits before filtering: they may move intervals into or out of the week.
       const projected = await tracker.projectActivityRecords(recent, weekly ? {} : requestedRange);
@@ -558,13 +773,13 @@ async function loadTimes(message, sender) {
         .map(operation => safePendingProjection(operation, destinationId, { includeDetails: true })));
     return {
       configured: true,
-      recent: loaded.records.map(({ _record, ...record }) => record)
+      recent: classifyTimeOffRecords(loaded.records.map(({ _record, ...record }) => record), timeOffConfigs)
         .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)),
       pendingWrites, pendingCount: pendingWrites.length,
       remoteWriteConfirmed: !loaded.partial && !(loaded.conflicts?.length)
         && [...recoveries.entries()].every(([destinationId, recovery]) => recovery.remoteWriteConfirmed === true
           || (!(recovery.pendingWrites?.length) && !loaded.records.some(record => record.destinationId === destinationId))),
-      currentUsers, readStatus: loaded.readStatus, partial: loaded.partial, conflicts: loaded.conflicts,
+      currentUsers, readStatus: loaded.readStatus, partial: loaded.partial, conflicts: loaded.conflicts, timeOffSettingsUnavailable,
     };
   })();
   reportLoads.set(loadKey, { controller, promise });
@@ -628,7 +843,7 @@ async function loadTasks(message, sender) {
   }
   const controller = new AbortController();
   const promise = (async () => {
-    const timerStates = new Map(), metadata = new Map(), currentUsers = {};
+    const timerStates = new Map(), metadata = new Map(), currentUsers = {}, timeOffConfigs = {}, timeOffSettingsUnavailable = [];
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       loadCoordinator.assertCurrent(loadEpoch);
       const { tracker } = await contextForDestination(destination.id, { localOnly: true });
@@ -641,9 +856,18 @@ async function loadTasks(message, sender) {
         github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
-      const records = message.payload?.includeAllUsers
-        ? await reports.loadRepositoryRange(message.payload || {}, { defaultBranch: destination.branch || 'main', signal, includeStorageMetadata: true })
-        : await reports.loadUserRange(message.payload || {}, user, { signal, includeStorageMetadata: true });
+      const [records, settings] = await Promise.all([
+        message.payload?.includeAllUsers
+          ? reports.loadRepositoryRange(message.payload || {}, { defaultBranch: destination.branch || 'main', signal, includeStorageMetadata: true })
+          : reports.loadUserRange(message.payload || {}, user, { signal, includeStorageMetadata: true }),
+        timeOffSettingsForDestination(destination.id, { fresh: true, signal }).catch(async error => {
+        signal?.throwIfAborted();
+        if (error?.name === 'AbortError') throw error;
+        timeOffSettingsUnavailable.push(destination.id);
+        return timeOffSettingsForDestination(destination.id).catch(() => ({ config: { version: 1, taskUrls: [] } }));
+      }),
+      ]);
+      timeOffConfigs[destination.id] = settings.config;
       const state = await tracker.getState();
       timerStates.set(destination.id, state);
       const issueValues = records.flatMap(record => record.issue ? [record.issue] : []);
@@ -675,12 +899,23 @@ async function loadTasks(message, sender) {
       sourceRepositories: destinations.map(destination => destination.label),
       currentUsers,
       availableUsers,
-      tasks: aggregateTrackedTasks(loaded.records.map(withoutInternalMetadata), {
-        currentUsers: selectedUsers, metadata, active, pendingWrites,
-        startDate: message.payload?.startDate, endDate: message.payload?.endDate,
-      }),
+      tasks: aggregateTrackedTasks(
+        loaded.records.filter(record => !isTimeOffTask(record.taskUrl, timeOffConfigs[record.destinationId]))
+          .map(withoutInternalMetadata), {
+          currentUsers: selectedUsers, metadata,
+          active: active && !isTimeOffTask(active.taskUrl, timeOffConfigs[active.destinationId]) ? active : null,
+          pendingWrites: pendingWrites.map(operation => {
+            const config = timeOffConfigs[operation.destinationId];
+            if (operation.operation === 'bulkAddTimes') return {
+              ...operation, entries: (operation.entries ?? []).filter(entry => !isTimeOffTask(entry.taskUrl, config)),
+            };
+            if (operation.entry && isTimeOffTask(operation.entry.taskUrl, config)) return { ...operation, entry: null };
+            return operation;
+          }),
+          startDate: message.payload?.startDate, endDate: message.payload?.endDate,
+        }),
       active, pendingWrites,
-      readStatus: loaded.readStatus, partial: loaded.partial, conflicts: loaded.conflicts,
+      readStatus: loaded.readStatus, partial: loaded.partial || timeOffSettingsUnavailable.length > 0, conflicts: loaded.conflicts, timeOffSettingsUnavailable,
     };
   })();
   reportLoads.set(loadKey, { controller, promise });
@@ -694,11 +929,12 @@ async function loadTasks(message, sender) {
   finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
 }
 
-async function searchTasks(sender, query = '', { refresh = false, includeImported = false, waitForConfiguration = true } = {}) {
+async function searchTasks(sender, query = '', { refresh = false, includeImported = false, destinationId = null, waitForConfiguration = true } = {}) {
   const loadEpoch = await loadCoordinator.beginLoad({ wait: waitForConfiguration });
   await store.ensureDataVersion(5); loadCoordinator.assertCurrent(loadEpoch);
   const snapshot = await configuredSnapshot({ localOnly: true }); loadCoordinator.assertCurrent(loadEpoch);
-  const { auth } = snapshot, destinations = selectReadDestinations(snapshot);
+  const { auth } = snapshot, destinations = selectReadDestinations(snapshot,
+    destinationId ? { destinationIds: [destinationId] } : {});
   if (!auth || !destinations.length) return { configured: false, tasks: [] };
   const scope = { generation: snapshot.generation ?? 0, authGeneration: snapshot.authGeneration ?? 0,
     repositories: destinations.map(destination => `${destination.id}@${destination.owner}/${destination.repo}@${destination.defaultBranch || destination.branch || 'main'}`) };
@@ -939,6 +1175,11 @@ function queuedSubjects(operation) {
     return [{ original, ...(proposed ? { proposed } : {}), ...(queuedMonth ? { queuedMonth } : {}),
       ...(descriptionChanged ? { descriptionChanged: true } : {}) }];
   });
+  if (type === 'timeOffChange') return [
+    ...(operation.previous ?? []).map(item => ({ original: safeQueuedRecord({ ...item, entryDate: item.date,
+      taskUrl: item.taskUrl ?? operation.taskUrl }) })),
+    ...(operation.entries ?? []).map(item => ({ proposed: safeQueuedRecord(item) })),
+  ].filter(item => item.original || item.proposed).slice(0, 200);
   const entries = type === 'bulkAddTimes' ? operation.entries : [operation.entry];
   return (Array.isArray(entries) ? entries : []).slice(0, 50).flatMap(entry => {
     const proposed = safeQueuedRecord(entry);
@@ -994,7 +1235,8 @@ async function globalTrackerState({ refresh = false, includeSummary = false, inc
   const active = activeId ? safeActiveProjection(states.get(activeId)?.active, activeId) : null;
   const recent = [...states].flatMap(([destinationId, state]) => (state.recent ?? [])
     .map(entry => ({ ...entry, destinationId })))
-    .sort((left, right) => new Date(right.startedAt) - new Date(left.startedAt)).slice(0, 50);
+    .sort((left, right) => Number(Date.parse(left.startedAt) > Date.now()) - Number(Date.parse(right.startedAt) > Date.now())
+      || new Date(right.startedAt) - new Date(left.startedAt)).slice(0, 50);
   const pendingWrites = [...states].flatMap(([destinationId, state]) => (state.pendingWrites ?? [])
     .map(operation => safePendingProjection(operation, destinationId, { includeDetails: includePendingDetails })));
   const result = { configured: true, active, recent, pendingWrites };
@@ -1028,7 +1270,9 @@ async function loadRecentAcrossDestinations(message, sender, extensionOrigin) {
     states.set(destination.id, state);
     return state.recent || [];
   });
-  const recent = loaded.records.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)).slice(0, 50);
+  const recent = loaded.records.sort((a, b) =>
+    Number(Date.parse(a.startedAt) > Date.now()) - Number(Date.parse(b.startedAt) > Date.now())
+      || new Date(b.startedAt) - new Date(a.startedAt)).slice(0, 50);
   if (!message.menuData) return recent;
   const tracking = await store.getTrackingSnapshot();
   const activeId = tracking.activeTimer?.destinationId;
@@ -1194,6 +1438,9 @@ async function handle(message, sender) {
   if (message.type === 'OPEN_REPORTS') {
     await chrome.tabs.create({ url: chrome.runtime.getURL('src/reports/reports.html') }); return { ok: true };
   }
+  if (message.type === 'OPEN_TIME_OFF') {
+    await chrome.tabs.create({ url: chrome.runtime.getURL('src/time-off/time-off.html') }); return { ok: true };
+  }
   if (message.type === 'OPEN_TASKS') {
     await chrome.tabs.create({ url: chrome.runtime.getURL('src/tasks/tasks.html') }); return { ok: true };
   }
@@ -1238,6 +1485,48 @@ async function handle(message, sender) {
     return { ...result, onboardingState: await onboardingState() };
   }
   if (message.type === 'CHECK_REPOSITORY_ACCESS') return checkCurrentRepositoryAccess(message.destinationId || message.payload?.destinationId || null);
+  if (message.type === 'GET_TIME_OFF_SETTINGS' || message.type === 'SAVE_TIME_OFF_SETTINGS') {
+    if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) throw new Error('Time off settings require Settings.');
+    if (!message.destinationId || typeof message.destinationId !== 'string') throw new Error('Select a time repository.');
+    const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+    const snapshot = await configuredSnapshot({ destinationId, localOnly: true });
+    if (!snapshot.config || !snapshot.auth) throw new Error('Time repository is unavailable.');
+    if (message.type === 'GET_TIME_OFF_SETTINGS') {
+      if (Object.keys(message).sort().join(',') !== 'destinationId,type') throw new Error('Invalid time off settings request.');
+      const current = await timeOffSettingsForDestination(destinationId, { fresh: true });
+      const github = githubForConfig(snapshot.config);
+      const repo = await github.validateRepository();
+      return { ...current, canEdit: repo.permissions?.admin === true };
+    }
+    if (Object.keys(message).sort().join(',') !== 'destinationId,expectedSha,taskUrls,type') throw new Error('Invalid time off settings update.');
+    const github = githubForConfig(snapshot.config).forBranch(snapshot.config.defaultBranch || snapshot.config.branch || 'main', 'default');
+    const saved = await saveTimeOffSettings(github, { taskUrls: message.taskUrls, expectedSha: message.expectedSha });
+    const key = `time-off-config:${destinationId}`;
+    const startedAt = nextTimeOffSettingsRead();
+    await timeOffCacheBackend.mutateMany([key], current => ({ set: { [key]: {
+      repoId: snapshot.config.repoId, defaultBranch: snapshot.config.defaultBranch,
+      config: saved.config, sha: saved.sha, startedAt, revision: (current[key]?.revision ?? 0) + 1,
+    } }, result: true }));
+    // Reclassification can affect every year, even years with no new entries.
+    await invalidateCachedTeamTimeOff(timeOffCacheBackend);
+    return saved;
+  }
+  if (message.type === 'CHECK_TIME_OFF_TASK') {
+    if (!['src/times/times.html', 'src/tasks/tasks.html'].some(path => sender?.url === chrome.runtime.getURL(path))
+        || Object.keys(message).sort().join(',') !== 'taskUrl,type') throw new Error('Invalid time off task check.');
+    const taskUrl = normalizeTaskUrl(message.taskUrl);
+    const destinationId = await resolveStartDestinationId(store, taskUrl);
+    let settings;
+    try { settings = await timeOffSettingsForDestination(destinationId, { fresh: true }); }
+    catch (error) {
+      const cached = await timeOffSettingsForDestination(destinationId);
+      if (!cached.config.taskUrls.length) throw error;
+      settings = cached;
+    }
+    return { destinationId, isTimeOff: isTimeOffTask(taskUrl, settings.config) };
+  }
+  if (message.type === 'LOAD_TEAM_TIME_OFF') return loadTeamTimeOff(message, sender, extensionOrigin);
+  if (message.type === 'LOAD_MY_TIME_OFF') return loadMyTimeOff(message, sender, extensionOrigin);
   if (message.type === 'LOAD_REPOSITORY_COLLABORATORS') {
     if (Object.keys(message).length !== 2 || typeof message.destinationId !== 'string') throw new Error('Invalid collaborator request');
     const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
@@ -1610,9 +1899,17 @@ async function handle(message, sender) {
   if (message.type === 'LOAD_TASKS') return loadTasks(message, sender);
   if (message.type === 'LOAD_TIMES') return loadTimes(message, sender);
   if (message.type === 'SEARCH_TASKS') {
-    if (Object.keys(message).sort().join(',') !== 'query,type' || typeof message.query !== 'string'
-        || message.query.length > 300) throw new Error('Invalid task search query');
-    return searchTasks(sender, message.query);
+    const keys = Object.keys(message).sort().join(',');
+    if (!['query,type', 'destinationId,query,type'].includes(keys)
+        || typeof message.query !== 'string' || message.query.length > 300) {
+      throw new Error('Invalid task search query');
+    }
+    if (message.destinationId === undefined) return searchTasks(sender, message.query);
+    if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) {
+      throw new Error('Repository-scoped task search requires Settings.');
+    }
+    const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+    return searchTasks(sender, message.query, { destinationId });
   }
   if (message.type === 'SEARCH_ENTRY_TASKS') {
     const request = entryTaskSearchForSender(message, sender, extensionOrigin);
@@ -1670,6 +1967,45 @@ async function handle(message, sender) {
     }
   };
   switch (message.type) {
+    case 'SAVE_TIME_OFF': {
+      const keys = Object.keys(message).sort().join(',');
+      if (sender?.url !== chrome.runtime.getURL('src/time-off/time-off.html')
+          || !['days,description,destinationId,groupId,previous,taskTitle,taskUrl,timezone,type',
+            'days,description,destinationId,groupId,previous,singleDayDeletion,taskTitle,taskUrl,timezone,type',
+            'bulkDayDeletion,days,description,destinationId,groupId,previous,taskTitle,taskUrl,timezone,type'].includes(keys)) {
+        throw new Error('Invalid time off request.');
+      }
+      const input = normalizeTimeOffChange(message);
+      const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+      const urls = input.bulkDayDeletion
+        ? [...new Set(input.previous.map(item => item.taskUrl))] : [input.taskUrl];
+      for (const url of urls) {
+        if (!(await timeOffTaskForDestination(destinationId, url))) {
+          throw new Error('Select a time off task configured for this repository in Settings.');
+        }
+      }
+      const settings = await timeOffSettingsForDestination(destinationId);
+      const tracker = await trackerForDestination(destinationId, { localOnly: true });
+      // All local accepts share acceptanceExecutor, including requests
+      // from different tabs. Check the latest projection, not a page snapshot.
+      if (!input.previous.length && input.days.length) {
+        const dates = new Set(input.days.map(day => day.date));
+        const snapshot = await configuredSnapshot({ localOnly: true });
+        for (const destination of selectReadDestinations(snapshot)) {
+          if (destination.id === destinationId) continue;
+          const otherSettings = await timeOffSettingsForDestination(destination.id);
+          if (!otherSettings.config.taskUrls.length) continue;
+          const other = await trackerForDestination(destination.id, { localOnly: true });
+          const local = await other.getLocalTimeOffRecords(otherSettings.config.taskUrls);
+          if (local.records.some(entry => dates.has(entry.entryDate))) {
+            throw new Error('You already have time off on a selected day.');
+          }
+        }
+      }
+      const result = await tracker.queueTimeOffChange(input, { taskUrls: settings.config.taskUrls });
+      if (result.pending) requestPendingSync();
+      return { ...result, destinationId };
+    }
     case 'ADD_DAY_RANGE': {
       const { type, ...fields } = message;
       const payload = dayRangeForSender(fields, sender, extensionOrigin);
@@ -1680,9 +2016,10 @@ async function handle(message, sender) {
       if (currentDestinationId && currentDestinationId !== destinationId) {
         throw new Error('A timer is running in another time repository. Stop it before adding time.');
       }
+      const isTimeOff = await timeOffTaskForDestination(destinationId, payload.taskUrl);
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
       const { destinationId: _requestedDestination, ...range } = payload;
-      const result = await tracker.addDayRange(range);
+      const result = await tracker.addDayRange({ ...range, billable: isTimeOff ? false : range.billable, allowFuture: isTimeOff });
       if (result.pending) requestPendingSync();
       return { ...result, destinationId };
     }
@@ -1696,9 +2033,12 @@ async function handle(message, sender) {
       if (currentDestinationId && currentDestinationId !== destinationId) {
         throw new Error('A timer is running in another time repository. Stop it before adding time.');
       }
+      const future = Date.parse(payload.startedAt) > Date.now() || (payload.endedAt && Date.parse(payload.endedAt) > Date.now());
+      const isTimeOff = await timeOffTaskForDestination(destinationId, payload.taskUrl);
+      if (future && !isTimeOff) throw new Error('Only time off tasks may be scheduled in the future.');
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
       const { destinationId: _requestedDestination, ...entry } = payload;
-      const result = await tracker.addTime(entry, { background: true });
+      const result = await tracker.addTime({ ...entry, billable: isTimeOff ? false : entry.billable }, { background: true, allowFuture: isTimeOff });
       if (result.pending || result.active?._pending) requestPendingSync();
       return { ...result, destinationId };
     }
@@ -1708,12 +2048,13 @@ async function handle(message, sender) {
       const destinationId = selectedDestinationId ? await requireConfiguredDestinationId(store, selectedDestinationId)
         : await resolveStartDestinationId(store, taskUrl);
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
-      const result = await tracker.start(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description || '', { background: true, billable: optionalBillable(message.billable) });
+      const isTimeOff = await timeOffTaskForDestination(destinationId, taskUrl);
+      const result = await tracker.start(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description || '', { background: true, billable: isTimeOff ? false : optionalBillable(message.billable) });
       if (result._pending) requestPendingSync();
       return { ...result, destinationId };
     }
     case 'SWITCH_TASK': {
-      const billable = optionalBillable(message.billable);
+      let billable = optionalBillable(message.billable);
       const timelineTask = message.timelineTask === true;
       const requestedTask = message.taskUrl ?? message.issue;
       let storedRecords = [];
@@ -1738,10 +2079,17 @@ async function handle(message, sender) {
       const selectedDestinationId = requestedStartDestinationId(taskUrl, message.destinationId, sender, extensionOrigin, 'SWITCH_TASK');
       const targetDestinationId = selectedDestinationId ? await requireConfiguredDestinationId(store, selectedDestinationId)
         : await resolveStartDestinationId(store, taskUrl);
+      const nextBillable = await timeOffTaskForDestination(targetDestinationId, taskUrl) ? false : undefined;
       const sourceDestinationId = await activeDestinationId(store);
       if (!sourceDestinationId || sourceDestinationId === targetDestinationId) {
         const tracker = await trackerForDestination(targetDestinationId, { localOnly: true });
-        const result = await tracker.switchTask(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description, { background: true, billable });
+        if (sourceDestinationId) {
+          const current = (await tracker.getState()).active;
+          if (current && await timeOffTaskForDestination(sourceDestinationId, taskUrlOf(current))) billable = false;
+        }
+        const result = await tracker.switchTask(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description, {
+          background: true, billable, ...(nextBillable === false ? { nextBillable } : {}),
+        });
         if (result.pending) requestPendingSync();
         return { ...result, destinationId: targetDestinationId };
       }
@@ -1751,12 +2099,13 @@ async function handle(message, sender) {
       const current = sourceState.active;
       if (!current) throw new Error('The active timer changed before this switch was accepted. Retry the action.');
       if (taskUrlOf(current) === taskUrl && !selectedDestinationId) return { stopped: null, active: { ...current, destinationId: sourceDestinationId }, pending: false, destinationId: sourceDestinationId };
+      if (await timeOffTaskForDestination(sourceDestinationId, taskUrlOf(current))) billable = false;
       const changedAt = new Date();
       const source = sourceTracker.prepareQueuedStop(current, message.description, { endedAt: changedAt, billable });
       let nextId = createUlid(changedAt.getTime());
       if (nextId === current.id) nextId = createUlid(changedAt.getTime() + 1);
       const target = targetTracker.prepareQueuedStart(taskUrl, message.taskTitle ?? message.issueTitle ?? '', '', {
-        startedAt: changedAt, id: nextId,
+        startedAt: changedAt, id: nextId, ...(nextBillable === false ? { billable: false } : {}),
         blockedBy: { destinationId: sourceDestinationId, operationId: source.operation.id, operation: 'completeTimer' },
       });
       const accepted = await store.acceptCrossDestinationSwitch({
@@ -1776,7 +2125,9 @@ async function handle(message, sender) {
     case 'STOP': {
       const destinationId = await activeDestinationId(store, { required: true });
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
-      const result = await tracker.stop(message.description, { background: true, billable: optionalBillable(message.billable) });
+      const active = (await tracker.getState()).active;
+      const isTimeOff = active ? await timeOffTaskForDestination(destinationId, taskUrlOf(active)) : false;
+      const result = await tracker.stop(message.description, { background: true, billable: isTimeOff ? false : optionalBillable(message.billable) });
       if (result.pending) requestPendingSync();
       return { ...result, destinationId };
     }
@@ -1833,7 +2184,17 @@ async function handle(message, sender) {
       const billable = optionalBillable(message.billable);
       if (new TextEncoder().encode(text).byteLength > 262_144) throw new Error('Bulk input is too large.');
       const { tracker, destinationId } = await context({ localOnly: true });
-      const result = await tracker.bulkAddTimes(text, { background: true, billable });
+      const requested = parseBulkTimeText(text, { billable });
+      const settings = await timeOffSettingsForDestination(destinationId);
+      const rows = requested.map(entry => {
+        const allowFuture = isTimeOffTask(entry.taskUrl, settings.config);
+        return { ...entry, allowFuture, billable: allowFuture ? false : entry.billable };
+      });
+      const today = localDateInTimezone(new Date(), tracker.timezone);
+      if (rows.some(entry => entry.date > today && !entry.allowFuture)) {
+        throw new Error('Only time off tasks may be scheduled in the future.');
+      }
+      const result = await tracker.bulkAddTimes('', { background: true, requested: rows });
       if (result.pending) requestPendingSync();
       return { ...result, destinationId };
     }
@@ -2063,10 +2424,10 @@ async function handle(message, sender) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'LOCAL_PREFERENCES_CHANGED' || message?.type === 'TOOLBAR_CONTEXT_UPDATED') return undefined;
-  const reportReadOnly = ['LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
+  const reportReadOnly = ['LOAD_REPORT', 'LOAD_MY_TIME_OFF', 'LOAD_TEAM_TIME_OFF', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
   const localStateRead = ['GET_STATE', 'GET_PAGE_STATE'].includes(message?.type) && !message?.refresh;
-  const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'GET_ACTIVE_START_CONFLICT', 'GET_PENDING_COMPLETION_CONFLICT', 'GET_QUEUED_START_RECOVERY', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS'].includes(message?.type);
-  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CLEAR_LOCAL_CACHE', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER'].includes(message?.type);
+  const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'GET_ACTIVE_START_CONFLICT', 'GET_PENDING_COMPLETION_CONFLICT', 'GET_QUEUED_START_RECOVERY', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS', 'GET_TIME_OFF_SETTINGS', 'CHECK_TIME_OFF_TASK'].includes(message?.type);
+  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CLEAR_LOCAL_CACHE', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER', 'SAVE_TIME_OFF_SETTINGS'].includes(message?.type);
   let operation;
   if (changesConfiguration) {
     try {
@@ -2076,10 +2437,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } catch (error) { operation = Promise.reject(error); }
   } else {
     const direct = readOnly || DIRECT_DEVICE_FLOW_MESSAGES.has(message?.type) || message?.type === 'CONFIRM_CLOCKIFY_MIGRATION'
-      || ['OPEN_OPTIONS', 'OPEN_REPORTS', 'OPEN_TASKS', 'OPEN_TIMES', 'OPEN_PREFERRED_SURFACE', 'CONSUME_TOOLBAR_TASK_CONTEXT'].includes(message?.type)
+      || ['OPEN_OPTIONS', 'OPEN_REPORTS', 'OPEN_TASKS', 'OPEN_TIMES', 'OPEN_TIME_OFF', 'OPEN_PREFERRED_SURFACE', 'CONSUME_TOOLBAR_TASK_CONTEXT'].includes(message?.type)
       || ['CLOCKIFY_ARM_CAPTURE', 'CLOCKIFY_ARM_CSV_CAPTURE', 'CLOCKIFY_IS_CAPTURE_ARMED', 'CLOCKIFY_DISARM_CAPTURE', 'CLOCKIFY_YEAR_OBSERVED', 'CLOCKIFY_CAPTURED_CSV', 'CLOCKIFY_CAPTURED_REPORT', 'CLOCKIFY_CSV_EMAIL_OFFER'].includes(message?.type);
     const acceptsLocally = [
-      'START', 'STOP', 'SWITCH_TASK', 'DISCARD_ACTIVE', 'ADD_TIME', 'ADD_DAY_RANGE', 'BULK_ADD_TIMES',
+      'START', 'STOP', 'SWITCH_TASK', 'DISCARD_ACTIVE', 'ADD_TIME', 'ADD_DAY_RANGE', 'BULK_ADD_TIMES', 'SAVE_TIME_OFF',
       'QUEUE_ENTRY_EDIT', 'QUEUE_ENTRY_DELETE', 'QUEUE_ENTRIES_EDIT', 'QUEUE_ACTIVE_START_EDIT',
     ].includes(message?.type);
     const taskMerge = message?.type === 'MERGE_TASKS';
@@ -2169,6 +2530,7 @@ function hasRunnablePending(queue) {
   if (!first) return false;
   if (first.stage === 'awaitSourceCompletion') return true;
   if (first.status !== 'conflict') return true;
+  if (queue.some((_, index) => cancelledTimeOffCreationIds(queue, index).length)) return true;
   const operation = first.operation ?? first.stage;
   const retryableConflict = !String(first.conflictReason || '').startsWith('queued_write_');
   if (retryableConflict && ((first.stage === 'startNext' && first.nextActive)
@@ -2193,7 +2555,7 @@ async function refreshTaskSearchAfterSync({ retry = false } = {}) {
   try {
     const revision = await store.getTaskSearchRevision?.();
     const before = await store.getTrackingSnapshot();
-    const completed = new Set(['completeTimer', 'completeTimerAndStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry']);
+    const completed = new Set(['completeTimer', 'completeTimerAndStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry', 'timeOffChange']);
     const hasCompletedPending = snapshot => Object.values(snapshot.destinationStates?.entries ?? {})
       .some(entry => (entry.pendingWrites ?? []).some(write => completed.has(write.operation)));
     if (retry && (hasCompletedPending(before) || directCompletedWrites)) {
@@ -2233,7 +2595,7 @@ function syncPendingNow() {
     const before = await store.getTrackingSnapshot();
     const pendingIds = snapshot => Object.entries(snapshot.destinationStates?.entries ?? {})
       .flatMap(([id, entry]) => (entry.pendingWrites ?? []).map((write, index) => `${id}:${write.id ?? index}`));
-    const completedWrites = new Set(['completeTimer', 'completeTimerAndStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry']);
+    const completedWrites = new Set(['completeTimer', 'completeTimerAndStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry', 'timeOffChange']);
     const beforeCompletedIds = Object.entries(before.destinationStates?.entries ?? {})
       .flatMap(([id, entry]) => (entry.pendingWrites ?? [])
         .map((write, index) => completedWrites.has(write.operation) ? `${id}:${write.id ?? index}` : null).filter(Boolean));

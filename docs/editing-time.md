@@ -17,7 +17,7 @@ Select **Add time** in Activity or Top tasks.
 
 The Start and End dates have separate calendars; you can select the End date before entering its time. If you enter an End time earlier than Start and have not chosen an End date explicitly, Clockoli assumes the next day.
 
-A completed entry can be at most **24 hours**. Future times are not allowed. For a new timer, an explicitly entered past Start cannot be more than 24 hours old. An existing running timer is not stopped automatically after 24 hours.
+A completed entry can be at most **24 hours**. Future times are not allowed for ordinary work. Completed time off entries may be scheduled in the future, but future running timers are not allowed. For a new timer, an explicitly entered past Start cannot be more than 24 hours old. An existing running timer is not stopped automatically after 24 hours.
 
 If you leave End empty and have not changed the default Start, Clockoli starts at the current moment, including seconds. Editing Start deliberately uses the selected minute.
 
@@ -31,7 +31,7 @@ Select **Multiple days** to add the same amount of time on several dates.
 
 ![Multiple days with selected dates and hours per day](images/add-time-days.png)
 
-Dates must fit within a **500-day span** and cannot be in the future. Enter `0` explicitly if you want zero-duration entries.
+Dates must fit within a **500-day span**. Future dates are allowed only for tasks configured as [time off](time-off.md) in the destination time repository. Enter `0` explicitly if you want zero-duration entries.
 
 Clockoli tries to place each interval at 09:00 local time. If that slot is occupied, it finds another continuous free interval on the same day. A 24-hour interval can extend into the following day.
 
@@ -61,7 +61,7 @@ Select **Edit** on a Timeline or Calendar entry, or edit its row in Activity Lis
 
 ![Editing a time entry](images/edit-entry.png)
 
-The form lets you change the task, Start, End, description, and **Non-billable** checkbox. Check **Non-billable** when you want to record the work without charging for it. Clear it to make the entry billable again. Existing entries are billable unless explicitly marked otherwise.
+The form lets you change the task, Start, End, description, and **Non-billable** checkbox. Check **Non-billable** when you want to record the work without charging for it. Entries on configured time off tasks are always non-billable in reports and invoices. For ordinary work, clear the checkbox to make the entry billable again. Existing entries are billable unless explicitly marked otherwise.
 
 The checkbox is also available when adding time, in the running tracker beside its description, and when saving a timer. It is optional in every case. The chosen status is saved with the entry in the GitHub time repository. See [Invoicing](invoicing.md) for how this affects amounts.
 

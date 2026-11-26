@@ -10,6 +10,7 @@
   const SYNC_PATH = 'M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z';
   const TASKS_PATH = 'M5.75 2.5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5Zm0 5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5Zm0 5h8.5a.75.75 0 0 1 0 1.5h-8.5a.75.75 0 0 1 0-1.5ZM2 14a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm1-6a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM2 4a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z';
   const ACTIVITY_PATH = 'm.427 1.927 1.215 1.215a8.002 8.002 0 1 1-1.6 5.685.75.75 0 1 1 1.493-.154 6.5 6.5 0 1 0 1.18-4.458l1.358 1.358A.25.25 0 0 1 3.896 6H.25A.25.25 0 0 1 0 5.75V2.104a.25.25 0 0 1 .427-.177ZM7.75 4a.75.75 0 0 1 .75.75v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.751.751 0 0 1 7 8.25v-3.5A.75.75 0 0 1 7.75 4Z';
+  const TIME_OFF_PATH = 'M4.75 0a.75.75 0 0 1 .75.75V2h5V.75a.75.75 0 0 1 1.5 0V2H13a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h1V.75A.75.75 0 0 1 4.75 0ZM2.5 6v7A.5.5 0 0 0 3 13.5h10a.5.5 0 0 0 .5-.5V6h-11Z';
   const REPORTS_PATH = 'M1.5 1.75V13.5h13.75a.75.75 0 0 1 0 1.5H.75a.75.75 0 0 1-.75-.75V1.75a.75.75 0 0 1 1.5 0Zm14.28 2.53-5.25 5.25a.75.75 0 0 1-1.06 0L7 7.06 4.28 9.78a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l3.25-3.25a.75.75 0 0 1 1.06 0L10 7.94l4.72-4.72a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042Z';
   const GEAR_PATH = 'M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.038.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.102-.302c-.067-.019-.177-.011-.3.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.102.302c.067.019.177.011.3-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.009.645 6.556.095 7.299.03 7.53.01 7.764 0 8 0Zm-.571 1.525c-.036.003-.108.036-.137.146l-.289 1.105c-.147.561-.549.967-.998 1.189-.173.086-.34.183-.5.29-.417.278-.97.423-1.529.27l-1.103-.303c-.109-.03-.175.016-.195.045-.22.312-.412.644-.573.99-.014.031-.021.11.059.19l.815.806c.411.406.562.957.53 1.456a4.709 4.709 0 0 0 0 .582c.032.499-.119 1.05-.53 1.456l-.815.806c-.081.08-.073.159-.059.19.162.346.353.677.573.989.02.03.085.076.195.046l1.102-.303c.56-.153 1.113-.008 1.53.27.161.107.328.204.501.29.447.222.85.629.997 1.189l.289 1.105c.029.109.101.143.137.146a6.6 6.6 0 0 0 1.142 0c.036-.003.108-.036.137-.146l.289-1.105c.147-.561.549-.967.998-1.189.173-.086.34-.183.5-.29.417-.278.97-.423 1.529-.27l1.103.303c.109.029.175-.016.195-.045.22-.313.411-.644.573-.99.014-.031.021-.11-.059-.19l-.815-.806c-.411-.406-.562-.957-.53-1.456a4.709 4.709 0 0 0 0-.582c-.032-.499.119-1.05.53-1.456l.815-.806c.081-.08.073-.159.059-.19a6.464 6.464 0 0 0-.573-.989c-.02-.03-.085-.076-.195-.046l-1.102.303c-.56.153-1.113.008-1.53-.27a4.44 4.44 0 0 0-.501-.29c-.447-.222-.85-.629-.997-1.189l-.289-1.105c-.029-.11-.101-.143-.137-.146a6.6 6.6 0 0 0-1.142 0ZM11 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM9.5 8a1.5 1.5 0 1 0-3.001.001A1.5 1.5 0 0 0 9.5 8Z';
   const CHECK_PATH = 'M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z';
@@ -915,7 +916,7 @@
     picker.tabIndex = -1;
     picker.setAttribute('aria-hidden', 'true');
     label.addEventListener('click', () => {
-      picker.max = isoWeekValue(Date.now());
+      picker.max = timesMode && activityViewMode === 'list' ? '' : isoWeekValue(Date.now());
       picker.value = isoWeekValue(weekWindow().start);
       picker.showPicker();
     });
@@ -924,7 +925,7 @@
       const { startDate, endDate } = timesRange();
       label.textContent = (timesMode && activityViewMode === 'list') || ((popupMode) && timelineViewMode === 'list')
         ? activityWeekRangeLabel({ startDate, endDate }) : `${startDate} – ${endDate}`;
-      nextControl.disabled = weekWindow().start >= weekWindow(Date.now()).start;
+      nextControl.disabled = weekWindow().start >= weekWindow(Date.now()).start && !(timesMode && activityViewMode === 'list');
     };
     picker.addEventListener('change', async () => {
       if (!picker.value) return;
@@ -951,7 +952,7 @@
       if (label) label.textContent = (timesMode && activityViewMode === 'list') || ((popupMode) && timelineViewMode === 'list')
         ? activityWeekRangeLabel({ startDate, endDate }) : `${startDate} – ${endDate}`;
       const next = navigation?.querySelector('[aria-label="Next week"]');
-      if (next) next.disabled = weekWindow().start >= weekWindow(Date.now()).start;
+      if (next) next.disabled = weekWindow().start >= weekWindow(Date.now()).start && !(timesMode && activityViewMode === 'list');
     }
   }
 
@@ -998,7 +999,7 @@
   }
 
   function selectWeek(current) {
-    if (current.getTime() > weekWindow(Date.now()).start) return;
+    if (current.getTime() > weekWindow(Date.now()).start && !(timesMode && activityViewMode === 'list')) return;
     const previousWeek = selectedWeekStart;
     const previousActivityView = activityTimelineView, previousTimelineView = timelineView;
     const previousInitialFocusPending = activityInitialFocusPending;
@@ -1052,7 +1053,7 @@
     const { start, end } = weekWindow();
     const now = Math.min(timelineNow(), end - 1);
     const { items } = popupTimelineItems(start, now);
-    const total = items.reduce((sum, item) => {
+    const total = items.filter(item => !item.isTimeOff || item.originalEndedAt <= Date.now()).reduce((sum, item) => {
       const stop = item.isRunning ? now : item.endedAt;
       return sum + Math.max(0, Math.min(stop, end, Date.now()) - Math.max(item.startedAt, start));
     }, 0);
@@ -1071,9 +1072,13 @@
     if (!sections.length) return;
     const range = timesRange();
     const week = weekWindow(), now = Math.min(timelineNow(), week.end - 1);
+    const items = popupTimelineItems(week.start, now).items
+      .filter(item => !item.isTimeOff || item.originalEndedAt <= Date.now());
     const summary = recentLoaded && !loadingRecent && (timesMode || (recentFresh && completeVisualWeekStart === week.start))
-      ? globalThis.ClockoliWeeklySummary?.summarize(popupTimelineItems(week.start, now).items, week.start, week.end, now)
+      ? globalThis.ClockoliWeeklySummary?.summarize(items, week.start, week.end, now)
       : null;
+    if (summary) summary.tasks = globalThis.ClockoliWeeklySummary?.summarize(
+      items.filter(item => !item.isTimeOff), week.start, week.end, now)?.tasks ?? summary.tasks;
     for (const section of sections) {
       const span = section.querySelector('.activity-weekly-range');
       if (span) {
@@ -1083,6 +1088,17 @@
       }
       for (const element of section.querySelectorAll('[data-stat]')) {
         element.textContent = summary ? String(summary[element.getAttribute('data-stat')]) : '—';
+      }
+      const breakdown = section.querySelector('.activity-weekly-breakdown');
+      if (breakdown) {
+        if (!summary) breakdown.textContent = '';
+        else {
+          const work = globalThis.ClockoliWeeklySummary.summarize(
+            items.filter(item => !item.isTimeOff), week.start, week.end, now);
+          const pto = globalThis.ClockoliWeeklySummary.summarize(
+            items.filter(item => item.isTimeOff), week.start, week.end, now);
+          breakdown.textContent = `Work ${work.total} · PTO ${pto.total}`;
+        }
       }
     }
   }
@@ -1282,6 +1298,7 @@
         active: timesMode && data?.active === undefined && data?.configured !== false ? pageState.active : data?.active ?? null,
         pendingCount: Math.max(0, Number(data?.pendingCount) || 0), pendingWrites: data?.pendingWrites ?? [],
         partial: Boolean(data?.partial), readStatus: data?.readStatus ?? [], readConflicts: data?.conflicts ?? [],
+        timeOffSettingsUnavailable: data?.timeOffSettingsUnavailable ?? pageState.timeOffSettingsUnavailable ?? [],
       });
       // Range reads contain records, not the local daily/weekly summary.
       // Keep the last authoritative totals (and their report date) intact.
@@ -2025,6 +2042,10 @@
   function beginRecordEdit(entry) { beginMetadataEdit(entry, { focusTime: true }); }
 
   async function openTimeEntryForm(entry, trigger) {
+    if (entry?.isTimeOff && (timesMode || popupMode)) {
+      await send({ type: 'OPEN_TIME_OFF' });
+      return;
+    }
     let form = globalThis.ClockoliTimeEntryForm;
     if (!form?.openEdit && !extensionPageMode) {
       timeEntryFormLoad ||= (async () => {
@@ -2614,14 +2635,15 @@
           } catch (error) { setError(error); }
         });
         track.title = label; track.setAttribute('aria-label', label); track.append(running ? icon('stop', STOP_PATH) : icon('play', PLAY_PATH));
-        track.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+        track.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
         actions.append(track);
       }
       actions.append(edit, inline.cancel, inline.save, remove);
       if (!inline.save.hidden) actions.classList.add('dirty');
       const time = el('span', recentTimeText(entry), 'entry-time-range entry-time-display');
       timeRow.append(time, inline.node, inline.duration, actions);
-      if (nonBillable) actions.before(el('span', 'Non-billable', 'entry-non-billable-badge'));
+      if (entry.isTimeOff) actions.before(el('span', entry.isPlannedTimeOff ? 'Planned PTO' : 'PTO', 'entry-non-billable-badge'));
+      else if (nonBillable) actions.before(el('span', 'Non-billable', 'entry-non-billable-badge'));
       timeRow.append(inline.unsaved);
       if (draft?.metadataActive) {
         const metadata = el('div', undefined, 'inline-metadata-editor');
@@ -3030,7 +3052,7 @@
       const rejectedStart = rejectedWrite && item.stage === 'startNext';
       const type = item.operation || item.stage || '';
       const knownType = ['startTimer', 'completeTimer', 'completeTimerAndStart', 'discardActive',
-        'editActiveStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry'].includes(type);
+        'editActiveStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry', 'timeOffChange'].includes(type);
       const switching = type === 'completeTimerAndStart';
       const finishedSwitch = switching && ['clearActive', 'startNext'].includes(item.stage);
       const titles = {
@@ -3044,6 +3066,7 @@
         editEntry: 'Time edit could not be saved',
         editEntries: 'Time edits could not be saved',
         deleteEntry: 'Time deletion could not be completed',
+        timeOffChange: 'Time off change needs review',
       };
       const descriptions = {
         startTimer: 'The queued Start has not reached GitHub. Review the time before retrying; the local timer remains preserved.',
@@ -3058,6 +3081,7 @@
         editEntry: 'The saved entry changed after you edited it. Retry checks the current GitHub record before applying your local change.',
         editEntries: 'One or more linked edits could not be saved. All affected local edits remain queued.',
         deleteEntry: 'The requested deletion has not been confirmed on GitHub. You can retry it or cancel the pending deletion.',
+        timeOffChange: 'This local time off change could not be saved. You can retry it or keep the current GitHub version without changing remote records.',
       };
       const box = el('div', undefined, 'conflict');
       const title = unsaved ? (switching ? 'Task switch needs recovery' : 'Stopped time needs recovery')
@@ -3260,6 +3284,13 @@
         if (!confirm('Discard this queued edit? The current Activity data will not be changed.')) return;
         await resolve('discard_queued_edit', true);
       }));
+      if (type === 'timeOffChange') box.append(button('Keep GitHub version', 'link-button', async () => {
+        if (!confirm('Discard this queued time off change and keep the current GitHub version? Clockoli will verify the remote records first.')) return;
+        await resolve('keep_github_time_off', true);
+      }));
+      if (item.conflictReason === 'completion_time_off_overlap') box.append(button('Open Time off', 'secondary wide', async () => {
+        await send({ type: 'OPEN_TIME_OFF' });
+      }));
       if (type === 'deleteEntry') box.append(button('Cancel pending deletion', 'link-button', async () => {
         if (!confirm('Cancel this queued deletion? Clockoli will first verify that the entry still exists on GitHub. This cannot restore time that has already been deleted remotely.')) return;
         await resolve('discard_queued_edit', true);
@@ -3364,6 +3395,7 @@
       const value = el('strong', key === 'todayTrackedMs' ? trackedTotalText(key) : '—', 'activity-weekly-value');
       value.setAttribute(key === 'todayTrackedMs' ? 'data-tracked-total' : 'data-stat', key);
       copy.append(value, el('span', label, 'activity-weekly-name'));
+      if (key === 'total') copy.append(el('span', '', 'activity-weekly-breakdown'));
       card.append(badge, copy); cards.append(card);
     }
     weeklySummary.append(cards);
@@ -3447,12 +3479,13 @@
       body.append(el('p', 'Choose where Clockoli should save your time before viewing time.', 'muted'), button('Set up Clockoli', 'primary', async () => send({ type: 'OPEN_OPTIONS' })));
       page.append(body); return page;
     }
-    if (pageState.partial) {
+    if (pageState.partial || pageState.timeOffSettingsUnavailable?.length) {
       const failed = (pageState.readStatus ?? []).filter(item => item.status === 'error').length;
       const conflicts = pageState.readConflicts?.length || 0;
       const warning = el('p', [
         failed ? `${failed} time ${failed === 1 ? 'repository' : 'repositories'} could not be loaded.` : '',
         conflicts ? `${conflicts} conflicting ${conflicts === 1 ? 'record was' : 'records were'} omitted.` : '',
+        pageState.timeOffSettingsUnavailable?.length ? 'Time off settings could not be verified. Some records may be classified incorrectly.' : '',
         'Showing available activity.',
       ].filter(Boolean).join(' '), 'notice partial-read-warning');
       body.append(warning);
@@ -3671,7 +3704,8 @@
         rowId: projectRowId(projectName),
         url: taskUrlOf(entry),
         taskIdentity: storedTaskIdentityOf(entry),
-        title: taskTitleOf(entry) || storedTaskIdentityOf(entry) || 'Untitled task',
+        title: `${entry.isTimeOff ? 'PTO · ' : ''}${taskTitleOf(entry) || storedTaskIdentityOf(entry) || 'Untitled task'}`,
+        isTimeOff: entry.isTimeOff === true,
         faviconUrl: siteFaviconUrl(entry),
         githubFavicon: isGitHubTask(entry),
         fallbackIconUrl: !taskUrlOf(entry) ? extensionResourceUrl('src/assets/clockoli-inverse-circle.svg') : '',
@@ -3686,11 +3720,11 @@
         isEditable: !entry._active && (timesMode || completeVisualWeekStart === weekWindow().start),
         isPending: Boolean(entry.isPending),
         isStartDisabled: !trackableTaskIdentityOf(entry) || timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || sameTask(entry, pageState.active)
-          || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict')),
+          || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_')))),
         isStopDisabled: Boolean(entry._active && (timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight
-          || pageState.pendingWrites?.some(item => item.status === 'conflict'))),
+          || pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))))),
         isDeleteDisabled: timelineDeleteInFlight || timelineStartInFlight || timelineStopInFlight
-          || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict')),
+          || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_')))),
       };
     });
     return { items, rows, byId };
@@ -3719,7 +3753,7 @@
   function timelineTrackActionDisabled() {
     const current = taskFromLocation();
     return !current || sameTask(current, pageState.active) || timelineStartInFlight || timelineStopInFlight
-      || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+      || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
   }
 
   function timelineNow() {
@@ -4692,7 +4726,7 @@
         try { await stopTimelineEntry({ ...current, description: description.value }, { preserveSavedDescription: !hasDraft }); } catch {}
       });
       stop.setAttribute('data-strip-primary', 'true'); stop.setAttribute('data-panel-action', 'stop');
-      stop.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+      stop.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
       const { metrics } = globalThis.ClockoliTrackingCard.createTrackingCard(document, { root: strip, task: copy, description: descriptionField, elapsed, today: null, stop });
       const stats = el('div', undefined, 'running-status-stats'); stats.append(startField, metrics);
       strip.insertBefore(stats, stop);
@@ -4712,7 +4746,7 @@
         quickStart.append(el('span', 'Quick start from recent tasks:', 'running-status-quick-label'));
         const choices = el('div', undefined, 'running-status-recent');
         const seen = new Set();
-        for (const entry of [...quickStartRecent].sort((left, right) =>
+        for (const entry of quickStartRecent.filter(entry => !(Date.parse(entry.startedAt) > Date.now())).sort((left, right) =>
           Date.parse(right.endedAt || right.startedAt) - Date.parse(left.endedAt || left.startedAt))) {
           const identity = trackableTaskIdentityOf(entry);
           if (!identity || seen.has(identity)) continue;
@@ -4723,7 +4757,7 @@
           });
           choice.title = identity; choice.setAttribute('aria-label', `Start tracking ${label}`);
           choice.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight
-            || sameTask(entry, pageState.active) || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+            || sameTask(entry, pageState.active) || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
           const play = el('span', undefined, 'running-status-recent-play'); play.setAttribute('aria-hidden', 'true'); play.append(icon('play', PLAY_PATH));
           choice.append(play, el('span', label, 'running-status-recent-name'));
           choices.append(choice);
@@ -4741,7 +4775,7 @@
     if (preserveActiveDescription) {
       const elapsed = strip.querySelector('.running-elapsed'); if (elapsed) elapsed.textContent = formatElapsedCard(active.startedAt);
       const stop = strip.querySelector('[data-panel-action="stop"]');
-      if (stop) stop.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+      if (stop) stop.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
       const track = switchAction.querySelector('[data-panel-action="track"]'); if (track) track.disabled = timelineTrackActionDisabled();
     }
     // Queue reconciliation may refresh the panel while an unsaved List editor is
@@ -4800,8 +4834,9 @@
     const tasks = button('Top tasks', 'reports-button', async () => { await send({ type: 'OPEN_TASKS' }); closeMenu(); }); tasks.title = 'Open top tasks'; tasks.prepend(icon('checklist', TASKS_PATH));
     const reports = button('Reports', 'reports-button', async () => { await send({ type: 'OPEN_REPORTS' }); closeMenu(); }); reports.title = 'Open reports'; reports.prepend(icon('graph', REPORTS_PATH));
     const activity = button('Activity', 'reports-button', async () => { await send({ type: 'OPEN_TIMES' }); closeMenu(); }); activity.title = 'Open activity'; activity.prepend(icon('history', ACTIVITY_PATH));
+    const timeOff = button('Time off', 'reports-button', async () => { await send({ type: 'OPEN_TIME_OFF' }); closeMenu(); }); timeOff.title = 'Open time off'; timeOff.prepend(icon('calendar', TIME_OFF_PATH));
     const settings = button('Settings', 'reports-button settings-button', async () => { await send({ type: 'OPEN_OPTIONS' }); closeMenu(); }); settings.title = 'Open settings'; settings.prepend(icon('gear', GEAR_PATH));
-    pageNavigation.append(tasks, reports, ...(compact ? [activity] : []), settings);
+    pageNavigation.append(tasks, reports, ...(compact ? [activity] : []), timeOff, settings);
     headerActions.append(pageNavigation);
     if (compact) {
       if (onClose) {
@@ -4952,7 +4987,7 @@
           finally { finishTimelineStop(); }
         });
         stop.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight
-          || pageState.pendingWrites?.some(item => item.status === 'conflict'); body.append(stop);
+          || pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))); body.append(stop);
         };
         makeStop(false);
         if (switchToCurrent) makeStop(true);
@@ -4990,7 +5025,7 @@
           }
         });
         startButton.disabled = !current || timelineStopInFlight || timelineDeleteInFlight
-          || pageState.pendingWrites?.some(item => item.status === 'conflict');
+          || pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_')));
         body.append(startButton);
         if (!current) body.append(el('div', 'Clockoli tracks any HTTP(S) task URL; a title is optional.', 'muted'));
       }
@@ -5033,7 +5068,7 @@
     label.textContent = alreadyTracking ? 'Tracking this task' : pageState.active ? 'Switch to this task' : 'Track this task';
     track.disabled = !pageState.configured || alreadyTracking || timelineStartInFlight
       || timelineStopInFlight || timelineDeleteInFlight
-      || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+      || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
   }
 
   async function refreshActionSourceContext() {
@@ -5431,6 +5466,9 @@
       @media(max-width:700px){:host(.times-surface) .times-toolbar:not(.times-visual){grid-template-columns:minmax(0,1fr) auto;gap:10px}:host(.times-surface) .times-filter{grid-column:1/-1}:host(.times-surface) .times-toolbar:not(.times-visual) .week-navigation{grid-column:1;justify-self:start;gap:8px}:host(.times-surface) .times-refresh{grid-column:2}}
       @media(max-width:700px){:host(.times-surface) .popup-timeline-section{padding-top:16px}}
       @media(max-width:460px){:host(.times-surface) .activity-weekly-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+      .activity-weekly-breakdown{display:block;color:var(--fgColor-muted,var(--ck-fg-muted));font-size:12px;font-weight:400}
+      :host(.times-surface) .times-toolbar:not(.times-visual) .week-navigation-label{display:inline-flex;align-items:center}
+      :host(.times-surface) .times-toolbar:not(.times-visual) .week-navigation{grid-template-columns:auto auto auto}
     `;
     if (popupMode) style.textContent += `
       :host(.popup-surface) .menu { max-height:min(720px,calc(100vh - 16px)); overflow-y:auto }
@@ -5440,7 +5478,8 @@
       :host(.popup-surface) .timeline-toolbar-end { grid-area:end; display:flex; align-items:center }
       :host(.popup-surface) .header-actions { grid-area:actions; width:100%; justify-content:space-between; gap:0 }
       :host(.popup-surface) .header-navigation { width:100%; justify-content:space-between; gap:0 }
-      :host(.popup-surface) .reports-button { gap:4px; padding:5px 4px; font-size:12px }
+      :host(.popup-surface) .reports-button { gap:2px; padding:5px 2px; font-size:12px; white-space:nowrap; flex:0 0 auto }
+      :host(.popup-surface) .reports-button svg { flex:none; width:16px; height:16px }
       .timeline-view-modes { display:flex; gap:1px; padding:1px; border:1px solid var(--borderColor-muted,var(--ck-border-muted)); border-radius:6px}
       .popup-switch-action:not(:empty) { display:flex; align-self:center }
             .timeline-view-button { display:flex; align-items:center; justify-content:center; width:28px; height:28px; min-height:0; margin:0; padding:0; border:0; border-radius:6px; background:transparent; color:var(--fgColor-muted,var(--ck-fg-muted)); cursor:pointer }

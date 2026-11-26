@@ -2,7 +2,7 @@ import { parseGitHubTaskUrl, taskUrlOf } from './values.js';
 import { isBillable } from './records.js';
 import { clientIdForRecord, exchangeCurrencyCode, projectNameForUrl, rateForRecord } from './local-settings.js';
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const AXES = new Set(['day', 'week', 'month', 'person', 'repository', 'time-repository', 'task']);
+const AXES = new Set(['day', 'week', 'month', 'person', 'repository', 'time-repository', 'task', 'time-type']);
 const METRICS = new Set(['total-time', 'avg-time', 'task-count', 'billable-amount']);
 const MONTH_FORMATTER = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
 const MONTH_LABELS = new Map();
@@ -115,7 +115,8 @@ export function filterReportRecords(records, filters = {}) {
   const repositoryMatch = record => repositories.size ? repositories.has(repository(record)) : !filters.emptyMeansNone;
   const timeRepositoryMatch = record => timeRepositories.size ? timeRepositories.has(timeRepository(record))
     : !Object.hasOwn(filters, 'timeRepositories') || !filters.emptyMeansNone;
-  return (records ?? []).filter(record => clientMatch(record) && peopleMatch(record) && projectMatch(record) && repositoryMatch(record) && timeRepositoryMatch(record));
+  return (records ?? []).filter(record => clientMatch(record) && peopleMatch(record) && projectMatch(record) && repositoryMatch(record) && timeRepositoryMatch(record)
+    && (filters.timeType === 'pto' ? record.isTimeOff === true : filters.timeType === 'work' ? record.isTimeOff !== true : true));
 }
 
 function facet(records, key) {
@@ -166,6 +167,7 @@ function axisPart(record, axis, reportingUtc) {
   if (axis === 'person') return { key: record.user, label: record.user };
   if (axis === 'repository') return { key: repository(record), label: repository(record) };
   if (axis === 'time-repository') return { key: timeRepository(record), label: timeRepository(record) };
+  if (axis === 'time-type') return record.isTimeOff ? { key: 'time-off', label: 'Time off' } : { key: 'work', label: 'Work' };
   return taskPart(record);
 }
 
@@ -279,6 +281,7 @@ export function exportTimesheet(records, { format, startDate, endDate, clientRat
       end: record.endedAt,
       duration: hms(record.durationSeconds),
       durationSeconds: record.durationSeconds,
+      timeType: record.isTimeOff ? 'time_off' : 'work',
       billable: isBillable(record),
       ...(includeRates ? {
         hourlyRate: rate ? (rate.amountMinorPerHour / 100).toFixed(2) : '',
@@ -290,8 +293,8 @@ export function exportTimesheet(records, { format, startDate, endDate, clientRat
   });
   if (format === 'csv') {
     const rows = [includeRates
-      ? ['Person', 'Task URL', 'Task title', 'Start', 'End', 'Duration', 'Duration seconds', 'Billable', 'Hourly rate', 'Billable amount', 'Currency', 'Description']
-      : ['Person', 'Task URL', 'Task title', 'Start', 'End', 'Duration', 'Duration seconds', 'Billable', 'Description']];
+      ? ['Person', 'Task URL', 'Task title', 'Start', 'End', 'Duration', 'Duration seconds', 'Time type', 'Billable', 'Hourly rate', 'Billable amount', 'Currency', 'Description']
+      : ['Person', 'Task URL', 'Task title', 'Start', 'End', 'Duration', 'Duration seconds', 'Time type', 'Billable', 'Description']];
     for (const entry of entries) rows.push(Object.values(entry));
     return `${rows.map(row => row.map(csvCell).join(',')).join('\r\n')}\r\n`;
   }
