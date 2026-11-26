@@ -275,3 +275,67 @@ test('Activity displays local workflow distribution, filters and exclusions with
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
+
+test('daily matching re-reads only observed journals and exposes per-task decisions without raw source text', async () => {
+  await mkdir(scratch, { recursive: true });
+  const profile = await mkdtemp(join(scratch, 'clockoli-agent-matching-'));
+  let browser;
+  try {
+    browser = await open(profile);
+    const outcome = await browser.page.evaluate(async () => {
+      const store = await import(chrome.runtime.getURL('src/storage/agent-activity-store.js'));
+      const collector = await import(chrome.runtime.getURL('src/agents/collector.js'));
+      const root = await navigator.storage.getDirectory();
+      const folder = await root.getDirectoryHandle('matching-fixture', { create: true });
+      const start = Date.parse('2026-11-25T12:00:00Z');
+      const taskUrl = 'https://github.com/example/buddy/issues/679';
+      for (let i = 0; i < 3; i++) {
+        const writer = await (await folder.getFileHandle('journal-' + i + '.jsonl', { create: true })).createWritable();
+        const turnId = 'realistic-turn-' + i;
+        const base = start + i * 60000;
+        const rows = [
+          { timestamp: new Date(base).toISOString(), type: 'session_meta',
+            payload: { id: 'session-' + i, cwd: '/PRIVATE_CWD',
+              originator: i === 0 ? 'codex_exec' : 'air-plugin:phpstorm',
+              git: i === 0 ? null : { repository_url: 'git@github.com:example/buddy.git', branch: 'feat/679-hybrid-chat-search' } } },
+          { timestamp: new Date(base).toISOString(), type: 'event_msg', payload: { type: 'task_started', turn_id: turnId } },
+          { timestamp: new Date(base).toISOString(), type: 'turn_context', payload: { turn_id: turnId, cwd: '/PRIVATE_CWD' } },
+          { timestamp: new Date(base).toISOString(), type: 'event_msg', payload: { type: 'item_completed', turn_id: turnId,
+            item: { type: 'UserMessage', content: [{ type: 'text', text: i === 0 ? 'Reply with OK' : 'PRIVATE_PROMPT' }] } } },
+          { timestamp: new Date(base + 3000).toISOString(), type: 'event_msg', payload: { type: 'task_complete', turn_id: turnId } },
+        ];
+        await writer.write(rows.map(JSON.stringify).join('\n') + '\n');
+        await writer.close();
+      }
+      await store.setAgentRoot('codex', folder);
+      const scan = await chrome.runtime.sendMessage({ type: 'AGENT_COLLECTOR_CONTROL', provider: 'codex', action: 'scan' });
+      const before = await store.getAgentProjection('codex', 1);
+      const result = await collector.getAgentMatchingDiagnostics([
+        { taskUrl, taskTitle: 'Hybrid search', startedAt: '2026-11-25T11:00:00Z', endedAt: '2026-11-25T13:00:00Z' },
+      ], start - 3600000, start + 3600000);
+      const after = await store.getAgentProjection('codex', 1);
+      return { scanOk: scan.ok, result, beforeRevision: before.revision, afterRevision: after.revision };
+    });
+    expect(outcome.scanOk).toBe(true);
+    expect(outcome.result.totalTurns).toBe(3);
+    expect(outcome.result.rows.map(row => row.reason)).toEqual([
+      'time_only', 'repository_branch_and_containment', 'repository_branch_and_containment',
+    ]);
+    expect(outcome.result.tasks[0].summary).toMatchObject({ totalTurns: 2, eligibleMs: 6000, shortSharePct: 100 });
+    expect(outcome.beforeRevision).toBe(outcome.afterRevision);
+    expect(JSON.stringify(outcome.result)).not.toContain('PRIVATE_CWD');
+    expect(JSON.stringify(outcome.result)).not.toContain('PRIVATE_PROMPT');
+    expect(JSON.stringify(outcome.result)).not.toContain('realistic-turn-');
+    await browser.page.goto(`chrome-extension://${new URL(browser.worker.url()).host}/src/times/times.html`);
+    await expect(browser.page.locator('#agent-matching')).toBeVisible();
+    await browser.page.locator('#agent-matching-date').fill('2026-11-25');
+    await browser.page.locator('#agent-matching-run').click();
+    // Fresh profile has no configured time repository; no invented matches.
+    await expect(browser.page.locator('#agent-matching-status')).toContainText('Task history incomplete');
+    await expect(browser.page.locator('#agent-matching-export')).toBeEnabled();
+    await expect(browser.page.locator('#agent-matching-results')).toContainText('Unassigned');
+  } finally {
+    await browser?.context.close().catch(() => {});
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
