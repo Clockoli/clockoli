@@ -167,3 +167,16 @@ body.activity-rate-limit-visible #activity-running-status .running-status-error[
 .agent-workflow-table tfoot{color:var(--fgColor-muted)}
 #agent-workflow-status:empty{display:none}
 .agent-workflow-note{margin:10px 0 0}
+
+#agent-matching[hidden]{display:none}
+#agent-matching-date{box-sizing:border-box;min-height:30px;padding:4px 8px;border:1px solid var(--borderColor-default);border-radius:6px;background:var(--bgColor-default);color:var(--fgColor-default);font:inherit}
+#agent-matching-status{color:var(--fgColor-muted);font-size:12px}
+#agent-matching-results{overflow-wrap:anywhere}
+#agent-matching-results h3{margin:14px 0 6px;font-size:14px}
+.agent-match-task,.agent-match-row{padding:8px 0;border-bottom:1px solid var(--borderColor-muted)}
+.agent-match-task strong{display:block}
+.agent-match-task span,.agent-match-row p{display:block;margin:4px 0;color:var(--fgColor-muted);font-size:12px}
+.agent-match-row summary{font-size:13px;font-weight:500}
+.agent-match-row ul{margin:5px 0;padding-left:22px;font-size:12px}
+.agent-match-row.is-matched summary{color:var(--fgColor-success)}
+.agent-match-row.is-unassigned summary{color:var(--fgColor-muted)}
