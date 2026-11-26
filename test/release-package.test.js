@@ -29,6 +29,7 @@ const EXPECTED_RUNTIME_INVENTORY = [
   'src/agents/jsonl-reader.js',
   'src/agents/metrics.js',
   'src/agents/parsers.js',
+  'src/agents/task-matching.js',
   'src/api/github-client.js',
   'src/assets/action-spin/clockoli-16-0.png',
   'src/assets/action-spin/clockoli-16-1.png',
