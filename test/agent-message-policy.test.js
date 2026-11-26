@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { agentCollectorRequest, agentMatchingRequest, agentSemanticRequest, agentWorkflowRequest, assertMessageAllowed } from '../src/background/message-policy.js';
+import { agentCollectorRequest, agentMatchingRequest, agentMatchingStatusRequest, agentSemanticRequest, agentWorkflowRequest, assertMessageAllowed } from '../src/background/message-policy.js';
 const origin = 'chrome-extension://collector-test/';
 const settings = { url: `${origin}src/options/options.html` };
 const activity = { url: `${origin}src/times/times.html` };
@@ -70,4 +70,12 @@ test('semantic preview and classification are Activity-only; no caller-specified
   for(const sender of [settings,content,{url:origin+'src/times/times.html/extra'}])assert.throws(()=>agentSemanticRequest(request,sender,origin));
   assert.throws(()=>agentSemanticRequest({...request,endpoint:'https://evil.example'},activity,origin));
   assert.throws(()=>agentSemanticRequest({...request,confirmed:false},activity,origin));
+});
+
+test('matching connection status is Activity-only with no filters or extra payload',()=>{
+  const req={type:'AGENT_MATCHING_STATUS'};
+  assert.doesNotThrow(()=>agentMatchingStatusRequest(req,activity,origin));
+  assert.throws(()=>agentMatchingStatusRequest(req,settings,origin));
+  assert.throws(()=>agentMatchingStatusRequest(req,content,origin));
+  assert.throws(()=>agentMatchingStatusRequest({...req,thresholdMinutes:15},activity,origin));
 });

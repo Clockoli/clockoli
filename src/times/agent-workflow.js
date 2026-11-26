@@ -46,7 +46,6 @@ const matchingReasons = {
   source_evidence_unavailable: 'Source evidence unavailable',
   source_lifecycle_changed: 'Source lifecycle differs from collected turn; scan again',
   interval_unverified: 'Turn interval is not verified',
-  extended_turn: 'Extended turn (> 60 minutes)',
   prompt_reference_scan_incomplete: 'Prompt URL extraction was incomplete',
   working_directory_changed: 'Turn working directory differs from session',
   conflicting_identity: 'Conflicting task references',
@@ -83,6 +82,7 @@ function renderMatching(data) {
   if (Object.values(data.providers).some(p => p.connected && !p.complete)) warnings.push('Collector history may be incomplete.');
   warnings.push('Scanned ' + count(data.bytesRead) + ' bytes from selected journals.');
   matchingStatus.textContent = warnings.join(' ');
+  node('p', 'Coverage only includes matched observed intervals, not confirmed developer inactivity. Unmatched or missing observations can reduce coverage.', matchingResults, 'agent-workflow-note');
   node('h3', 'Tasks tracked on this day', matchingResults);
   if (!data.tasks.length) node('p', 'No tracked task candidates found.', matchingResults);
   for (const task of data.tasks) {
@@ -256,6 +256,7 @@ semanticRun.addEventListener('click',async()=>{
     }
     if(generation!==semanticGeneration)return;
     node('h3','Semantic proposals (not confirmed)',semanticResults);
+    node('p','Coverage is based only on proposed matches. Not analyzed turns, missing journals and incomplete collection are not proof of inactivity.',semanticResults,'agent-workflow-note');
     for(const task of data.tasks){
       const turns=data.rows.filter(r=>decisions.get(r.turnId)?.url===task.url).map(r=>({...r,key:r.turnId}));
       const timeline=buildTaskTimeline(task.intervals,turns,data.dayStart,data.dayEnd);
@@ -275,7 +276,7 @@ semanticRun.addEventListener('click',async()=>{
     // Normal debug download contains no prompts, model explanations or raw
     // descriptions. Keep only structured decisions and usage.
     const {preview,...safeData}=data;
-    matchingData={date:matchingDate.value,thresholdMinutes:Number(matchingThreshold.value),...safeData,
+    matchingData={date:matchingDate.value,...safeData,
       tasks:safeData.tasks.map(({description,...task})=>({...task,semanticTimeline:buildTaskTimeline(task.intervals,data.rows.filter(r=>decisions.get(r.turnId)?.url===task.url),data.dayStart,data.dayEnd)})),
       semantic:{provider:p,model,usage,failures,decisions:[...decisions].map(([turnId,{url,modelUrl,reason,confidence,cached}])=>({turnId,url,modelUrl,reason,confidence,cached}))}};
     matchingExport.disabled=false;
@@ -323,8 +324,7 @@ async function refreshConnection(){
   if(statusPending)return;
   statusPending=true;
   try{
-    // This existing local aggregate request is used only for connection status.
-    const data=await send({type:'AGENT_WORKFLOW_SUMMARY',period:'today',provider:'all',thresholdMinutes:15});
+    const data=await send({type:'AGENT_MATCHING_STATUS'});
     matchingPanel.hidden=!Object.values(data.providers).some(p=>p.connected);
     if(matchingPanel.hidden)clearMatching();
     if(!data.providers.codex?.connected||data.providers.codex.paused||data.providers.codex.permission!=='granted'){

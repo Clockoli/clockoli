@@ -12,7 +12,7 @@ import { ChromeStore } from '../storage/chrome-store.js';
 import { IndexedDbBackend } from '../storage/chrome-store.js';
 import { classifySemantic } from '../agents/semantic-matching.js';
 import { githubTask } from '../agents/task-matching.js';
-import { getAgentRootState, resetAgentActivity } from '../storage/agent-activity-store.js';
+import { getAgentHealth, getAgentRootState, resetAgentActivity } from '../storage/agent-activity-store.js';
 import { AGENT_ALARM, controlAgentCollector, ensureAgentAlarm, getAgentCollectorStatus, getAgentMatchingDiagnostics, scanAgentActivity } from '../agents/collector.js';
 import { setAddonEnabled } from '../addons/service.js';
 import { normalizeClockifyDetailedReport } from '../addons/clockify/report-normalizer.js';
@@ -43,7 +43,7 @@ import { OnboardingCoordinator } from '../services/onboarding-coordinator.js';
 import { RepositoryInvitationService } from '../services/repository-invitations.js';
 import { withRepositoryRecovery } from '../services/repository-operation-recovery.js';
 import { discoverUserStorageBranches, verifyRestoredStorageBranch } from '../services/user-storage-branch.js';
-import { addTimeForSender, agentCollectorRequest, agentMatchingRequest, agentSemanticRequest, agentWorkflowRequest, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
+import { addTimeForSender, agentCollectorRequest, agentMatchingRequest, agentMatchingStatusRequest, agentSemanticRequest, agentWorkflowRequest, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
 import { activeDestinationId, requireConfiguredDestinationId, resolveStartDestinationId, selectReadDestinations, syncPendingAll } from './destination-runtime.js';
 import { emitClockifyMigrationProgress, isClockifyProgressRequestId, registerClockifyMigrationProgressPort } from './clockify-migration-progress.js';
 import { SerialExecutor } from './serial-executor.js';
@@ -1128,6 +1128,14 @@ async function handle(message, sender) {
   const extensionOrigin = chrome.runtime.getURL('');
   assertMessageAllowed(message.type, sender, extensionOrigin);
   if (globalThis.clockoliLocalDataTransitioning) throw new Error('Clockoli is reloading after a local data change.');
+  if (message.type === 'AGENT_MATCHING_STATUS') {
+    agentMatchingStatusRequest(message, sender, extensionOrigin);
+    const providers = Object.fromEntries(await Promise.all(['codex', 'claude'].map(async provider => {
+      const root = await getAgentRootState(provider), health = await getAgentHealth(provider);
+      return [provider, { connected: Boolean(root), paused: Boolean(root?.paused), permission: health?.permission || 'unknown' }];
+    })));
+    return { providers };
+  }
   if (message.type === 'AGENT_SEMANTIC_CLASSIFY') {
     const request = agentSemanticRequest(message, sender, extensionOrigin);
     const root = await getAgentRootState('codex');
@@ -1943,7 +1951,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'LOCAL_PREFERENCES_CHANGED' || message?.type === 'TOOLBAR_CONTEXT_UPDATED') return undefined;
   const reportReadOnly = ['LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
   const localStateRead = ['GET_STATE', 'GET_PAGE_STATE'].includes(message?.type) && !message?.refresh;
-  const readOnly = reportReadOnly || localStateRead || ['AGENT_MATCHING_DIAGNOSTICS', 'AGENT_SEMANTIC_PREVIEW', 'AGENT_SEMANTIC_CLASSIFY', 'GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS'].includes(message?.type);
+  const readOnly = reportReadOnly || localStateRead || ['AGENT_MATCHING_DIAGNOSTICS', 'AGENT_MATCHING_STATUS', 'AGENT_SEMANTIC_PREVIEW', 'AGENT_SEMANTIC_CLASSIFY', 'GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS'].includes(message?.type);
   const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CLEAR_LOCAL_CACHE', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER'].includes(message?.type);
   let operation;
   if (changesConfiguration) {

@@ -67,7 +67,7 @@ test('exact user-linked issue may match without repository; multiple or contradi
   assert.equal(explainAgentMatch(turn, evidence(meta, 'x'.repeat(32769)), tasks).reason, 'prompt_reference_scan_incomplete');
 });
 
-test('context change, changed lifecycle, missing evidence, incomplete task history and boundary crossings abstain', () => {
+test('context and lifecycle conflicts abstain; strong identities may match crossing and long turns', () => {
   assert.equal(explainAgentMatch(turn, evidence(meta, 'task', '/different'), tasks).reason, 'working_directory_changed');
   assert.equal(explainAgentMatch(turn, evidence(), tasks, { partial: true }).reason, 'task_history_incomplete');
   assert.equal(explainAgentMatch(turn, null, tasks).reason, 'source_evidence_unavailable');
