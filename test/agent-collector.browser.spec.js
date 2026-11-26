@@ -364,6 +364,8 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
     }, withoutDerivedTimeline);
     await browser.page.locator('#agent-matching-run').click();
     await expect(browser.page.locator('#agent-matching-status')).toContainText('3 turns within tracked entries');
+    await expect(browser.page.locator('#agent-entry-debug')).not.toHaveAttribute('open','');
+    await browser.page.locator('#agent-entry-debug > summary').click();
     await expect(browser.page.locator('.agent-entry-card')).toHaveCount(1);
     await expect(browser.page.locator('.agent-entry-sequence .is-ai')).toHaveCount(3);
     await expect(browser.page.locator('.agent-task-turn')).toHaveCount(3);
@@ -374,6 +376,45 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
     await expect(browser.page.locator('.agent-entry-card .agent-match-row')).toHaveCount(3);
     await expect(browser.page.locator('#agent-matching-export')).toBeEnabled();
     expect(errors).toEqual([]);
+
+    // Exercise the actual Calendar adapter with a long unassigned interval,
+    // a short proposed match, an out-of-entry turn and the display toggle.
+    const overlay = await browser.page.evaluate(async () => {
+      const host = document.createElement('div');
+      host.style.cssText='width:1000px;height:650px;position:relative';
+      document.body.append(host);
+      const start=new Date(2026,10,25,12).getTime(), end=start+4*3600000;
+      const url='https://github.com/example/buddy/issues/679';
+      const api=globalThis.ClockoliTaskTimeline.createTimeline(host,{
+        items:[{id:'test-entry',url,title:'Fixture issue',startedAt:start,endedAt:end}],
+        now:end+3600000, domainStart:start-12*3600000,
+        viewMode:'calendar',weeklyCalendar:true,activityPage:true,
+      });
+      api.setCalendarDate(start);
+      const activity={entries:[{url,start,end,segments:[
+        {start:start-3600000,end:start+3*3600000,matched:false},
+        {start:start+60000,end:start+120000,matched:true},
+        {start:end+1000,end:end+10000,matched:false},
+      ]}],showUnmatched:true};
+      api.setAgentActivity(activity);
+      const read=()=>[...api.__timeline.shadow.querySelectorAll('.calendar-task .clockoli-ai-segment')].map(el=>({
+        start:Number(el.dataset.start),end:Number(el.dataset.end),matched:el.classList.contains('is-matched'),
+        top:parseFloat(el.style.top),height:parseFloat(el.style.height),cardHeight:el.closest('.calendar-task').clientHeight,
+      }));
+      const all=read();
+      api.setAgentActivity({...activity,showUnmatched:false});
+      const matched=read();
+      api.setAgentActivity(null);
+      const cleared=read();
+      api.destroy();host.remove();
+      return {start,end,all,matched,cleared};
+    });
+    expect(overlay.all).toHaveLength(2);
+    expect(overlay.all[0]).toMatchObject({start:overlay.start,end:overlay.start+3*3600000,matched:false});
+    expect(overlay.all.every(s=>s.start>=overlay.start&&s.end<=overlay.end&&s.top>=0&&s.top+s.height<=s.cardHeight+0.01)).toBe(true);
+    expect(overlay.matched).toHaveLength(1);
+    expect(overlay.matched[0].matched).toBe(true);
+    expect(overlay.cleared).toHaveLength(0);
 
   } finally {
     await browser?.context.close().catch(() => {});

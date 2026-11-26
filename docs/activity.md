@@ -104,3 +104,6 @@ Activity loads the selected week from GitHub while keeping locally accepted chan
 Overlapping entries may prevent Timeline or Calendar from displaying a week. Use **Go to List** to inspect and correct the affected entries; do not treat an empty-looking view as evidence that records were deleted.
 
 When synchronization needs attention, open **Review sync issues** in Activity. See [Troubleshooting](troubleshooting.md#synchronization-and-conflicts).
+
+
+For the selected day, **Show activity** also overlays AI intervals on the existing Calendar entries. The narrow right-side rail uses green for proposed matches and muted gray for unresolved temporal overlaps; unassigned turns can be hidden without changing stored data. Turns attributed to another task do not appear on that entry's rail. The calendar clips each span to both the analyzed entry and the visible calendar segment. The label counts only visible turns and their union duration. A subpixel turn may have a one-pixel visual marker; precise source times remain in collapsed diagnostics. No activity outside tracked entries is rendered. The overlay is a local, selected-day snapshot, not continuous tracking or a confirmed measurement of developer idle time.

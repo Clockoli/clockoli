@@ -24,7 +24,22 @@ const matchingStatus = document.getElementById('agent-matching-status');
 const matchingResults = document.getElementById('agent-matching-results');
 const matchingRun = document.getElementById('agent-matching-run');
 const matchingExport = document.getElementById('agent-matching-export');
-let matchingData = null, matchingSequence = 0;
+let matchingData = null, matchingSequence = 0, overlayState = null;
+const showUnmatched = document.getElementById('agent-show-unmatched');
+showUnmatched.addEventListener('change',()=>publishOverlay());
+function publishOverlay(data,decisions=null) {
+  if(data!==undefined)overlayState=data?{data,decisions}:null;
+  const entries=[];
+  if(overlayState){
+    const {data,decisions}=overlayState;
+    for(const task of data.tasks){
+      const timeline=buildObservedTaskTimeline(task,data.rows,data.dayStart,data.dayEnd,decisions);
+      for(const window of timeline.windows)entries.push({url:task.url,start:window.start,end:window.end,
+        segments:window.segments.filter(t=>t.attribution!=='other_task').map(t=>({start:t.visibleStart,end:t.visibleEnd,matched:t.attribution==='matched'}))});
+    }
+  }
+  globalThis.dispatchEvent(new CustomEvent('clockoli:agent-activity-overlay',{detail:overlayState?{entries,showUnmatched:showUnmatched.checked}:null}));
+}
 function localDate(date) {
   return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 }
@@ -75,11 +90,12 @@ function localTime(value) {
 }
 function renderMatching(data) {
   matchingResults.replaceChildren();
-  const warnings = [count(data.totalTurns) + ' turns within tracked entries'];
+  const warnings = [count(data.rows.length) + ' turns within tracked entries · shown inside calendar blocks for selected day'];
   if (data.partial) warnings.push('Task history incomplete.');
   if (data.omittedTurns) warnings.push(count(data.omittedTurns) + ' overlapping turns omitted by diagnostic limit.');
   if (Object.values(data.providers).some(p => p.connected && !p.complete)) warnings.push('Collector history may be incomplete.');
   matchingStatus.textContent = warnings.join(' · ');
+  publishOverlay(data);
   renderTrackedEntries(data, matchingResults);
   const debug=node('details',null,matchingResults,'agent-matching-debug');
   node('summary','Matching diagnostics',debug);
@@ -129,6 +145,7 @@ function clearMatching() {
   clearSemantic();
   matchingSequence++;
   matchingData = null;
+  publishOverlay(null);
   matchingRun.disabled = false;
   matchingExport.disabled = true;
   matchingResults.replaceChildren();
@@ -157,7 +174,10 @@ matchingRun.addEventListener('click', async () => {
     end.setDate(end.getDate() + 1);
     const dayStart = Number.isFinite(data.dayStart) ? data.dayStart : start.getTime();
     const dayEnd = Number.isFinite(data.dayEnd) ? data.dayEnd : end.getTime();
-    const normalized = { ...data, dayStart, dayEnd };
+    const intervals=data.tasks.flatMap(task=>task.intervals);
+    const rows=data.rows.filter(row=>turnOverlapsTrackedIntervals(row,intervals,dayStart,dayEnd));
+    const normalized = { ...data, dayStart, dayEnd, rows, totalTurns: rows.length+(data.omittedTurns||0),
+      outsideTurns: (data.outsideTurns||0)+data.rows.length-rows.length };
     matchingData = { date, ...normalized, tasks: normalized.tasks.map(task => ({
       ...task, observedTimeline: buildObservedTaskTimeline(task, normalized.rows, dayStart, dayEnd),
     })) };
@@ -286,6 +306,7 @@ semanticRun.addEventListener('click',async()=>{
     }
     if(generation!==semanticGeneration)return;
     node('h3','Semantic proposals (not confirmed)',semanticResults);
+    publishOverlay(data,decisions);
     renderTrackedEntries(data,semanticResults,decisions);
     // Normal debug download contains no prompts, model explanations or raw
     // descriptions. Keep only structured decisions and usage.
@@ -331,7 +352,7 @@ function renderTaskTimeline(timeline,parent) {
     const gap=node('span',null,legend);node('i',null,gap,'agent-task-swatch is-gap');gap.append(document.createTextNode('No observed AI turn'));
     const sequence=[...window.covered.map(i=>({...i,ai:true})),...window.gaps.map(i=>({...i,ai:false}))].sort((a,b)=>a.start-b.start);
     const details=node('details',null,block,'agent-task-interval-list');
-    details.open=sequence.length<=20;
+    details.open=false;
     node('summary','Activity and gaps ('+sequence.length+' intervals)',details);
     const table=node('table',null,details,'agent-entry-sequence');
     const header=node('tr',null,node('thead',null,table));
