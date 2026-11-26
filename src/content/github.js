@@ -2209,7 +2209,7 @@
   }
 
   // The selected card determines which queued record can be edited.
-  function editFullTimeConflict(item, record, trigger, side = null, reviewedPrevious = null) {
+  function editFullTimeConflict(item, record, trigger, side = null, reviewedPrevious = null, reviewedRemoteSha = null) {
     const form = globalThis.ClockoliTimeEntryForm;
     if (!form?.openEdit) {
       syncIssueError = 'The time editor is unavailable. Reload Activity and try again.';
@@ -2228,13 +2228,14 @@
         destinationId: item.destinationId, id: item.id,
         ...(['local', 'previous'].includes(side) ? { side } : {}),
         ...(side === 'previous' ? { reviewedPrevious } : {}),
+        ...(side === 'completion' && reviewedRemoteSha ? { reviewedRemoteSha } : {}),
         edits: { taskUrl: value.taskUrl, taskTitle: value.taskTitle,
           startedAt: value.startedAt, endedAt: value.endedAt,
           description: value.description, billable: value.billable } };
       let result;
       try { result = await send(message); }
       catch (error) {
-        if (side === 'queued-start' || side === 'previous') {
+        if (side === 'queued-start' || side === 'previous' || side === 'completion') {
           stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
           syncIssuesSignature = null;
           renderSyncIssues();
@@ -2419,12 +2420,12 @@
         || ['appendMonthly', 'commitCompletion'].includes(item.stage));
   }
 
-  function conflictEntryActions(item, record, side, { canEdit, canDelete, editReason, deleteReason, reviewedPrevious } = {}) {
+  function conflictEntryActions(item, record, side, { canEdit, canDelete, editReason, deleteReason, reviewedPrevious, reviewedRemoteSha } = {}) {
     const actions = el('div', undefined, 'entry-actions sync-overlap-actions');
     const editLabel = side === 'previous' ? 'Edit saved time' : 'Edit pending time';
     const deleteLabel = side === 'previous' ? 'Delete saved time' : 'Delete pending time';
     const edit = entryActionButton(editLabel, 'edit', (_event, trigger) =>
-      editFullTimeConflict(item, record, trigger, side, reviewedPrevious));
+      editFullTimeConflict(item, record, trigger, side, reviewedPrevious, reviewedRemoteSha));
     edit.classList.add('sync-overlap-edit');
     edit.setAttribute('aria-label', editLabel);
     edit.disabled = !canEdit;
@@ -2452,9 +2453,22 @@
       actions.append(confirm);
       pending.append(actions);
     } else {
+      if (data.canEdit && data.reviewedRemoteSha) {
+        const record = data.blocked;
+        renderTimeConflictChoices(pending, item, [{
+          key: 'stop', label: 'Stop and save',
+          detail: 'Save the locally recorded interval and stop this exact GitHub timer.',
+          start: record.startedAt, end: record.endedAt,
+          run: () => send({ type: 'EDIT_PENDING_COMPLETION_CONFLICT', destinationId: item.destinationId,
+            id: item.id, reviewedRemoteSha: data.reviewedRemoteSha,
+            edits: { taskUrl: record.taskUrl, taskTitle: record.taskTitle || '', startedAt: record.startedAt,
+              endedAt: record.endedAt, description: record.description || '', billable: record.billable !== false } }),
+        }], { linkedCount: 1 });
+      }
       pending.append(conflictEntryActions(item, data.blocked, 'completion', {
-        canEdit: data.canEdit, canDelete: data.canDelete,
-        editReason: data.reason, deleteReason: data.reason,
+        canEdit: data.canEdit, canDelete: data.canDelete, reviewedRemoteSha: data.reviewedRemoteSha,
+        editReason: data.reason, deleteReason: data.reviewedRemoteSha
+          ? 'Stop and save this GitHub timer before deleting its time.' : data.reason,
       }));
     }
     pair.append(pending);

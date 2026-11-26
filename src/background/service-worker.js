@@ -1936,11 +1936,15 @@ async function handle(message, sender) {
         throw new Error('Only Activity can resolve a stopped-time conflict.');
       }
       const keys = Object.keys(message).sort().join(',');
-      const expected = message.type === 'EDIT_PENDING_COMPLETION_CONFLICT'
-        ? 'destinationId,edits,id,type' : 'destinationId,id,type';
+      const editing = message.type === 'EDIT_PENDING_COMPLETION_CONFLICT';
+      const reviewed = editing && Object.hasOwn(message, 'reviewedRemoteSha');
+      const expected = editing
+        ? (reviewed ? 'destinationId,edits,id,reviewedRemoteSha,type' : 'destinationId,edits,id,type')
+        : 'destinationId,id,type';
       if (keys !== expected || typeof message.id !== 'string'
           || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)
-          || (message.type === 'EDIT_PENDING_COMPLETION_CONFLICT' && !validConflictEntryEdits(message.edits))) {
+          || (editing && !validConflictEntryEdits(message.edits))
+          || (reviewed && (typeof message.reviewedRemoteSha !== 'string' || !/^[a-f0-9]{40}$/.test(message.reviewedRemoteSha)))) {
         throw new Error('Invalid stopped-time conflict request.');
       }
       const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
@@ -1950,7 +1954,8 @@ async function handle(message, sender) {
         return tracker.getPendingCompletionConflictContext(message.id);
       }
       if (message.type === 'EDIT_PENDING_COMPLETION_CONFLICT') {
-        const result = await tracker.editPendingCompletionConflict(message.id, message.edits);
+        const result = await tracker.editPendingCompletionConflict(message.id, message.edits,
+          ...(reviewed ? [message.reviewedRemoteSha] : []));
         requestPendingSync();
         return result;
       }
