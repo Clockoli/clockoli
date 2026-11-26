@@ -2209,7 +2209,7 @@
   }
 
   // The selected card determines which queued record can be edited.
-  function editFullTimeConflict(item, record, trigger, side = null) {
+  function editFullTimeConflict(item, record, trigger, side = null, reviewedPrevious = null) {
     const form = globalThis.ClockoliTimeEntryForm;
     if (!form?.openEdit) {
       syncIssueError = 'The time editor is unavailable. Reload Activity and try again.';
@@ -2227,13 +2227,14 @@
         : side ? 'EDIT_STOPPED_OVERLAP' : 'EDIT_ACTIVE_START_CONFLICT',
         destinationId: item.destinationId, id: item.id,
         ...(['local', 'previous'].includes(side) ? { side } : {}),
+        ...(side === 'previous' ? { reviewedPrevious } : {}),
         edits: { taskUrl: value.taskUrl, taskTitle: value.taskTitle,
           startedAt: value.startedAt, endedAt: value.endedAt,
           description: value.description, billable: value.billable } };
       let result;
       try { result = await send(message); }
       catch (error) {
-        if (side === 'queued-start') {
+        if (side === 'queued-start' || side === 'previous') {
           stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
           syncIssuesSignature = null;
           renderSyncIssues();
@@ -2274,7 +2275,7 @@
     }, trigger);
   }
 
-  async function deleteTimeConflict(item, trigger, side = null) {
+  async function deleteTimeConflict(item, trigger, side = null, reviewedPrevious = null) {
     const prompt = side === 'completion'
       ? 'Delete this stopped time saved only in this browser? If it was not synced, it cannot be recovered from GitHub. Clockoli will check GitHub first. Other queued time will be kept.'
       : side === 'previous'
@@ -2288,7 +2289,8 @@
       const result = await send({ type: side === 'completion' ? 'DELETE_PENDING_COMPLETION_CONFLICT'
         : side ? 'DELETE_STOPPED_OVERLAP' : 'DELETE_ACTIVE_START_CONFLICT',
         destinationId: item.destinationId, id: item.id,
-        ...(['local', 'previous'].includes(side) ? { side } : {}) });
+        ...(['local', 'previous'].includes(side) ? { side } : {}),
+        ...(side === 'previous' ? { reviewedPrevious } : {}) });
       if (!result?.deleted || (side === 'previous' && !result.resolved)) {
         throw new Error('The deletion is not fully synced. Keep this browser data and review Activity.');
       }
@@ -2296,6 +2298,7 @@
       syncIssueError = ''; recentLoaded = false;
       await refreshRecent(true);
     } catch (error) {
+      if (side === 'previous') stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
       syncIssueError = (side ? overlapMessageError(error) : error)?.message
         || 'Deletion could not be verified. Your pending changes remain in this browser.';
       syncIssuesSignature = null; renderSyncIssues();
@@ -2362,6 +2365,7 @@
         if (result?.resolved) void refreshRecent(true).catch(setError);
       } catch (error) {
         syncIssueError = error?.message || 'Could not resolve this conflict. All pending changes were kept.';
+        stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
         syncIssuesSignature = null;
         renderSyncIssues();
       } finally {
@@ -2415,67 +2419,44 @@
         || ['appendMonthly', 'commitCompletion'].includes(item.stage));
   }
 
+  function conflictEntryActions(item, record, side, { canEdit, canDelete, editReason, deleteReason, reviewedPrevious } = {}) {
+    const actions = el('div', undefined, 'entry-actions sync-overlap-actions');
+    const editLabel = side === 'previous' ? 'Edit saved time' : 'Edit pending time';
+    const deleteLabel = side === 'previous' ? 'Delete saved time' : 'Delete pending time';
+    const edit = entryActionButton(editLabel, 'edit', (_event, trigger) =>
+      editFullTimeConflict(item, record, trigger, side, reviewedPrevious));
+    edit.classList.add('sync-overlap-edit');
+    edit.setAttribute('aria-label', editLabel);
+    edit.disabled = !canEdit;
+    if (!canEdit) edit.title = editReason || 'Recheck GitHub before editing this time.';
+    const remove = entryActionButton(deleteLabel, 'delete', (_event, trigger) =>
+      deleteTimeConflict(item, trigger, side, reviewedPrevious));
+    remove.classList.add('sync-resolution-delete');
+    remove.setAttribute('aria-label', deleteLabel);
+    remove.disabled = !canDelete;
+    if (!canDelete) remove.title = deleteReason || 'Recheck GitHub before deleting this time.';
+    actions.append(edit, remove);
+    return actions;
+  }
+
   function renderPendingCompletionConflict(box, item, data) {
     if (data?.kind !== 'pending_completion' || !data.blocked) return false;
     const pair = el('div', undefined, 'sync-overlap-pair');
-    if (data.remote) {
-      const saved = el('div', undefined, 'entry-record sync-overlap-card');
-      saved.append(el('span', 'Current timer on GitHub · still running', 'sync-overlap-label'),
-        el('span', 'Started ' + overlapLocalDate(data.remote.startedAt)
-          + ' ' + overlapClock(data.remote.startedAt), 'sync-overlap-range'));
-      if (data.remote.taskUrl) {
-        const identity = el('div', undefined, 'entry-record-task-identity');
-        identity.append(siteFavicon(data.remote, 'entry-record-favicon'),
-          taskResult(data.remote, 'entry-record-task-result'));
-        saved.append(identity);
-      }
-      pair.append(saved);
-    }
-    const pending = el('div', undefined, 'entry-record sync-overlap-card');
-    pending.append(el('span', 'Pending time · saved in this browser', 'sync-overlap-label'),
-      el('span', overlapLocalRange(data.blocked.startedAt, data.blocked.endedAt), 'sync-overlap-range'));
-    if (data.blocked.taskUrl) {
-      const identity = el('div', undefined, 'entry-record-task-identity');
-      identity.append(siteFavicon(data.blocked, 'entry-record-favicon'),
-        taskResult(data.blocked, 'entry-record-task-result'));
-      pending.append(identity);
-    }
-    if (data.next) {
-      const next = el('div', undefined, 'entry-record sync-overlap-card');
-      next.append(el('span', 'Next timer · queued in this browser', 'sync-overlap-label'),
-        el('span', 'Started ' + overlapLocalDate(data.next.startedAt)
-          + ' ' + overlapClock(data.next.startedAt), 'sync-overlap-range'));
-      if (data.next.taskUrl) {
-        const identity = el('div', undefined, 'entry-record-task-identity');
-        identity.append(siteFavicon(data.next, 'entry-record-favicon'),
-          taskResult(data.next, 'entry-record-task-result'));
-        next.append(identity);
-      }
-      pair.append(next);
-    }
-    const actions = el('div', undefined, 'entry-actions sync-overlap-actions');
+    if (data.remote) pair.append(queuedConflictCard('Current timer on GitHub · still running', data.remote));
+    if (data.next) pair.append(queuedConflictCard('Next timer · queued in this browser', data.next));
+    const pending = queuedConflictCard('Pending time · saved in this browser', data.blocked);
     if (data.canConfirm) {
-      const confirm = button('Confirm saved time', 'primary', () =>
+      const actions = el('div', undefined, 'entry-actions sync-overlap-actions');
+      const confirm = button('Confirm saved time', 'primary sync-resolution-apply', () =>
         confirmSavedCompletionConflict(item, confirm));
-      confirm.classList.add('sync-resolution-apply');
       actions.append(confirm);
+      pending.append(actions);
     } else {
-      const edit = entryActionButton('Edit pending time', 'edit', (_event, trigger) =>
-        editFullTimeConflict(item, data.blocked, trigger, 'completion'));
-      edit.classList.add('sync-overlap-edit');
-      edit.disabled = !data.canEdit;
-      const remove = entryActionButton('Delete pending time', 'delete', (_event, trigger) =>
-        deleteTimeConflict(item, trigger, 'completion'));
-      remove.classList.add('sync-resolution-delete');
-      remove.disabled = !data.canDelete;
-      if (!data.canEdit || !data.canDelete) {
-        const reason = data.reason || 'The queued completion needs review before it can be changed.';
-        if (!data.canEdit) edit.title = reason;
-        if (!data.canDelete) remove.title = reason;
-      }
-      actions.append(edit, remove);
+      pending.append(conflictEntryActions(item, data.blocked, 'completion', {
+        canEdit: data.canEdit, canDelete: data.canDelete,
+        editReason: data.reason, deleteReason: data.reason,
+      }));
     }
-    pending.append(actions);
     pair.append(pending);
     if (data.reason) pair.append(el('p', data.reason, 'sync-overlap-unavailable'));
     else pair.append(el('p', data.next
@@ -2492,37 +2473,11 @@
     if ((pageState.pendingWrites ?? []).filter(write => write.status === 'conflict').length > 1) {
       pair.append(el('h3', 'Resolve time conflict'));
     }
-    const card = (label, record) => {
-      const node = el('div', undefined, 'entry-record sync-overlap-card');
-      node.append(el('span', label, 'sync-overlap-label'),
-        el('span', overlapLocalRange(record.startedAt, record.endedAt), 'sync-overlap-range'));
-      if (record.taskUrl) {
-        const identity = el('div', undefined, 'entry-record-task-identity');
-        identity.append(siteFavicon(record, 'entry-record-favicon'), taskResult(record, 'entry-record-task-result'));
-        node.append(identity);
-      }
-      return node;
-    };
-    if (data.previous) pair.append(card('Saved on GitHub', data.previous));
-    const pendingCard = card('Pending time · saved in this browser', data.blocked);
-    if (data.linkedCount > 1) {
-      const actions = el('div', undefined, 'entry-actions sync-overlap-actions');
-      const edit = entryActionButton('Edit pending time', 'edit', (_event, trigger) =>
-        editFullTimeConflict(item, data.blocked, trigger));
-      edit.classList.add('sync-overlap-edit');
-      edit.disabled = !data.canEdit;
-      const remove = entryActionButton('Delete pending time', 'delete', (_event, trigger) =>
-        deleteTimeConflict(item, trigger));
-      remove.classList.add('sync-resolution-delete');
-      remove.disabled = !data.canDelete;
-      if (!data.canEdit || !data.canDelete) {
-        const reason = data.reason || 'Recheck GitHub before changing this timer.';
-        if (!data.canEdit) edit.title = reason;
-        if (!data.canDelete) remove.title = reason;
-      }
-      actions.append(edit, remove);
-      pendingCard.append(actions);
-    }
+    if (data.previous) pair.append(queuedConflictCard('Saved on GitHub', data.previous));
+    const pendingCard = queuedConflictCard('Pending time · saved in this browser', data.blocked);
+    if (data.linkedCount > 1) pendingCard.append(conflictEntryActions(item, data.blocked, null, {
+      canEdit: data.canEdit, canDelete: data.canDelete, editReason: data.reason, deleteReason: data.reason,
+    }));
     pair.append(pendingCard);
     pair.append(el('p', 'Original timer Start: ' + overlapLocalDate(data.originalStart)
       + ' ' + overlapClock(data.originalStart), 'muted'));
@@ -2572,43 +2527,26 @@
     if ((pageState.pendingWrites ?? []).filter(write => write.status === 'conflict').length > 1) {
       pair.append(el('h3', `Overlap · ${overlapLocalDate(new Date(begin).toISOString())} ${overlapClock(new Date(begin).toISOString())}`));
     }
-    const card = (side, record, label, proposed) => {
-      const node = el('div', undefined, 'entry-record sync-overlap-card');
-      const timeRow = el('div', undefined, 'entry-time-row');
-      timeRow.append(el('span', overlapLocalRange(record.startedAt, record.endedAt),
-        'entry-time-range entry-time-display sync-overlap-range'));
-      const identity = el('div', undefined, 'entry-record-task-identity');
-      identity.append(siteFavicon(record, 'entry-record-favicon'), taskResult(record, 'entry-record-task-result'));
-      node.append(el('span', label, 'sync-overlap-label'), timeRow, identity);
-      if (proposed?.endedAt && proposed.endedAt !== record.endedAt) {
-        node.append(el('span', `Your unsynced edit ends at ${overlapLocalDate(proposed.endedAt)} ${overlapClock(proposed.endedAt)}.`, 'sync-overlap-proposed'));
-      }
-      const actions = el('div', undefined, 'entry-actions sync-overlap-actions');
-      const editLabel = side === 'previous' ? 'Edit saved time' : 'Edit pending time';
-      const edit = entryActionButton(editLabel, 'edit', (_event, trigger) =>
-        editFullTimeConflict(item, side === 'previous' && proposed
-          ? { ...record, ...proposed } : record, trigger, side));
-      edit.classList.add('sync-overlap-edit');
-      edit.setAttribute('aria-label', editLabel);
-      edit.disabled = data.verified !== false
-        && (side === 'previous' ? data.canEditPrevious !== true : data.canEditLocal !== true);
-      if (edit.disabled) edit.title = data.editBlockedReason || 'Review the queued time before editing.';
-      const deleteLabel = side === 'previous' ? 'Delete saved time' : 'Delete pending time';
-      const remove = entryActionButton(deleteLabel, 'delete', (_event, trigger) =>
-        deleteTimeConflict(item, trigger, side));
-      remove.setAttribute('aria-label', deleteLabel);
-      remove.classList.add('sync-resolution-delete');
-      remove.disabled = data.verified !== false
-        && (side === 'local' ? data.canDeleteLocal !== true : data.canDeletePrevious !== true);
-      if (remove.disabled) remove.title = side === 'local'
-        ? data.localDeleteBlockedReason || 'GitHub must verify the pending timer before deletion.'
-        : data.editBlockedReason || 'GitHub must verify the saved time before deletion.';
-      actions.append(edit, remove);
-      node.append(actions);
-      return node;
-    };
-    pair.append(card('previous', previous, data.verified === false ? 'Earlier entry · not yet checked on GitHub' : 'Saved on GitHub', queuedPrevious),
-      card('local', blocked, 'Pending · saved in this browser'));
+    const verifiedPrevious = data.verified !== false && Boolean(data.reviewedPrevious?.id && data.reviewedPrevious?.sha);
+    const savedCard = queuedConflictCard(data.verified === false
+      ? 'Earlier entry · not yet checked on GitHub' : 'Saved on GitHub', previous, { timeRow: true });
+    if (queuedPrevious?.endedAt && queuedPrevious.endedAt !== previous.endedAt) {
+      savedCard.append(el('span', `Your unsynced edit ends at ${overlapLocalDate(queuedPrevious.endedAt)} ${overlapClock(queuedPrevious.endedAt)}.`, 'sync-overlap-proposed'));
+    }
+    savedCard.append(conflictEntryActions(item, queuedPrevious ? { ...previous, ...queuedPrevious } : previous, 'previous', {
+      canEdit: verifiedPrevious && data.canEditPrevious === true,
+      canDelete: verifiedPrevious && data.canDeletePrevious === true,
+      editReason: verifiedPrevious ? data.editBlockedReason : 'Recheck GitHub before editing the saved entry.',
+      deleteReason: verifiedPrevious ? data.editBlockedReason : 'Recheck GitHub before deleting the saved entry.',
+      reviewedPrevious: data.reviewedPrevious,
+    }));
+    const pendingCard = queuedConflictCard('Pending · saved in this browser', blocked, { timeRow: true });
+    pendingCard.append(conflictEntryActions(item, blocked, 'local', {
+      canEdit: data.verified === false || data.canEditLocal === true,
+      canDelete: data.verified === false || data.canDeleteLocal === true,
+      editReason: data.editBlockedReason, deleteReason: data.localDeleteBlockedReason,
+    }));
+    pair.append(savedCard, pendingCard);
     if (data.editable !== true && data.verified !== false && !data.canEditPrevious && !data.canEditLocal) {
       pair.append(el('p', data.editBlockedReason || 'The queued entries must be checked before editing.',
         'sync-overlap-unavailable'));
@@ -2619,14 +2557,15 @@
       renderSyncIssues();
     }));
     const options = [];
-    if (data.editable === true && data.verified !== false
+    if (data.editable === true && verifiedPrevious
         && new Date(previous.endedAt) < new Date(blocked.endedAt)) {
       options.push({
         key: 'after', label: 'Start pending time after saved time',
         detail: 'Move the pending Start to the exact End of the saved entry.',
         start: previous.endedAt, end: blocked.endedAt,
         run: () => send({ type: 'RESOLVE_STOPPED_OVERLAP', destinationId: item.destinationId,
-          id: item.id, side: 'local', startedAt: previous.endedAt, endedAt: blocked.endedAt }),
+          id: item.id, side: 'local', reviewedPrevious: data.reviewedPrevious,
+          startedAt: previous.endedAt, endedAt: blocked.endedAt }),
       });
     }
     renderTimeConflictChoices(pair, item, options, { linkedCount: queuedPrevious ? 3 : 2 });
@@ -3012,14 +2951,19 @@
     if (wasOpen) dialog.showModal();
   }
 
-  function queuedConflictCard(label, record) {
+  function queuedConflictCard(label, record, { timeRow = false } = {}) {
     const card = el('div', undefined, 'entry-record sync-overlap-card');
     card.append(el('span', label, 'sync-overlap-label'));
     if (validTimestamp(record?.startedAt)) {
-      card.append(el('span', validTimestamp(record?.endedAt)
+      const range = el('span', validTimestamp(record?.endedAt)
         ? overlapLocalRange(record.startedAt, record.endedAt)
         : 'Started ' + overlapLocalDate(record.startedAt) + ' ' + overlapClock(record.startedAt),
-      'sync-overlap-range'));
+      timeRow ? 'entry-time-range entry-time-display sync-overlap-range' : 'sync-overlap-range');
+      if (timeRow) {
+        const row = el('div', undefined, 'entry-time-row');
+        row.append(range);
+        card.append(row);
+      } else card.append(range);
     }
     if (record?.taskUrl) {
       const identity = el('div', undefined, 'entry-record-task-identity');

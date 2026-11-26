@@ -550,12 +550,11 @@ async function loadTimes(message, sender) {
         : projected.records;
     }, { signal: controller.signal });
     loadCoordinator.assertCurrent(loadEpoch);
-    // Recovery summaries omit operation payloads. Read complete local queue
-    // details for Activity; legacy test stores may only provide the summary.
-    const local = await store.getTrackingSnapshot?.();
+    // Recovery summaries omit operation payloads; use the current local queue.
+    const local = await store.getTrackingSnapshot();
     loadCoordinator.assertCurrent(loadEpoch);
-    const pendingWrites = [...recoveries.entries()].flatMap(([destinationId, recovery]) =>
-      (local?.destinationStates?.entries?.[destinationId]?.pendingWrites ?? recovery.pendingWrites ?? [])
+    const pendingWrites = [...recoveries.entries()].flatMap(([destinationId]) =>
+      (local.destinationStates.entries[destinationId]?.pendingWrites ?? [])
         .map(operation => safePendingProjection(operation, destinationId, { includeDetails: true })));
     return {
       configured: true,
@@ -843,13 +842,16 @@ const DIRECT_DEVICE_FLOW_MESSAGES = new Set([
 
 const READ_RETRY_MESSAGES = new Set([
   'LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'LOAD_TASKS', 'LOAD_TIMES', 'LOAD_RECENT', 'SEARCH_TASKS',
-  'GET_STATE', 'GET_PAGE_STATE', 'GET_STOPPED_OVERLAP', 'GET_ACTIVE_START_CONFLICT', 'GET_EXCHANGE_RATES', 'GET_ONBOARDING_STATE',
+  'GET_STATE', 'GET_PAGE_STATE', 'GET_STOPPED_OVERLAP', 'GET_ACTIVE_START_CONFLICT',
+  'GET_PENDING_COMPLETION_CONFLICT', 'GET_QUEUED_START_RECOVERY', 'GET_EXCHANGE_RATES', 'GET_ONBOARDING_STATE',
   'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES',
 ]);
 
 const RECOVERABLE_REPOSITORY_MESSAGES = new Set([
   'LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'LOAD_TASKS', 'LOAD_TIMES', 'SEARCH_TASKS', 'GET_STATE', 'GET_PAGE_STATE', 'START', 'SWITCH_TASK', 'STOP', 'DISCARD_ACTIVE', 'SYNC',
-  'LOAD_RECENT', 'BULK_ADD_TIMES', 'ADD_TIME', 'ADD_DAY_RANGE', 'EDIT_ENTRIES', 'EDIT_ACTIVE_START', 'QUEUE_ENTRY_EDIT', 'QUEUE_ENTRIES_EDIT', 'QUEUE_ACTIVE_START_EDIT', 'DELETE_ENTRY', 'RESOLVE_PENDING', 'RESOLVE_STOPPED_OVERLAP', 'EDIT_STOPPED_OVERLAP', 'RESOLVE_ACTIVE_START_CONFLICT', 'EDIT_ACTIVE_START_CONFLICT', 'DELETE_ACTIVE_START_CONFLICT',
+  'LOAD_RECENT', 'BULK_ADD_TIMES', 'ADD_TIME', 'ADD_DAY_RANGE', 'EDIT_ENTRIES', 'EDIT_ACTIVE_START', 'QUEUE_ENTRY_EDIT', 'QUEUE_ENTRIES_EDIT', 'QUEUE_ACTIVE_START_EDIT', 'DELETE_ENTRY', 'RESOLVE_PENDING',
+  // Destination-scoped conflict actions must be explicitly rechecked rather
+  // than replayed after recovery of the default repository.
 ]);
 
 async function withCurrentRepositoryRecovery(message, operation) {
@@ -1151,6 +1153,13 @@ function validConflictEntryEdits(edits) {
     && [edits.startedAt, edits.endedAt].every(value => typeof value === 'string'
       && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
       && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value);
+}
+
+function validReviewedPrevious(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'id,sha'
+    && typeof value.id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value.id)
+    && typeof value.sha === 'string' && /^[a-f0-9]{40}$/.test(value.sha);
 }
 
 async function handle(message, sender) {
@@ -2006,13 +2015,17 @@ async function handle(message, sender) {
     case 'DELETE_STOPPED_OVERLAP': {
       if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) throw new Error('Only Activity can review this overlap.');
       const keys = Object.keys(message).sort().join(',');
-      if (keys !== (message.type === 'GET_STOPPED_OVERLAP' ? 'destinationId,id,type'
-        : message.type === 'DELETE_STOPPED_OVERLAP' ? 'destinationId,id,side,type'
-          : message.type === 'EDIT_STOPPED_OVERLAP' ? 'destinationId,edits,id,side,type'
-            : 'destinationId,endedAt,id,side,startedAt,type')
-          || typeof message.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)) {
+      const read = message.type === 'GET_STOPPED_OVERLAP';
+      const needsReview = message.type === 'RESOLVE_STOPPED_OVERLAP' || (!read && message.side === 'previous');
+      const expected = ['destinationId', 'id', 'type', ...(!read ? ['side'] : []),
+        ...(needsReview ? ['reviewedPrevious'] : []),
+        ...(message.type === 'EDIT_STOPPED_OVERLAP' ? ['edits']
+          : message.type === 'RESOLVE_STOPPED_OVERLAP' ? ['startedAt', 'endedAt'] : [])].sort().join(',');
+      if (keys !== expected || typeof message.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)
+          || (needsReview && !validReviewedPrevious(message.reviewedPrevious))) {
         throw new Error('Invalid overlap request.');
       }
+      const reviewed = needsReview ? { reviewedPrevious: message.reviewedPrevious } : {};
       if (message.type === 'EDIT_STOPPED_OVERLAP'
           && (!['previous', 'local'].includes(message.side) || !validConflictEntryEdits(message.edits))) {
         throw new Error('Invalid edited overlap details.');
@@ -2022,13 +2035,13 @@ async function handle(message, sender) {
         message.type === 'GET_STOPPED_OVERLAP' ? { localOnly: true, persistUser: false } : {});
       if (message.type === 'GET_STOPPED_OVERLAP') return tracker.getStoppedOverlapContext(message.id);
       if (message.type === 'EDIT_STOPPED_OVERLAP') {
-        const result = await tracker.editStoppedOverlap(message.id, { side: message.side, edits: message.edits });
+        const result = await tracker.editStoppedOverlap(message.id, { side: message.side, edits: message.edits, ...reviewed });
         requestPendingSync();
         return result;
       }
       if (message.type === 'DELETE_STOPPED_OVERLAP') {
         if (!['previous', 'local'].includes(message.side)) throw new Error('Invalid overlap delete.');
-        const result = await tracker.deleteStoppedOverlap(message.id, { side: message.side });
+        const result = await tracker.deleteStoppedOverlap(message.id, { side: message.side, ...reviewed });
         requestPendingSync();
         return result;
       }
@@ -2040,7 +2053,7 @@ async function handle(message, sender) {
         throw new Error('Invalid overlap edit.');
       }
       const result = await tracker.resolveStoppedOverlap(message.id,
-        { side: message.side, startedAt: message.startedAt, endedAt: message.endedAt });
+        { side: message.side, startedAt: message.startedAt, endedAt: message.endedAt, ...reviewed });
       requestPendingSync();
       return result;
     }
