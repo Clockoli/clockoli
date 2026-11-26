@@ -472,9 +472,9 @@ function timeOffSnapshotFor(state, user, repositoryKey) {
 
 function localTimeOffRecords(state, user, repositoryKey, taskUrls) {
   const snapshot = timeOffSnapshotFor(state, user, repositoryKey);
-  const records = snapshot ? snapshot.records : [
-    ...(state.summaryCache?.weekEntries ?? []), ...(state.recentCache ?? []),
-  ];
+  const recent = [...(state.summaryCache?.weekEntries ?? []), ...(state.recentCache ?? [])];
+  const records = snapshot ? [...snapshot.records,
+    ...recent.filter(entry => !snapshot.taskUrls.includes(taskUrlOf(entry)))] : recent;
   return overlayPendingEntries(records, state.pendingWrites ?? [])
     .filter(entry => entry.user === user && taskUrls.includes(taskUrlOf(entry)));
 }
@@ -1484,19 +1484,27 @@ export class TrackerService {
     }).then(state => state.pendingWrites ?? []);
   }
 
-  async reconcileCancelledTimeOffCreations() {
+  async reconcileCancelledTimeOffCreations(canSync) {
     const reviewed = await this.store.getState(), queue = reviewed.pendingWrites ?? [];
     for (let index = 0; index < queue.length; index++) {
       const creation = queue[index], cancelled = new Set(cancelledTimeOffCreationIds(queue, index));
       if (!cancelled.size) continue;
+      if (!(await canSync())) return false;
       // A failed HTTP response is not proof that an atomic write failed.
       // Check both the monthly records and the canonical task index before
       // dropping any previously attempted creation.
       const ids = new Set(creation.entries.map(entry => entry.id));
       const paths = [...new Set(creation.entries.map(entry => monthlyRecordsPath(this.user, entry.entryDate)))];
-      const [taskIndex, files] = await Promise.all([
-        this.readTaskIndex(), Promise.all(paths.map(path => this.readMonthly(path))),
-      ]);
+      let taskIndex, files;
+      try {
+        [taskIndex, files] = await Promise.all([
+          this.readTaskIndex(), Promise.all(paths.map(path => this.readMonthly(path))),
+        ]);
+      } catch {
+        // Keep the conflicting operations if their remote state is unknown.
+        // Unrelated queued writes can still use the normal sync path.
+        continue;
+      }
       const indexed = new Set(Object.values(taskIndex.index.tasks).flatMap(task => task.recordIds));
       const remote = files.flatMap(file => file.entries).filter(entry => ids.has(entry.id));
       const anySaved = remote.length || [...ids].some(id => indexed.has(id));
@@ -1543,10 +1551,8 @@ export class TrackerService {
   async syncPending({ canSync = async () => true } = {}) {
     // A cancellation accepted after an earlier conflict can make that
     // creation unnecessary. Never perform this repair over newer local work.
-    if (await canSync()) {
-      while (await this.reconcileCancelledTimeOffCreations()) {
-        if (!(await canSync())) break;
-      }
+    while (await this.reconcileCancelledTimeOffCreations(canSync)) {
+      // Each pass removes cancelled records or restores one retryable write.
     }
     const queue = await this.compactPendingQueue();
     const blockedOperations = [];
@@ -1998,7 +2004,7 @@ export class TrackerService {
         this.currentQueueDiagnostic = null;
       }
     }
-    if (await canSync() && await this.reconcileCancelledTimeOffCreations()) {
+    if (await this.reconcileCancelledTimeOffCreations(canSync)) {
       return this.syncPending({ canSync });
     }
     return (await this.store.getState()).pendingWrites ?? [];

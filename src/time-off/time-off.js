@@ -159,8 +159,9 @@ function effectiveTeamRecords() {
   const repository = $('time-off-repository-filter').value;
   let records = state.loadedTeamYear === state.year ? [...state.teamEntries] : [];
   records = records.filter(entry => !repository || entry.destinationId === repository);
-  records = records.filter(entry =>
-    !isOwnEntry(entry) || !state.myLoadedDestinations.has(entry.destinationId));
+  const localKeys = new Set(state.entries.map(entry => entry.destinationId + '\u0000' + entry.id));
+  records = records.filter(entry => !localKeys.has(entry.destinationId + '\u0000' + entry.id)
+    && (!isOwnEntry(entry) || !state.myLoadedDestinations.has(entry.destinationId)));
   records.push(...state.entries.filter(entry =>
     (!repository || entry.destinationId === repository)
     && entry.entryDate?.slice(0, 4) === String(state.year)));
@@ -428,11 +429,11 @@ function changeYear(year) {
   }
   if (!activateTeamYear(year)) { renderYear(); renderInspector(); void loadTeam(); }
 }
-async function loadMine({ quiet = false } = {}) {
+async function loadMine({ quiet = false, refresh = false } = {}) {
   const request = ++state.mineRequestId;
   if (!quiet) notice('Loading your time off…');
   try {
-    const result = await send({ type: 'LOAD_MY_TIME_OFF' });
+    const result = await send({ type: 'LOAD_MY_TIME_OFF', ...(refresh ? { refresh: true } : {}) });
     if (request !== state.mineRequestId) return;
     const identity = JSON.stringify({
       repositories: (result.repositories || []).map(repo => [
@@ -767,7 +768,7 @@ $('year-grid').addEventListener('mouseleave', () => { pinDayUntilLeave = false; 
 $('new-time-off').addEventListener('click', openForm);
 $('delete-selected-time-off').addEventListener('click', openDeleteSelected);
 $('refresh-time-off').addEventListener('click', () => {
-  void loadMine(); void loadTeam({ refresh: true });
+  void loadMine({ refresh: true }); void loadTeam({ refresh: true });
 });
 $('time-off-repository-filter').addEventListener('change', () => {
   renderMy(); renderYear(); renderInspector();

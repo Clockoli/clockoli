@@ -150,10 +150,10 @@ async function timeOffSettingsForDestination(destinationId, { fresh = false, sig
   if (!fresh) {
     const cached = (await timeOffCacheBackend.getMany([key]))[key];
     if (cached?.repoId === destination.repoId && cached?.defaultBranch === destination.defaultBranch) {
-      try { return { config: normalizeTimeOffConfig(cached.config), sha: cached.sha ?? null }; }
+      try { return { config: normalizeTimeOffConfig(cached.config), sha: cached.sha ?? null, cached: true }; }
       catch { /* Stale or malformed local cache must not be trusted. */ }
     }
-    return { config: normalizeTimeOffConfig(), sha: null };
+    return { config: normalizeTimeOffConfig(), sha: null, cached: false };
   }
   const github = githubForConfig(destination).forBranch(destination.defaultBranch || destination.branch || 'main', 'default');
   const result = await readTimeOffSettings(github, { signal });
@@ -555,17 +555,19 @@ async function loadTeamTimeOff(message, sender, extensionOrigin) {
 
 async function loadMyTimeOff(message, sender, extensionOrigin) {
   if (sender?.url !== extensionOrigin + 'src/time-off/time-off.html'
-      || Object.keys(message).sort().join(',') !== 'type') {
+      || !['type', 'refresh,type'].includes(Object.keys(message).sort().join(','))
+      || (Object.hasOwn(message, 'refresh') && message.refresh !== true)) {
     throw new Error('Only Time off can load personal time off.');
   }
   // My time off must include complete groups, including dates years in the
   // past or future. Bound the file scan instead of silently clipping by date.
   const range = { startDate: '0001-01-01', endDate: '9999-12-31' };
+  const loadEpoch = await loadCoordinator.beginLoad();
   const snapshot = await configuredSnapshot({ localOnly: true });
   const destinations = selectReadDestinations(snapshot);
   if (!snapshot.auth || !destinations.length) return { configured: false, entries: [], repositories: [] };
   const configs = {}, currentUsers = {}, cachedDestinations = new Set(), personalDestinations = new Set();
-  const loadEpoch = await loadCoordinator.beginLoad();
+  const incompleteDestinations = new Set();
   loadCoordinator.assertCurrent(loadEpoch);
   const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
     const user = await destinationUser(destination, snapshot.auth);
@@ -573,6 +575,16 @@ async function loadMyTimeOff(message, sender, extensionOrigin) {
     currentUsers[destination.id] = user;
     const tracker = await trackerForDestination(destination.id, { localOnly: true });
     const revision = await tracker.getTimeOffRevision();
+    const cachedSettings = await timeOffSettingsForDestination(destination.id);
+    if (message.refresh !== true && cachedSettings.cached) {
+      const local = await tracker.getLocalTimeOffRecords(cachedSettings.config.taskUrls);
+      if (local.complete) {
+        configs[destination.id] = cachedSettings.config;
+        cachedDestinations.add(destination.id);
+        personalDestinations.add(destination.id);
+        return local.records;
+      }
+    }
     let settings;
     try {
       settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
@@ -595,17 +607,18 @@ async function loadMyTimeOff(message, sender, extensionOrigin) {
       signal?.throwIfAborted();
       if (error?.name === 'AbortError') throw error;
       loadCoordinator.assertCurrent(loadEpoch);
-      settings ??= await timeOffSettingsForDestination(destination.id);
+      settings ??= cachedSettings;
       configs[destination.id] = settings.config;
     }
     const local = await tracker.getLocalTimeOffRecords(settings.config.taskUrls);
     cachedDestinations.add(destination.id);
+    incompleteDestinations.add(destination.id);
     if (local.complete) personalDestinations.add(destination.id);
     return local.records;
   });
   loadCoordinator.assertCurrent(loadEpoch);
   return {
-    configured: true, partial: loaded.partial || cachedDestinations.size > 0,
+    configured: true, partial: loaded.partial || incompleteDestinations.size > 0,
     readStatus: loaded.readStatus.map(item => cachedDestinations.has(item.destinationId)
       ? { ...item, status: 'cached' } : item),
     personalDestinations: [...personalDestinations], currentUsers,
