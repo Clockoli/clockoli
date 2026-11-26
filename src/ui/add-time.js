@@ -202,7 +202,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
   let lastSearch = '', searchIncomplete = false, catalogLoaded = false, editing = null, showRepository = false;
   let defaultStart = '', defaultDate = '', startEdited = false, dateEdited = false, endDateManuallyEdited = false;
   let editStartInstant = null, editEndInstant = null, endShifted = false;
-  let ptoLookupUrl = '', ptoStatus = null;
+  let ptoLookupUrl = '', ptoStatus = null, ptoLookupRequest = 0, previousNonBillable = null;
   const ptoIsSelected = () => Boolean(
     (ptoStatus?.isTimeOff && ptoStatus.taskUrl === taskIdentity()?.taskUrl)
     || (editing?.entry?.isTimeOff === true && editing.entry.taskUrl === taskIdentity()?.taskUrl)
@@ -211,7 +211,13 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
     const pto = ptoIsSelected();
     ptoHint.hidden = !pto;
     ptoHint.textContent = pto ? 'Time off · Use the Time off page to plan and edit absences. This time is always non-billable.' : '';
-    if (pto) nonBillable.checked = true;
+    if (pto) {
+      if (previousNonBillable === null) previousNonBillable = nonBillable.checked;
+      nonBillable.checked = true;
+    } else if (previousNonBillable !== null) {
+      nonBillable.checked = previousNonBillable;
+      previousNonBillable = null;
+    }
     nonBillable.disabled = pto;
     refreshDateMax();
     if (dayRange.checked) renderCalendar();
@@ -320,11 +326,12 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
     const task = taskIdentity();
     const lookup = task?.taskUrl || '';
     if (ptoLookupUrl !== lookup) {
+      const request = ++ptoLookupRequest;
       ptoLookupUrl = lookup; ptoStatus = null; refreshPtoState();
       if (searchIsCompleteCatalog && /^https?:\/\//i.test(lookup)) {
         const currentGeneration = generation;
         void send({ type: 'CHECK_TIME_OFF_TASK', taskUrl: lookup }).then(result => {
-          if (currentGeneration !== generation || ptoLookupUrl !== lookup || !dialog.open) return;
+          if (currentGeneration !== generation || request !== ptoLookupRequest || ptoLookupUrl !== lookup || !dialog.open) return;
           ptoStatus = { taskUrl: lookup, isTimeOff: result.isTimeOff === true };
           refreshPtoState();
           if (ptoStatus.isTimeOff) {
@@ -332,7 +339,7 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
             preview.append(note);
           }
         }).catch(() => {
-          if (currentGeneration !== generation || ptoLookupUrl !== lookup) return;
+          if (currentGeneration !== generation || request !== ptoLookupRequest || ptoLookupUrl !== lookup) return;
           // The backend will revalidate eligibility; never enable future dates on an unreadable config.
           ptoHint.hidden = false; ptoHint.textContent = 'Could not check time off settings. Future dates are unavailable.';
         });
@@ -415,7 +422,8 @@ export function mountAddTime(button, { send, onAdded = () => location.reload(), 
     returnTrigger = prefilledTask ? trigger : null; returnFallback = focusFallback;
     const now = new Date();
     tasks = []; selected = null; lastSearch = ''; searchIncomplete = false; catalogLoaded = false; searching = false; showRepository = false;
-    ptoLookupUrl = ''; ptoStatus = null; ptoHint.hidden = true; nonBillable.disabled = false;
+    ++ptoLookupRequest;
+    ptoLookupUrl = ''; ptoStatus = null; previousNonBillable = null; ptoHint.hidden = true; nonBillable.disabled = false;
     busy = false; search.value = ''; setSearchBusy(false);
     overlapProgress.hidden = true; overlapStatus.hidden = true;
     heading.textContent = runningEdit ? 'Edit timer start' : boundary ? 'Resolve time overlap' : entry ? 'Edit time' : 'Add new time';

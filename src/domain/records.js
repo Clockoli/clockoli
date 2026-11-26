@@ -252,9 +252,10 @@ export function applyEntryEdits(entry, edits, now = new Date()) {
     startedAt,
     endedAt: toIso(edits.endedAt ?? entry.endedAt),
     description: String(edits.description ?? entry.description).slice(0, 2000),
-    // A planned entry may have been created with a future activity start.
-    // An edit made before that date must preserve the createdAt <= updatedAt invariant.
-    updatedAt: toIso(new Date(Math.max(new Date(now).getTime(), new Date(entry.createdAt).getTime(), new Date(entry.updatedAt).getTime()))),
+    // Even when the original version is dated in the future, a new edit
+    // must advance its version and preserve createdAt <= updatedAt.
+    updatedAt: toIso(new Date(Math.max(new Date(now).getTime(), new Date(entry.createdAt).getTime(),
+      new Date(entry.updatedAt).getTime() + 1))),
   };
   next.durationSeconds = durationSeconds(next.startedAt, next.endedAt);
   return validateEntry(next);

@@ -1298,6 +1298,7 @@
         active: timesMode && data?.active === undefined && data?.configured !== false ? pageState.active : data?.active ?? null,
         pendingCount: Math.max(0, Number(data?.pendingCount) || 0), pendingWrites: data?.pendingWrites ?? [],
         partial: Boolean(data?.partial), readStatus: data?.readStatus ?? [], readConflicts: data?.conflicts ?? [],
+        timeOffSettingsUnavailable: data?.timeOffSettingsUnavailable ?? pageState.timeOffSettingsUnavailable ?? [],
       });
       // Range reads contain records, not the local daily/weekly summary.
       // Keep the last authoritative totals (and their report date) intact.
@@ -3051,7 +3052,7 @@
       const rejectedStart = rejectedWrite && item.stage === 'startNext';
       const type = item.operation || item.stage || '';
       const knownType = ['startTimer', 'completeTimer', 'completeTimerAndStart', 'discardActive',
-        'editActiveStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry'].includes(type);
+        'editActiveStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry', 'timeOffChange'].includes(type);
       const switching = type === 'completeTimerAndStart';
       const finishedSwitch = switching && ['clearActive', 'startNext'].includes(item.stage);
       const titles = {
@@ -3065,6 +3066,7 @@
         editEntry: 'Time edit could not be saved',
         editEntries: 'Time edits could not be saved',
         deleteEntry: 'Time deletion could not be completed',
+        timeOffChange: 'Time off change needs review',
       };
       const descriptions = {
         startTimer: 'The queued Start has not reached GitHub. Review the time before retrying; the local timer remains preserved.',
@@ -3079,6 +3081,7 @@
         editEntry: 'The saved entry changed after you edited it. Retry checks the current GitHub record before applying your local change.',
         editEntries: 'One or more linked edits could not be saved. All affected local edits remain queued.',
         deleteEntry: 'The requested deletion has not been confirmed on GitHub. You can retry it or cancel the pending deletion.',
+        timeOffChange: 'This local time off change could not be saved. You can retry it or keep the current GitHub version without changing remote records.',
       };
       const box = el('div', undefined, 'conflict');
       const title = unsaved ? (switching ? 'Task switch needs recovery' : 'Stopped time needs recovery')
@@ -3281,6 +3284,13 @@
         if (!confirm('Discard this queued edit? The current Activity data will not be changed.')) return;
         await resolve('discard_queued_edit', true);
       }));
+      if (type === 'timeOffChange') box.append(button('Keep GitHub version', 'link-button', async () => {
+        if (!confirm('Discard this queued time off change and keep the current GitHub version? Clockoli will verify the remote records first.')) return;
+        await resolve('keep_github_time_off', true);
+      }));
+      if (item.conflictReason === 'completion_time_off_overlap') box.append(button('Open Time off', 'secondary wide', async () => {
+        await send({ type: 'OPEN_TIME_OFF' });
+      }));
       if (type === 'deleteEntry') box.append(button('Cancel pending deletion', 'link-button', async () => {
         if (!confirm('Cancel this queued deletion? Clockoli will first verify that the entry still exists on GitHub. This cannot restore time that has already been deleted remotely.')) return;
         await resolve('discard_queued_edit', true);
@@ -3469,12 +3479,13 @@
       body.append(el('p', 'Choose where Clockoli should save your time before viewing time.', 'muted'), button('Set up Clockoli', 'primary', async () => send({ type: 'OPEN_OPTIONS' })));
       page.append(body); return page;
     }
-    if (pageState.partial) {
+    if (pageState.partial || pageState.timeOffSettingsUnavailable?.length) {
       const failed = (pageState.readStatus ?? []).filter(item => item.status === 'error').length;
       const conflicts = pageState.readConflicts?.length || 0;
       const warning = el('p', [
         failed ? `${failed} time ${failed === 1 ? 'repository' : 'repositories'} could not be loaded.` : '',
         conflicts ? `${conflicts} conflicting ${conflicts === 1 ? 'record was' : 'records were'} omitted.` : '',
+        pageState.timeOffSettingsUnavailable?.length ? 'Time off settings could not be verified. Some records may be classified incorrectly.' : '',
         'Showing available activity.',
       ].filter(Boolean).join(' '), 'notice partial-read-warning');
       body.append(warning);

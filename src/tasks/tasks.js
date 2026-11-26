@@ -389,6 +389,7 @@ async function load() {
     $('partial-status').hidden = !state.partial;
     $('partial-status').textContent = !state.partial ? '' : [
       failed ? `${failed} time ${failed === 1 ? 'repository' : 'repositories'} could not be loaded.` : '',
+      result.timeOffSettingsUnavailable?.length ? 'Time off settings could not be verified. Task totals may include time off.' : '',
       conflictCount ? `${conflictCount} conflicting ${conflictCount === 1 ? 'record was' : 'records were'} omitted.` : '',
       'Showing available tracked work.',
     ].filter(Boolean).join(' ');

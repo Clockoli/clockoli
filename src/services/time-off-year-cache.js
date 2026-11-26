@@ -28,13 +28,21 @@ export async function readCachedTeamTimeOff(backend, scope, year) {
     ? { ...result, cached: true } : null;
 }
 
-export async function saveCachedTeamTimeOff(backend, scope, year, result, savedAt = Date.now()) {
+export async function getTeamTimeOffCacheRevision(backend) {
+  return (await backend.getMany([TEAM_TIME_OFF_YEAR_CACHE_KEY]))[TEAM_TIME_OFF_YEAR_CACHE_KEY]?.revision ?? 0;
+}
+
+export async function saveCachedTeamTimeOff(backend, scope, year, result, savedAt = Date.now(),
+  { expectedRevision, expectedGeneration } = {}) {
   if (result?.configured !== true || result.partial || !Array.isArray(result.entries)) return false;
   const { cached, ...value } = result;
   const size = JSON.stringify(value).length;
   if (size > MAX_YEAR_BYTES) return false;
-  return backend.mutateMany([TEAM_TIME_OFF_YEAR_CACHE_KEY], current => {
-    const stored = current[TEAM_TIME_OFF_YEAR_CACHE_KEY];
+  return backend.mutateMany([TEAM_TIME_OFF_YEAR_CACHE_KEY, 'configurationGeneration'], current => {
+    const stored = current[TEAM_TIME_OFF_YEAR_CACHE_KEY], revision = stored?.revision ?? 0;
+    if (expectedRevision !== undefined && expectedRevision !== revision) return { result: false };
+    if (expectedGeneration !== undefined && current.configurationGeneration !== undefined
+        && current.configurationGeneration !== expectedGeneration) return { result: false };
     const years = stored?.version === 1 && stored.scope === scope ? { ...stored.years } : {};
     const key = String(year);
     if ((years[key]?.savedAt ?? -1) > savedAt) return { result: false };
@@ -48,12 +56,16 @@ export async function saveCachedTeamTimeOff(backend, scope, year, result, savedA
       total += item.size;
     }
     return {
-      set: { [TEAM_TIME_OFF_YEAR_CACHE_KEY]: { version: 1, scope, years: retained } },
+      set: { [TEAM_TIME_OFF_YEAR_CACHE_KEY]: { version: 1, revision, scope, years: retained } },
       result: true,
     };
   });
 }
 
 export async function invalidateCachedTeamTimeOff(backend) {
-  await backend.deleteMany([TEAM_TIME_OFF_YEAR_CACHE_KEY]);
+  await backend.mutateMany([TEAM_TIME_OFF_YEAR_CACHE_KEY], current => ({
+    set: { [TEAM_TIME_OFF_YEAR_CACHE_KEY]: { version: 1,
+      revision: (current[TEAM_TIME_OFF_YEAR_CACHE_KEY]?.revision ?? 0) + 1, scope: null, years: {} } },
+    result: true,
+  }));
 }

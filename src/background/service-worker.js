@@ -35,7 +35,7 @@ import { annotateDestinationRecord, loadDestinationRecords, mergeDestinationReco
 import { ExchangeRateService } from '../services/exchange-rates.js';
 import { readTimeOffSettings, saveTimeOffSettings } from '../services/time-off-settings.js';
 import { teamTimeOffCacheScope, readCachedTeamTimeOff, saveCachedTeamTimeOff,
-  invalidateCachedTeamTimeOff } from '../services/time-off-year-cache.js';
+  invalidateCachedTeamTimeOff, getTeamTimeOffCacheRevision } from '../services/time-off-year-cache.js';
 import { TaskMetadataService } from '../services/task-metadata.js';
 import { mergeTaskCatalogIndexes, taskCandidates } from '../services/task-catalog.js';
 import { InstallationDiscoveryService, RepositoryInitializer } from '../services/github-app-onboarding.js';
@@ -357,7 +357,8 @@ async function contextForDestination(destinationId, { localOnly = false, persist
   return {
     config, destinationId,
     reports,
-    tracker: new TrackerService({ github, store: destinationStore, reports, user, actorId: Number.isSafeInteger(storageUserId) ? `github:${storageUserId}` : `clockoli:${config.repoId}:${user}`, actorName: user, recentDays: config.recentDays || 7 }),
+    tracker: new TrackerService({ github, store: destinationStore, reports, user, actorId: Number.isSafeInteger(storageUserId) ? `github:${storageUserId}` : `clockoli:${config.repoId}:${user}`, actorName: user, recentDays: config.recentDays || 7,
+      timeOffSettings: options => timeOffSettingsForDestination(destinationId, options) }),
   };
 }
 
@@ -509,6 +510,8 @@ async function loadReport(message) {
 }
 
 async function loadTeamTimeOff(message, sender, extensionOrigin) {
+  const startedAt = Math.max(Date.now(), (loadTeamTimeOff.lastStartedAt ?? 0) + 1);
+  loadTeamTimeOff.lastStartedAt = startedAt;
   const keys = Object.keys(message).sort().join(',');
   if (sender?.url !== extensionOrigin + 'src/time-off/time-off.html'
       || !['endDate,startDate,type', 'endDate,refresh,startDate,type'].includes(keys)
@@ -521,12 +524,17 @@ async function loadTeamTimeOff(message, sender, extensionOrigin) {
     throw new Error('Select one calendar year for team time off.');
   }
   const range = { startDate: message.startDate, endDate: message.endDate };
+  const loadEpoch = await loadCoordinator.beginLoad();
   const snapshot = await configuredSnapshot({ localOnly: true });
+  loadCoordinator.assertCurrent(loadEpoch);
   const destinations = selectReadDestinations(snapshot);
   if (!snapshot.auth || !destinations.length) return { configured: false, entries: [] };
   const scope = teamTimeOffCacheScope(snapshot, destinations);
+  const cacheRevision = await getTeamTimeOffCacheRevision(timeOffCacheBackend);
+  loadCoordinator.assertCurrent(loadEpoch);
   if (message.refresh !== true) {
     const cached = await readCachedTeamTimeOff(timeOffCacheBackend, scope, year).catch(() => null);
+    loadCoordinator.assertCurrent(loadEpoch);
     if (cached) return cached;
   }
   const configs = {};
@@ -534,7 +542,7 @@ async function loadTeamTimeOff(message, sender, extensionOrigin) {
     const settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
     configs[destination.id] = settings.config;
     if (!settings.config.taskUrls.length) return [];
-    const reports = new ReportService({ github: githubForConfig(destination), cache: store });
+    const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation });
     // A year can cover many user branches. Refuse an incomplete scan rather
     // than silently suggesting a day has fewer people off than it really does.
     return reports.loadRepositoryRange(range, {
@@ -549,7 +557,11 @@ async function loadTeamTimeOff(message, sender, extensionOrigin) {
     entries: classifyTimeOffRecords(loaded.records.map(withoutInternalMetadata), configs)
       .filter(entry => entry.isTimeOff),
   };
-  await saveCachedTeamTimeOff(timeOffCacheBackend, scope, year, result).catch(() => {});
+  loadCoordinator.assertCurrent(loadEpoch);
+  await saveCachedTeamTimeOff(timeOffCacheBackend, scope, year, result, startedAt, {
+    expectedRevision: cacheRevision, expectedGeneration: snapshot.generation,
+  }).catch(() => {});
+  loadCoordinator.assertCurrent(loadEpoch);
   return result;
 }
 
@@ -699,7 +711,7 @@ async function loadTimes(message, sender) {
   }
   const controller = new AbortController();
   const promise = (async () => {
-    const recoveries = new Map(), currentUsers = {}, timeOffConfigs = {};
+    const recoveries = new Map(), currentUsers = {}, timeOffConfigs = {}, timeOffSettingsUnavailable = [];
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
       const user = await destinationUser(destination, auth);
@@ -712,7 +724,12 @@ async function loadTimes(message, sender) {
       const recent = await reports.loadUserRange(readRange, user, { includeStorageMetadata: true, signal }, {
         maxFiles: weekly ? 240 : 120, maxBytes: 100 * 1024 * 1024, maxRecords: 500000,
       });
-      const settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
+      const settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal }).catch(async error => {
+        signal?.throwIfAborted();
+        if (error?.name === 'AbortError') throw error;
+        timeOffSettingsUnavailable.push(destination.id);
+        return timeOffSettingsForDestination(destination.id).catch(() => ({ config: { version: 1, taskUrls: [] } }));
+      });
       timeOffConfigs[destination.id] = settings.config;
       const tracker = await trackerForDestination(destination.id, { localOnly: true });
       // Apply pending edits before filtering: they may move intervals into or out of the week.
@@ -737,7 +754,7 @@ async function loadTimes(message, sender) {
       remoteWriteConfirmed: !loaded.partial && !(loaded.conflicts?.length)
         && [...recoveries.entries()].every(([destinationId, recovery]) => recovery.remoteWriteConfirmed === true
           || (!(recovery.pendingWrites?.length) && !loaded.records.some(record => record.destinationId === destinationId))),
-      currentUsers, readStatus: loaded.readStatus, partial: loaded.partial, conflicts: loaded.conflicts,
+      currentUsers, readStatus: loaded.readStatus, partial: loaded.partial, conflicts: loaded.conflicts, timeOffSettingsUnavailable,
     };
   })();
   reportLoads.set(loadKey, { controller, promise });
@@ -801,7 +818,7 @@ async function loadTasks(message, sender) {
   }
   const controller = new AbortController();
   const promise = (async () => {
-    const timerStates = new Map(), metadata = new Map(), currentUsers = {}, timeOffConfigs = {};
+    const timerStates = new Map(), metadata = new Map(), currentUsers = {}, timeOffConfigs = {}, timeOffSettingsUnavailable = [];
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       loadCoordinator.assertCurrent(loadEpoch);
       const { tracker } = await contextForDestination(destination.id, { localOnly: true });
@@ -818,7 +835,12 @@ async function loadTasks(message, sender) {
         message.payload?.includeAllUsers
           ? reports.loadRepositoryRange(message.payload || {}, { defaultBranch: destination.branch || 'main', signal, includeStorageMetadata: true })
           : reports.loadUserRange(message.payload || {}, user, { signal, includeStorageMetadata: true }),
-        timeOffSettingsForDestination(destination.id, { fresh: true, signal }),
+        timeOffSettingsForDestination(destination.id, { fresh: true, signal }).catch(async error => {
+        signal?.throwIfAborted();
+        if (error?.name === 'AbortError') throw error;
+        timeOffSettingsUnavailable.push(destination.id);
+        return timeOffSettingsForDestination(destination.id).catch(() => ({ config: { version: 1, taskUrls: [] } }));
+      }),
       ]);
       timeOffConfigs[destination.id] = settings.config;
       const state = await tracker.getState();
@@ -868,7 +890,7 @@ async function loadTasks(message, sender) {
           startDate: message.payload?.startDate, endDate: message.payload?.endDate,
         }),
       active, pendingWrites,
-      readStatus: loaded.readStatus, partial: loaded.partial, conflicts: loaded.conflicts,
+      readStatus: loaded.readStatus, partial: loaded.partial || timeOffSettingsUnavailable.length > 0, conflicts: loaded.conflicts, timeOffSettingsUnavailable,
     };
   })();
   reportLoads.set(loadKey, { controller, promise });
@@ -1128,6 +1150,11 @@ function queuedSubjects(operation) {
     return [{ original, ...(proposed ? { proposed } : {}), ...(queuedMonth ? { queuedMonth } : {}),
       ...(descriptionChanged ? { descriptionChanged: true } : {}) }];
   });
+  if (type === 'timeOffChange') return [
+    ...(operation.previous ?? []).map(item => ({ original: safeQueuedRecord({ ...item, entryDate: item.date,
+      taskUrl: item.taskUrl ?? operation.taskUrl }) })),
+    ...(operation.entries ?? []).map(item => ({ proposed: safeQueuedRecord(item) })),
+  ].filter(item => item.original || item.proposed).slice(0, 200);
   const entries = type === 'bulkAddTimes' ? operation.entries : [operation.entry];
   return (Array.isArray(entries) ? entries : []).slice(0, 50).flatMap(entry => {
     const proposed = safeQueuedRecord(entry);
@@ -2023,11 +2050,17 @@ async function handle(message, sender) {
       const selectedDestinationId = requestedStartDestinationId(taskUrl, message.destinationId, sender, extensionOrigin, 'SWITCH_TASK');
       const targetDestinationId = selectedDestinationId ? await requireConfiguredDestinationId(store, selectedDestinationId)
         : await resolveStartDestinationId(store, taskUrl);
-      if (await timeOffTaskForDestination(targetDestinationId, taskUrl)) billable = false;
+      const nextBillable = await timeOffTaskForDestination(targetDestinationId, taskUrl) ? false : undefined;
       const sourceDestinationId = await activeDestinationId(store);
       if (!sourceDestinationId || sourceDestinationId === targetDestinationId) {
         const tracker = await trackerForDestination(targetDestinationId, { localOnly: true });
-        const result = await tracker.switchTask(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description, { background: true, billable });
+        if (sourceDestinationId) {
+          const current = (await tracker.getState()).active;
+          if (current && await timeOffTaskForDestination(sourceDestinationId, taskUrlOf(current))) billable = false;
+        }
+        const result = await tracker.switchTask(taskUrl, message.taskTitle ?? message.issueTitle ?? '', message.description, {
+          background: true, billable, ...(nextBillable === false ? { nextBillable } : {}),
+        });
         if (result.pending) requestPendingSync();
         return { ...result, destinationId: targetDestinationId };
       }
@@ -2037,12 +2070,13 @@ async function handle(message, sender) {
       const current = sourceState.active;
       if (!current) throw new Error('The active timer changed before this switch was accepted. Retry the action.');
       if (taskUrlOf(current) === taskUrl && !selectedDestinationId) return { stopped: null, active: { ...current, destinationId: sourceDestinationId }, pending: false, destinationId: sourceDestinationId };
+      if (await timeOffTaskForDestination(sourceDestinationId, taskUrlOf(current))) billable = false;
       const changedAt = new Date();
       const source = sourceTracker.prepareQueuedStop(current, message.description, { endedAt: changedAt, billable });
       let nextId = createUlid(changedAt.getTime());
       if (nextId === current.id) nextId = createUlid(changedAt.getTime() + 1);
       const target = targetTracker.prepareQueuedStart(taskUrl, message.taskTitle ?? message.issueTitle ?? '', '', {
-        startedAt: changedAt, id: nextId,
+        startedAt: changedAt, id: nextId, ...(nextBillable === false ? { billable: false } : {}),
         blockedBy: { destinationId: sourceDestinationId, operationId: source.operation.id, operation: 'completeTimer' },
       });
       const accepted = await store.acceptCrossDestinationSwitch({

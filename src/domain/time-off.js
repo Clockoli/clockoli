@@ -198,7 +198,8 @@ export function normalizeTimeOffChange(value) {
         || typeof item.date !== 'string' || !DATE_RE.test(item.date)
         || typeof item.startedAt !== 'string' || !Number.isFinite(Date.parse(item.startedAt))
         || typeof item.endedAt !== 'string' || !Number.isFinite(Date.parse(item.endedAt))
-        || typeof item.updatedAt !== 'string' || !Number.isFinite(Date.parse(item.updatedAt)))) {
+        || typeof item.updatedAt !== 'string' || !Number.isFinite(Date.parse(item.updatedAt))
+        || (item.description !== undefined && (typeof item.description !== 'string' || item.description.length > 2000)))) {
     throw new Error('Invalid previous time off entries.');
   }
   if (new Set(previous.map(item => item.id)).size !== previous.length) throw new Error('Duplicate previous time off entry.');
@@ -217,6 +218,7 @@ export function normalizeTimeOffChange(value) {
     previous: previous.map(item => ({
       id: item.id, date: item.date, startedAt: item.startedAt,
       endedAt: item.endedAt, updatedAt: item.updatedAt,
+      ...(item.description !== undefined ? { description: item.description } : {}),
       ...(bulkDayDeletion ? { taskUrl: normalizeTaskUrl(item.taskUrl),
         groupId: item.groupId ?? null } : {}),
     })), days: normalizedDays };

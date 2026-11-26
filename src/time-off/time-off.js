@@ -5,7 +5,7 @@ const $ = id => document.getElementById(id);
 const DAY_MS = 86400000;
 const state = { entries: [], repositories: [], currentUsers: {}, groups: [], teamEntries: [],
   year: Number(new Date().getFullYear()), selectedDate: '', loadedTeamYear: null,
-  mineRequestId: 0, teamRequestId: 0, myLoadedDestinations: new Set(), teamIdentity: null,
+  mineRequestId: 0, teamRequestId: 0, teamRequestIds: new Map(), myLoadedDestinations: new Set(), teamIdentity: null,
   teamLoading: false, teamIncomplete: true, teamYears: new Map(),
   formBusy: false, cancelEntry: null, cancelEntries: null, deletionBusy: false,
   myTimeOffDates: new Set(), myEntriesByKey: new Map(),
@@ -444,7 +444,7 @@ async function loadMine({ quiet = false, refresh = false } = {}) {
     const changedIdentity = !result.partial && state.teamIdentity !== null && state.teamIdentity !== identity;
     if (!result.partial) state.teamIdentity = identity;
     if (changedIdentity) {
-      state.teamYears.clear(); state.teamEntries = []; state.loadedTeamYear = null;
+      state.teamYears.clear(); state.teamRequestIds.clear(); state.teamEntries = []; state.loadedTeamYear = null;
       state.teamIncomplete = true;
       state.selectedUser = '';
       $('time-off-user-search').value = '';
@@ -482,6 +482,7 @@ async function loadTeam({ refresh = false } = {}) {
   const year = state.year, identity = state.teamIdentity;
   if (!refresh && activateTeamYear(year)) return;
   const request = ++state.teamRequestId;
+  state.teamRequestIds.set(year, request);
   const previous = state.teamYears.get(year);
   state.teamLoading = !previous;
   if (!previous) {
@@ -498,7 +499,8 @@ async function loadTeam({ refresh = false } = {}) {
     const result = await send({ type: 'LOAD_TEAM_TIME_OFF', startDate, endDate,
       ...(refresh ? { refresh: true } : {}) });
     // Ignore an old account's response after reconfiguration or logout.
-    if (identity !== null && identity !== state.teamIdentity) return;
+    if (state.teamRequestIds.get(year) !== request
+        || (identity !== null && identity !== state.teamIdentity)) return;
     if (result.partial && previous && !previous.partial) {
       if (request === state.teamRequestId && state.year === year) {
         activateTeamYear(year);
@@ -681,7 +683,7 @@ function openDeleteSelected() {
 function originalForDeletion(entry, includeIdentity = false) {
   return {
     id: entry.id, date: entry.entryDate, startedAt: entry.startedAt,
-    endedAt: entry.endedAt, updatedAt: entry.updatedAt,
+    endedAt: entry.endedAt, updatedAt: entry.updatedAt, description: entry.description || '',
     ...(includeIdentity ? { taskUrl: entry.taskUrl, groupId: timeOffGroupId(entry) } : {}),
   };
 }
