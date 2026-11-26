@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { agentCollectorRequest, agentWorkflowRequest, assertMessageAllowed } from '../src/background/message-policy.js';
+import { agentCollectorRequest, agentMatchingRequest, agentWorkflowRequest, assertMessageAllowed } from '../src/background/message-policy.js';
 const origin = 'chrome-extension://collector-test/';
 const settings = { url: `${origin}src/options/options.html` };
 const activity = { url: `${origin}src/times/times.html` };
@@ -44,4 +44,17 @@ test('workflow summary is read-only, Activity-only and accepts only exact filter
     assert.throws(() => agentWorkflowRequest(bad, activity, origin));
   }
   assert.throws(() => assertMessageAllowed('AGENT_WORKFLOW_SUMMARY', content, origin));
+});
+
+test('matching diagnostic is Activity-only with an exact date and threshold', () => {
+  const request = { type: 'AGENT_MATCHING_DIAGNOSTICS', date: '2026-11-25', thresholdMinutes: 15 };
+  assert.deepEqual(agentMatchingRequest(request, activity, origin), { date: '2026-11-25', thresholdMinutes: 15 });
+  for (const sender of [settings, content, { url: origin + 'src/times/times.html/extra' }]) {
+    assert.throws(() => agentMatchingRequest(request, sender, origin));
+  }
+  for (const bad of [{ ...request, date: '2026-02-30' }, { ...request, date: 'today' },
+    { ...request, thresholdMinutes: '15' }, { ...request, records: [] }, { ...request, path: '/private' }]) {
+    assert.throws(() => agentMatchingRequest(bad, activity, origin));
+  }
+  assert.throws(() => assertMessageAllowed('AGENT_MATCHING_DIAGNOSTICS', content, origin));
 });
