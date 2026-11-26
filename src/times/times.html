@@ -46,13 +46,15 @@
   </div>
   <section id="agent-matching" class="agent-workflow" aria-labelledby="agent-matching-title" hidden>
     <details open>
-      <summary id="agent-matching-title">AI Task Matching · debug</summary>
-      <p class="agent-workflow-note">Inspect task timers and all overlapping AI intervals on one local calendar day, without an AI API. Matches are proposals; missing AI evidence does not prove human work or inactivity. This diagnostic does not change tracked time.</p>
+      <summary id="agent-matching-title">AI activity by tracked entry</summary>
+      <p class="agent-workflow-note">Each Clockoli time entry is the basis for the timeline. AI turns outside tracked entries are ignored. Observed intervals do not prove developer idle time; coverage may be incomplete. No AI API is required.</p>
       <div class="agent-workflow-controls">
         <label>Day <input id="agent-matching-date" type="date" min="1970-01-01"></label>
         <button id="agent-matching-run" type="button">Show activity</button>
         <button id="agent-matching-export" type="button" disabled>Download debug JSON</button>
       </div>
+      <p id="agent-matching-status" role="status">Choose a day to see tracked entries and overlapping AI turns.</p>
+      <div id="agent-matching-results"></div>
       <details id="semantic-matching-controls">
         <summary>Semantic matching · experimental (optional paid API)</summary>
         <p class="agent-workflow-note">Prepare a local preview first. Only send after reviewing the exact content. Prompts and issue descriptions can contain confidential information even after automatic redaction. API keys are used for this run only; provider charges and retention policies apply.</p>
@@ -70,8 +72,6 @@
         </div>
         <div id="semantic-results"></div>
       </details>
-      <p id="agent-matching-status" role="status">Choose a day and analyze to see the task candidates and matching decisions.</p>
-      <div id="agent-matching-results"></div>
     </details>
   </section>
   <div id="activity-sync-status"></div>

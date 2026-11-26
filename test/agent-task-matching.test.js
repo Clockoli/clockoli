@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { githubTask, githubRepository, branchIssueNumbers, extractCodexMatchingRow,
-  matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline, buildObservedTaskTimeline } from '../src/agents/task-matching.js';
+  matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline, buildObservedTaskTimeline, turnOverlapsTrackedIntervals } from '../src/agents/task-matching.js';
 
 const date = '2026-11-25T';
 const at = time => date + time + 'Z';
@@ -136,4 +136,14 @@ test('unverified overlapping observations are visible but cannot invent duration
   assert.equal(result.observedTurns,1);assert.equal(result.coveredMs,0);
   assert.equal(result.unverified[0].start,2000);
   assert.equal(result.unverified[0].end,null);
+});
+
+test('tracked entries define scope before diagnostics; half-open boundaries and day clipping',()=>{
+  const t=(a,b)=>({startedAt:new Date(a).toISOString(),endedAt:b===null?null:new Date(b).toISOString()});
+  const intervals=[{start:100,end:300},{start:600,end:900}];
+  for(const [a,b,expected] of [[0,100,false],[99,101,true],[300,400,false],[599,601,true],[900,1000,false],[100,100,true],[300,300,false],[200,null,true],[500,null,false]]){
+    assert.equal(turnOverlapsTrackedIntervals(t(a,b),intervals,0,1000),expected);
+  }
+  assert.equal(turnOverlapsTrackedIntervals(t(99,101),intervals,200,1000),false);
+  assert.equal(turnOverlapsTrackedIntervals(t(0,1000),intervals,200,800),true);
 });

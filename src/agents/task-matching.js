@@ -219,7 +219,7 @@ export function buildTaskTimeline(intervals, turns, dayStart, dayEnd) {
     let cursor=start;
     for(const i of covered){if(i.start>cursor)gaps.push({start:cursor,end:i.start});cursor=i.end;}
     if(cursor<end)gaps.push({start:cursor,end});
-    return {start,end,trackedStart:i.start,trackedEnd:i.end,active:i.active,segments,gaps,
+    return {start,end,trackedStart:i.start,trackedEnd:i.end,active:i.active,segments,covered,gaps,
       trackedMs:end-start,coveredMs:intervalTotal(covered),uncoveredMs:intervalTotal(gaps)};
   }).sort((a,b)=>a.start-b.start||a.end-b.end);
   const trackedMs=intervalTotal(unionIntervals(windows));
@@ -231,17 +231,7 @@ export function buildTaskTimeline(intervals, turns, dayStart, dayEnd) {
 // Temporal overlap is independent of task attribution. Never promote a
 // time-only observation to a match, including when there is just one timer.
 export function buildObservedTaskTimeline(task, rows, dayStart, dayEnd, assignments = null) {
-  const windows = task.intervals.map(i=>({start:Math.max(i.start,dayStart),end:Math.min(i.end,dayEnd)}))
-    .filter(i=>i.end>i.start);
-  const turns = rows.filter(row=>{
-    const start=ms(row.startedAt),end=ms(row.endedAt);
-    return windows.some(i=>{
-      if(start!==null && end!==null && end>=start)
-        return start===end ? start>=i.start && start<i.end : start<i.end && end>i.start;
-      // Incomplete observations are shown at known endpoints only.
-      return [start,end].some(t=>t!==null && t>=i.start && t<i.end);
-    });
-  }).map(row=>{
+  const turns = rows.filter(row=>turnOverlapsTrackedIntervals(row,task.intervals,dayStart,dayEnd)).map(row=>{
     const url=assignments===null ? row.matchedUrl : assignments.get(row.turnId)?.url;
     const attribution=url===task.url?'matched':url?'other_task':assignments!==null && assignments.has(row.turnId)?'model_unassigned':'unassigned';
     return {...row,key:JSON.stringify([row.provider,row.turnId]),attribution};
@@ -252,4 +242,17 @@ export function buildObservedTaskTimeline(task, rows, dayStart, dayEnd, assignme
     matchedCoveredMs:matched.coveredMs,
     unresolvedTurns:turns.filter(t=>t.attribution==='unassigned'||t.attribution==='model_unassigned').length,
     otherTaskTurns:turns.filter(t=>t.attribution==='other_task').length};
+}
+
+/** Half-open Clockoli intervals clipped to the selected day. Unknown
+ * durations qualify only at a known endpoint; never invent elapsed time. */
+export function turnOverlapsTrackedIntervals(row, intervals, dayStart, dayEnd) {
+  const start=ms(row.startedAt),end=ms(row.endedAt);
+  return intervals.some(interval=>{
+    const a=Math.max(interval.start,dayStart),b=Math.min(interval.end,dayEnd);
+    if(b<=a)return false;
+    if(start!==null && end!==null && end>=start)
+      return start===end ? start>=a && start<b : start<b && end>a;
+    return [start,end].some(t=>t!==null && t>=a && t<b);
+  });
 }

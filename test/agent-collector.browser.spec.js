@@ -275,10 +275,10 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
       const folder = await root.getDirectoryHandle('matching-fixture', { create: true });
       const start = Date.parse('2026-11-25T12:00:00Z');
       const taskUrl = 'https://github.com/example/buddy/issues/679';
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 4; i++) {
         const writer = await (await folder.getFileHandle('journal-' + i + '.jsonl', { create: true })).createWritable();
         const turnId = 'realistic-turn-' + i;
-        const base = start + i * 60000;
+        const base = i===3 ? start+3*3600000 : start+i*60000;
         const rows = [
           { timestamp: new Date(base).toISOString(), type: 'session_meta',
             payload: { id: 'session-' + i, cwd: '/PRIVATE_CWD',
@@ -298,15 +298,17 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
       const before = await store.getAgentProjection('codex', 1);
       const result = await collector.getAgentMatchingDiagnostics([
         { taskUrl, taskTitle: 'Hybrid search', startedAt: '2026-11-25T11:00:00Z', endedAt: '2026-11-25T13:00:00Z' },
-      ], start - 3600000, start + 3600000);
+      ], start - 3600000, start + 4 * 3600000);
       const preview = await collector.getAgentMatchingDiagnostics([
         { taskUrl, taskTitle: 'Hybrid search', startedAt: '2026-11-25T11:00:00Z', endedAt: '2026-11-25T13:00:00Z' },
-      ], start - 3600000, start + 3600000, {semantic:true,loadDescription:async()=> 'Hybrid retrieval'});
+      ], start - 3600000, start + 4 * 3600000, {semantic:true,loadDescription:async()=> 'Hybrid retrieval'});
       const after = await store.getAgentProjection('codex', 1);
       return { scanOk: scan.ok, result, preview, beforeRevision: before.revision, afterRevision: after.revision };
     });
     expect(outcome.scanOk).toBe(true);
     expect(outcome.result.totalTurns).toBe(3);
+    expect(outcome.result.outsideTurns).toBe(1);
+    expect(outcome.result.rows).toHaveLength(3);
     expect(outcome.result.rows.map(row => row.reason)).toEqual([
       'time_only', 'repository_branch_and_containment', 'repository_branch_and_containment',
     ]);
@@ -330,7 +332,7 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
     // Fresh profile has no configured time repository; no invented matches.
     await expect(browser.page.locator('#agent-matching-status')).toContainText('Task history incomplete');
     await expect(browser.page.locator('#agent-matching-export')).toBeEnabled();
-    await expect(browser.page.locator('#agent-matching-results')).toContainText('Unassigned');
+    await expect(browser.page.locator('#agent-matching-results')).toContainText('No tracked entries');
     await browser.page.locator('#semantic-matching-controls summary').click();
     await browser.page.locator('#semantic-prepare').click();
     await expect(browser.page.locator('#semantic-status')).toContainText('0 request(s) prepared');
@@ -361,13 +363,15 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
       };
     }, withoutDerivedTimeline);
     await browser.page.locator('#agent-matching-run').click();
-    await expect(browser.page.locator('#agent-matching-status')).toContainText('2 matched / 3 observed turns');
-    await expect(browser.page.locator('#agent-matching-results')).toContainText('3 observed turns');
+    await expect(browser.page.locator('#agent-matching-status')).toContainText('3 turns within tracked entries');
+    await expect(browser.page.locator('.agent-entry-card')).toHaveCount(1);
+    await expect(browser.page.locator('.agent-entry-sequence .is-ai')).toHaveCount(3);
     await expect(browser.page.locator('.agent-task-turn')).toHaveCount(3);
     await expect(browser.page.locator('.agent-task-turn.is-unassigned')).toHaveCount(1);
     await expect(browser.page.locator('.agent-task-turn.is-matched')).toHaveCount(2);
-    await expect(browser.page.locator('#agent-matching-results')).toContainText('observed AI coverage: 9s');
-    await expect(browser.page.locator('#agent-matching-results')).toContainText('Proposed matched coverage: 6s');
+    await expect(browser.page.locator('.agent-entry-kpis')).toContainText('9s');
+    await expect(browser.page.locator('.agent-entry-kpis')).toContainText('AI turn coverage');
+    await expect(browser.page.locator('.agent-entry-card .agent-match-row')).toHaveCount(3);
     await expect(browser.page.locator('#agent-matching-export')).toBeEnabled();
     expect(errors).toEqual([]);
 

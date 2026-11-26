@@ -1,7 +1,7 @@
 import { createSemanticExtractor, semanticContext, makeSemanticBatches, redactSemanticText } from './semantic-matching.js';
 import { scanAgentJsonl } from './jsonl-reader.js';
 import { parseAgentRow, projectAgentTurns } from './parsers.js';
-import { extractCodexMatchingRow, matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline, buildObservedTaskTimeline, MATCH_RULE_VERSION } from './task-matching.js';
+import { extractCodexMatchingRow, matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline, buildObservedTaskTimeline, turnOverlapsTrackedIntervals, MATCH_RULE_VERSION } from './task-matching.js';
 import { markStaleOpenAgentTurns, summarizeAgentTurns, summarizeAgentWorkflow } from './metrics.js';
 import {
   acquireAgentLease, beginAgentReindex, commitAgentBatch, forgetAgentRoot,
@@ -369,7 +369,10 @@ export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { p
     }
   }
   dayTurns.sort((a, b) => Date.parse(a.startedAt ?? a.endedAt) - Date.parse(b.startedAt ?? b.endedAt) || a.key.localeCompare(b.key));
-  const selected = dayTurns.slice(0, 300);
+  // Scope evidence to actual Clockoli entries before applying the read budget.
+  const trackedIntervals = tasks.flatMap(task=>task.intervals);
+  const relevantTurns = dayTurns.filter(turn=>turnOverlapsTrackedIntervals(turn,trackedIntervals,dayStart,dayEnd));
+  const selected = relevantTurns.slice(0, 300);
   const evidence = new Map(), sourceStatus = new Map();
   const semanticEntries = [];
   const codexTurns = selected.filter(turn => turn.provider === 'codex');
@@ -446,7 +449,7 @@ export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { p
     if (root && (latest?.rootId !== root.rootId || latest.paused)) throw new Error('Agent source access changed');
     preview = { rootId: root?.rootId ?? null, ...(partial ? { batches: [], skipped: selected.map(t=>t.upstreamTurnId) } : makeSemanticBatches(tasks, semanticEntries)) };
   }
-  return { ...(semantic ? { preview } : {}), ruleVersion: MATCH_RULE_VERSION, providers, totalTurns: dayTurns.length, omittedTurns: dayTurns.length - selected.length,
+  return { ...(semantic ? { preview } : {}), ruleVersion: MATCH_RULE_VERSION, providers, totalTurns: relevantTurns.length, outsideTurns: dayTurns.length - relevantTurns.length, omittedTurns: relevantTurns.length - selected.length,
     bytesRead, partial, dayStart, dayEnd, tasks: tasks.map(task => ({
       ...task, timeline: buildTaskTimeline(task.intervals, byTask.get(task.url), dayStart, dayEnd),
       observedTimeline: buildObservedTaskTimeline(task, rows, dayStart, dayEnd),
