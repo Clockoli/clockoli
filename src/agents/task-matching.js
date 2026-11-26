@@ -21,7 +21,7 @@ export function githubRepository(value) {
   if (typeof value !== 'string' || value.length > 500) return null;
   const match = value.match(new RegExp('^(?:https://github\\.com/|git@github\\.com:|ssh://git@github\\.com/)(' + COORD + ')/(' + COORD + ')/?$', 'i'));
   if (!match) return null;
-  const owner = match[1], repo = match[2].replace(/\\.git$/i, '');
+  const owner = match[1], repo = match[2].replace(/\.git$/i, '');
   return repo && ![owner, repo].some(part => part === '.' || part === '..') ? (owner + '/' + repo).toLowerCase() : null;
 }
 export function branchIssueNumbers(value) {
