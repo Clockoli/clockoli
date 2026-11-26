@@ -5545,7 +5545,9 @@
       // concurrent, potentially hours-long unresolved interval.
       for (const segment of segments.sort((a,b)=>Number(a.matched)-Number(b.matched)||a.start-b.start)) {
         const mark = document.createElement('i');
-        mark.className = 'clockoli-ai-segment ' + (segment.matched ? 'is-matched' : 'is-unassigned');
+        mark.className = 'clockoli-ai-segment';
+        if (segment.matched) mark.classList.add('is-matched');
+        else mark.classList.add('is-unassigned');
         mark.dataset.start = String(segment.start);
         mark.dataset.end = String(segment.end);
         const lo = Math.max(0, Math.min(height-1, (y(segment.start)-top)/span*height));
