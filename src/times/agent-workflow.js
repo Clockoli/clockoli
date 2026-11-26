@@ -90,7 +90,7 @@ function renderMatching(data) {
     node('strong', task.title, row);
     node('span', task.url, row);
     node('span', task.intervals.map(i => localTime(i.start) + ' – ' + localTime(i.end) + (i.active ? ' (running)' : '')).join('; '), row);
-    renderTaskTimeline(task.observedTimeline, row);
+    renderTaskTimeline(buildObservedTaskTimeline(task, data.rows, data.dayStart, data.dayEnd), row);
   }
   node('h3', 'Turn-by-turn decision log', matchingResults);
   for (const turn of data.rows) {
@@ -132,14 +132,34 @@ matchingRun.addEventListener('click', async () => {
   const date = matchingDate.value;
   matchingRun.disabled = true;
   matchingStatus.textContent = 'Reading task history and selected journals…';
+  let stage = 'load';
   try {
     const data = await send({ type: 'AGENT_MATCHING_DIAGNOSTICS', date });
     if (id !== matchingSequence) return;
     matchingData = { date, ...data };
-    renderMatching(data);
     matchingExport.disabled = false;
-  } catch {
-    if (id === matchingSequence) matchingStatus.textContent = 'Matching unavailable. Check your source access and task history, then retry.';
+    stage = 'render';
+    // The raw observed rows and timer boundaries are the source of truth.
+    // A precomputed summary is not required to render, including after a
+    // worker restart or reload during development.
+    const start = new Date(date + 'T00:00:00');
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    const dayStart = Number.isFinite(data.dayStart) ? data.dayStart : start.getTime();
+    const dayEnd = Number.isFinite(data.dayEnd) ? data.dayEnd : end.getTime();
+    const normalized = { ...data, dayStart, dayEnd };
+    matchingData = { date, ...normalized, tasks: normalized.tasks.map(task => ({
+      ...task, observedTimeline: buildObservedTaskTimeline(task, normalized.rows, dayStart, dayEnd),
+    })) };
+    renderMatching(normalized);
+  } catch (error) {
+    if (id === matchingSequence) {
+      matchingStatus.textContent = stage === 'render'
+        ? 'Activity data loaded, but timeline rendering failed. Download debug JSON and check the Activity console.'
+        : 'Activity data could not be loaded. Check source access and task history, then retry.';
+      // Do not log raw records, prompts or credential-bearing error bodies.
+      console.warn('Clockoli matching ' + stage + ' failed: ' + (error instanceof TypeError ? 'TypeError' : error instanceof RangeError ? 'RangeError' : 'Error'));
+    }
   } finally {
     if (id === matchingSequence) matchingRun.disabled = false;
   }

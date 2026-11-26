@@ -336,6 +336,41 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
     await expect(browser.page.locator('#semantic-status')).toContainText('0 request(s) prepared');
     await expect(browser.page.locator('#semantic-run')).toBeDisabled();
     expect(await browser.page.locator('#semantic-provider option').count()).toBe(3);
+
+    // Exercise the actual Activity renderer with the populated diagnostic
+    // response from real local fixture journals, not just an empty task list.
+    // Also model a worker that returns raw rows but no derived observedTimeline.
+    const withoutDerivedTimeline = {
+      ...outcome.result,
+      tasks: outcome.result.tasks.map(({ observedTimeline, ...task }) => task),
+    };
+    const errors = [];
+    browser.page.on('pageerror', error => errors.push(error.message));
+    await browser.page.evaluate(fixture => {
+      const original = chrome.runtime.sendMessage.bind(chrome.runtime);
+      chrome.runtime.sendMessage = (message, ...args) => {
+        if (message?.type === 'AGENT_MATCHING_DIAGNOSTICS') {
+          const callback = args.at(-1);
+          if (typeof callback === 'function') {
+            queueMicrotask(() => callback({ ok: true, data: fixture }));
+            return;
+          }
+          return Promise.resolve({ ok: true, data: fixture });
+        }
+        return original(message, ...args);
+      };
+    }, withoutDerivedTimeline);
+    await browser.page.locator('#agent-matching-run').click();
+    await expect(browser.page.locator('#agent-matching-status')).toContainText('2 matched / 3 observed turns');
+    await expect(browser.page.locator('#agent-matching-results')).toContainText('3 observed turns');
+    await expect(browser.page.locator('.agent-task-turn')).toHaveCount(3);
+    await expect(browser.page.locator('.agent-task-turn.is-unassigned')).toHaveCount(1);
+    await expect(browser.page.locator('.agent-task-turn.is-matched')).toHaveCount(2);
+    await expect(browser.page.locator('#agent-matching-results')).toContainText('observed AI coverage: 9s');
+    await expect(browser.page.locator('#agent-matching-results')).toContainText('Proposed matched coverage: 6s');
+    await expect(browser.page.locator('#agent-matching-export')).toBeEnabled();
+    expect(errors).toEqual([]);
+
   } finally {
     await browser?.context.close().catch(() => {});
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
