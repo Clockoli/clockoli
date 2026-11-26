@@ -1,5 +1,6 @@
 import { scanAgentJsonl } from './jsonl-reader.js';
 import { parseAgentRow, projectAgentTurns } from './parsers.js';
+import { extractCodexMatchingRow, matchingEvidenceByTurn, matchingTasks, explainAgentMatch, MATCH_RULE_VERSION } from './task-matching.js';
 import { markStaleOpenAgentTurns, summarizeAgentTurns, summarizeAgentWorkflow } from './metrics.js';
 import {
   acquireAgentLease, beginAgentReindex, commitAgentBatch, forgetAgentRoot,
@@ -343,4 +344,94 @@ export async function controlAgentCollector(provider, action) {
   await ensureAgentAlarm();
   if (action === 'scan' || action === 'resume') await scanAgentActivity('manual', provider);
   return getAgentCollectorStatus();
+}
+
+// An explicit diagnostic, not another continuous collector. Re-read only files
+// containing already observed turns for the selected day. No new persisted
+// fields, reindex, raw prompt export, or automatic writes to time records.
+export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { partial = false, thresholdMinutes = 15 } = {}) {
+  const tasks = matchingTasks(records, dayStart, dayEnd);
+  const taskLimit = 100;
+  if (tasks.length > taskLimit) throw new Error('Too many task candidates for a single day');
+  const dayTurns = [], providers = {};
+  for (const provider of PROVIDERS) {
+    const root = await getAgentRootState(provider);
+    const state = await getAgentState(provider);
+    const health = await getAgentHealth(provider);
+    const projection = root ? await getAgentProjection(provider, state.activeGeneration || state.desiredGeneration) : null;
+    providers[provider] = { connected: Boolean(root), complete: Boolean(root && health?.complete && !root.paused),
+      permission: health?.permission || 'unknown' };
+    for (const turn of projection?.turns || []) {
+      const date = Date.parse(turn.startedAt ?? turn.endedAt);
+      if (date >= dayStart && date < dayEnd) dayTurns.push(turn);
+    }
+  }
+  dayTurns.sort((a, b) => Date.parse(a.startedAt ?? a.endedAt) - Date.parse(b.startedAt ?? b.endedAt) || a.key.localeCompare(b.key));
+  const selected = dayTurns.slice(0, 300);
+  const evidence = new Map(), sourceStatus = new Map();
+  const codexTurns = selected.filter(turn => turn.provider === 'codex');
+  const wanted = new Set(codexTurns.map(turn => turn.sourceFileKey));
+  let bytesRead = 0;
+  const root = wanted.size ? await getAgentRootState('codex') : null;
+  if (root && !root.paused) {
+    try {
+      const permission = await boundedNative('codex', () => root.handle.queryPermission({ mode: 'read' }));
+      if (permission !== 'granted') throw new Error('permission_denied');
+      const { hash, fingerprint } = await keyer('codex');
+      const selectedFiles = [];
+      await boundedNative('codex', async () => {
+        for await (const entry of walk(root.handle)) {
+          const fileKey = await hash('path', entry.relativePath);
+          if (wanted.has(fileKey)) selectedFiles.push({ fileKey, handle: entry.handle });
+        }
+      });
+      for (const entry of selectedFiles.sort((a, b) => a.fileKey.localeCompare(b.fileKey))) {
+        try {
+          const file = await boundedNative('codex', () => entry.handle.getFile());
+          if (file.size > MAX_FILE_BYTES) { sourceStatus.set(entry.fileKey, 'source_file_too_large'); continue; }
+          if (bytesRead + file.size > MAX_RUN_BYTES) { sourceStatus.set(entry.fileKey, 'diagnostic_byte_limit'); continue; }
+          const scan = await boundedNative('codex', () => scanAgentJsonl(file, null, {
+            readBudget: MAX_FILE_BYTES, maxLineBytes: MAX_FILE_BYTES, fingerprint,
+            parseRow: extractCodexMatchingRow, deadlineAt: Date.now() + 17_000,
+          }));
+          bytesRead += scan.bytesRead;
+          if (scan.blockedCode || scan.backlog) { sourceStatus.set(entry.fileKey, 'source_scan_incomplete'); continue; }
+          for (const item of matchingEvidenceByTurn(scan.events)) {
+            const sessionId = await hash('session', item.sessionId);
+            const turnId = await hash('turn', item.turnId);
+            evidence.set(JSON.stringify([entry.fileKey, sessionId, turnId]), item);
+          }
+          sourceStatus.set(entry.fileKey, 'read');
+        } catch (error) {
+          sourceStatus.set(entry.fileKey, safeCode(error));
+          if (safeCode(error) === 'fsa_timeout') break;
+        }
+      }
+    } catch (error) {
+      for (const fileKey of wanted) sourceStatus.set(fileKey, error?.message === 'permission_denied' ? 'permission_denied' : safeCode(error));
+    }
+  }
+  // A root may be forgotten/replaced while this read-only diagnostic runs.
+  // Never return evidence gathered from a disconnected or superseded root.
+  const currentRoot = root ? await getAgentRootState('codex') : null;
+  if (root && (currentRoot?.rootId !== root.rootId || currentRoot.paused)) {
+    evidence.clear();
+    for (const fileKey of wanted) sourceStatus.set(fileKey, 'source_access_changed');
+  }
+  const byTask = new Map(tasks.map(task => [task.url, []]));
+  const rows = selected.map(turn => {
+    const sessionId = (() => { try { return JSON.parse(turn.sessionKey)[2]; } catch { return null; } })();
+    const item = turn.provider === 'codex' ? evidence.get(JSON.stringify([turn.sourceFileKey, sessionId, turn.upstreamTurnId])) : null;
+    const reason = turn.provider !== 'codex' ? 'provider_matching_not_supported'
+      : sourceStatus.get(turn.sourceFileKey) === 'read' ? 'turn_evidence_missing'
+      : sourceStatus.get(turn.sourceFileKey) || (root?.paused ? 'source_paused' : 'source_missing');
+    const match = explainAgentMatch(turn, item ?? { error: reason }, tasks, { partial });
+    if (match.matchedUrl) byTask.get(match.matchedUrl)?.push(turn);
+    return { turnId: turn.upstreamTurnId, provider: turn.provider, startedAt: turn.startedAt, endedAt: turn.endedAt,
+      elapsedMs: turn.elapsedMs, status: turn.status, ...match };
+  });
+  return { ruleVersion: MATCH_RULE_VERSION, providers, totalTurns: dayTurns.length, omittedTurns: dayTurns.length - selected.length,
+    bytesRead, partial, tasks: tasks.map(task => ({
+      ...task, summary: summarizeAgentWorkflow(byTask.get(task.url), { period: 'all', provider: 'all', thresholdMinutes }),
+    })), rows };
 }
