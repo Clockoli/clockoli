@@ -1,5 +1,5 @@
 import { CLASSIFIER_INSTRUCTIONS, LLM_HOSTS } from '../agents/semantic-matching.js';
-import { buildTaskTimeline } from '../agents/task-matching.js';
+import { buildTaskTimeline, buildObservedTaskTimeline } from '../agents/task-matching.js';
 const countFormat = new Intl.NumberFormat('en-US');
 const percentFormat = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
 const count = value => countFormat.format(value);
@@ -82,7 +82,7 @@ function renderMatching(data) {
   if (Object.values(data.providers).some(p => p.connected && !p.complete)) warnings.push('Collector history may be incomplete.');
   warnings.push('Scanned ' + count(data.bytesRead) + ' bytes from selected journals.');
   matchingStatus.textContent = warnings.join(' ');
-  node('p', 'Coverage only includes matched observed intervals, not confirmed developer inactivity. Unmatched or missing observations can reduce coverage.', matchingResults, 'agent-workflow-note');
+  node('p', 'All observed AI intervals overlapping each timer are shown, even without matching or API access. Time overlap alone does not establish task attribution. Missing observations may reduce coverage.', matchingResults, 'agent-workflow-note');
   node('h3', 'Tasks tracked on this day', matchingResults);
   if (!data.tasks.length) node('p', 'No tracked task candidates found.', matchingResults);
   for (const task of data.tasks) {
@@ -90,7 +90,7 @@ function renderMatching(data) {
     node('strong', task.title, row);
     node('span', task.url, row);
     node('span', task.intervals.map(i => localTime(i.start) + ' – ' + localTime(i.end) + (i.active ? ' (running)' : '')).join('; '), row);
-    renderTaskTimeline(task.timeline, row);
+    renderTaskTimeline(task.observedTimeline, row);
   }
   node('h3', 'Turn-by-turn decision log', matchingResults);
   for (const turn of data.rows) {
@@ -256,10 +256,9 @@ semanticRun.addEventListener('click',async()=>{
     }
     if(generation!==semanticGeneration)return;
     node('h3','Semantic proposals (not confirmed)',semanticResults);
-    node('p','Coverage is based only on proposed matches. Not analyzed turns, missing journals and incomplete collection are not proof of inactivity.',semanticResults,'agent-workflow-note');
+    node('p','All overlapping observations remain visible. The model changes only the attribution, not observed timing. Missing journals and incomplete collection are not proof of inactivity.',semanticResults,'agent-workflow-note');
     for(const task of data.tasks){
-      const turns=data.rows.filter(r=>decisions.get(r.turnId)?.url===task.url).map(r=>({...r,key:r.turnId}));
-      const timeline=buildTaskTimeline(task.intervals,turns,data.dayStart,data.dayEnd);
+      const timeline=buildObservedTaskTimeline(task,data.rows,data.dayStart,data.dayEnd,decisions);
       const block=node('div',null,semanticResults,'agent-match-task');
       node('strong',task.title,block);
       renderTaskTimeline(timeline,block);
@@ -277,17 +276,21 @@ semanticRun.addEventListener('click',async()=>{
     // descriptions. Keep only structured decisions and usage.
     const {preview,...safeData}=data;
     matchingData={date:matchingDate.value,...safeData,
-      tasks:safeData.tasks.map(({description,...task})=>({...task,semanticTimeline:buildTaskTimeline(task.intervals,data.rows.filter(r=>decisions.get(r.turnId)?.url===task.url),data.dayStart,data.dayEnd)})),
+      tasks:safeData.tasks.map(({description,...task})=>({...task,semanticTimeline:buildTaskTimeline(task.intervals,data.rows.filter(r=>decisions.get(r.turnId)?.url===task.url),data.dayStart,data.dayEnd),semanticObservedTimeline:buildObservedTaskTimeline(task,data.rows,data.dayStart,data.dayEnd,decisions)})),
       semantic:{provider:p,model,usage,failures,decisions:[...decisions].map(([turnId,{url,modelUrl,reason,confidence,cached}])=>({turnId,url,modelUrl,reason,confidence,cached}))}};
     matchingExport.disabled=false;
     semanticStatus.textContent=decisions.size+' analyzed · '+[...decisions.values()].filter(d=>d.url).length+' proposed matches · '+usage.input+' input / '+usage.output+' output tokens this run'+(usage.unknown?' (some usage unavailable)':'')+(failures.length?' · stopped on error':'');
   }finally{apiKey='';semanticRunning=false;semanticPrepare.disabled=false;syncSemantic();}
 });
 
+const attributionLabels={matched:'Proposed match',unassigned:'Time overlap only / unresolved',model_unassigned:'Model: unassigned',other_task:'Attributed to another task'};
 function renderTaskTimeline(timeline,parent) {
   node('span','Tracked: '+time(timeline.trackedMs)+' · observed AI coverage: '+time(timeline.coveredMs)+
-    ' ('+percent(timeline.coveragePct)+') · no matched AI observed: '+time(timeline.uncoveredMs),parent);
-  node('span',timeline.matchedTurns+' proposed turns · sum of full observed turn durations: '+time(timeline.observedTurnMs),parent);
+    ' ('+percent(timeline.coveragePct)+') · no AI interval observed: '+time(timeline.uncoveredMs),parent);
+  node('span',timeline.observedTurns+' observed turns · '+timeline.matchedTurns+' proposed matches · '+timeline.unresolvedTurns+' unresolved · '+timeline.otherTaskTurns+' attributed elsewhere',parent);
+  node('span','Proposed matched coverage: '+time(timeline.matchedCoveredMs)+' · sum of full observed turn durations: '+time(timeline.observedTurnMs),parent);
+  const legend=node('div',null,parent,'agent-task-legend');
+  for(const [key,label] of Object.entries(attributionLabels)) {const item=node('span',null,legend);node('i',null,item,'agent-task-swatch is-'+key);item.append(document.createTextNode(label));}
   if(timeline.unverified.length)node('span',timeline.unverified.length+' unverified intervals (not used for coverage)',parent);
   for(const window of timeline.windows){
     const block=node('div',null,parent,'agent-task-window');
@@ -300,11 +303,11 @@ function renderTaskTimeline(timeline,parent) {
       let lane=lanes.findIndex(end=>end<=segment.visibleStart);
       if(lane<0)lane=lanes.length;
       lanes[lane]=segment.visibleEnd;
-      const mark=node('div',null,bar,'agent-task-turn');
+      const mark=node('div',null,bar,'agent-task-turn is-'+segment.attribution);
       mark.style.left=100*(segment.visibleStart-window.start)/window.trackedMs+'%';
       mark.style.width=100*(segment.visibleEnd-segment.visibleStart)/window.trackedMs+'%';
       mark.style.top=lane*15+'px';
-      mark.title=segment.provider+' · '+localTime(segment.start)+' – '+localTime(segment.end)+' · '+time(segment.end-segment.start);
+      mark.title=(attributionLabels[segment.attribution]||'Observed')+' · '+segment.provider+' · '+localTime(segment.start)+' – '+localTime(segment.end)+' · '+time(segment.end-segment.start);
     }
     bar.style.height=Math.max(15,lanes.length*15)+'px';
     node('span','Covered: '+time(window.coveredMs)+' · gaps: '+time(window.uncoveredMs),block);
@@ -313,11 +316,11 @@ function renderTaskTimeline(timeline,parent) {
     const list=node('ul',null,details);
     const events=[...window.segments.map(t=>({start:t.visibleStart,end:t.visibleEnd,turn:t})),...window.gaps];
     events.sort((a,b)=>a.start-b.start||a.end-b.end);
-    for(const e of events)node('li',(e.turn?e.turn.provider:'No matched AI observed')+' · '+localTime(e.start)+' – '+localTime(e.end)+' · '+time(e.end-e.start)+
+    for(const e of events)node('li',(e.turn?e.turn.provider+' · '+(attributionLabels[e.turn.attribution]||'Observed'):'No AI interval observed')+' · '+localTime(e.start)+' – '+localTime(e.end)+' · '+time(e.end-e.start)+
       (e.turn?' (full turn '+localTime(e.turn.start)+' – '+localTime(e.turn.end)+'; '+time(e.turn.end-e.turn.start)+
         (e.turn.providerDurationMs!==null?' ; provider duration '+time(e.turn.providerDurationMs):'')+')':''),list);
   }
-  for(const t of timeline.unverified)node('span','Unverified '+t.provider+' · '+localTime(t.start)+' – '+localTime(t.end)+' · elapsed '+time(t.elapsedMs),parent);
+  for(const t of timeline.unverified)node('span','Unverified '+t.provider+' · '+(attributionLabels[t.attribution]||'Observed')+' · '+localTime(t.start)+' – '+localTime(t.end)+' · elapsed '+time(t.elapsedMs),parent);
 }
 let statusPending=false;
 async function refreshConnection(){

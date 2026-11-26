@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { githubTask, githubRepository, branchIssueNumbers, extractCodexMatchingRow,
-  matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline } from '../src/agents/task-matching.js';
+  matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline, buildObservedTaskTimeline } from '../src/agents/task-matching.js';
 
 const date = '2026-11-25T';
 const at = time => date + time + 'Z';
@@ -112,4 +112,28 @@ test('selected-day clipping and multiple task timers exclude untracked gaps and 
   assert.equal(result.trackedMs,400);assert.equal(result.coveredMs,400);assert.equal(result.observedTurnMs,800);
   assert.deepEqual(result.windows.map(w=>[w.start,w.end,w.trackedStart,w.trackedEnd]),[[200,400,0,400],[600,800,600,1000]]);
   assert.equal(buildTaskTimeline([{start:0,end:100}],[],0,100).windows[0].gaps[0].end,100);
+});
+
+test('observed timeline is populated without matches and attribution never changes coverage',()=>{
+  const task={url:'task-a',intervals:[{start:0,end:10000}]};
+  const turn=(id,a,b,matchedUrl=null)=>({turnId:id,provider:'codex',startedAt:new Date(a).toISOString(),endedAt:new Date(b).toISOString(),elapsedMs:b-a,status:'completed',timingConfidence:'high',matchedUrl});
+  const rows=[turn('a',1000,4000),turn('b',2000,5000),turn('c',7000,8000),turn('outside',10000,11000)];
+  const result=buildObservedTaskTimeline(task,rows,0,10000);
+  assert.equal(result.observedTurns,3);assert.equal(result.matchedTurns,0);
+  assert.equal(result.coveredMs,5000);assert.equal(result.matchedCoveredMs,0);
+  assert.equal(result.uncoveredMs,5000);assert.equal(result.unresolvedTurns,3);
+  assert.deepEqual(result.windows[0].gaps,[{start:0,end:1000},{start:5000,end:7000},{start:8000,end:10000}]);
+  const classified=buildObservedTaskTimeline(task,rows,0,10000,new Map([['a',{url:'task-a'}],['b',{url:null}],['c',{url:'task-b'}]]));
+  assert.equal(classified.coveredMs,result.coveredMs);
+  assert.equal(classified.matchedCoveredMs,3000);
+  assert.equal(classified.matchedTurns,1);assert.equal(classified.otherTaskTurns,1);
+  assert.deepEqual(classified.windows[0].segments.map(t=>t.attribution),['matched','model_unassigned','other_task']);
+});
+test('unverified overlapping observations are visible but cannot invent duration',()=>{
+  const task={url:'task-a',intervals:[{start:0,end:10000}]};
+  const rows=[{turnId:'open',provider:'codex',startedAt:new Date(2000).toISOString(),endedAt:null,elapsedMs:null,status:'open'}];
+  const result=buildObservedTaskTimeline(task,rows,0,10000);
+  assert.equal(result.observedTurns,1);assert.equal(result.coveredMs,0);
+  assert.equal(result.unverified[0].start,2000);
+  assert.equal(result.unverified[0].end,null);
 });

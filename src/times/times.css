@@ -186,3 +186,11 @@ body.activity-rate-limit-visible #activity-running-status .running-status-error[
 .agent-task-turn{position:absolute;height:12px;background:var(--fgColor-success);border-radius:2px;box-sizing:border-box}
 .agent-task-interval-list summary{font-size:12px;font-weight:500}
 .agent-task-interval-list ul{padding-left:18px;font-size:12px;overflow-wrap:anywhere}
+
+.agent-task-turn.is-unassigned,.agent-task-swatch.is-unassigned{background:var(--fgColor-accent,#0969da)}
+.agent-task-turn.is-model_unassigned,.agent-task-swatch.is-model_unassigned{background:var(--fgColor-attention,#9a6700)}
+.agent-task-turn.is-other_task,.agent-task-swatch.is-other_task{background:var(--fgColor-muted,#656d76)}
+.agent-task-turn.is-matched,.agent-task-swatch.is-matched{background:var(--fgColor-success,#1a7f37)}
+.agent-task-legend{display:flex;flex-wrap:wrap;gap:4px 12px}
+.agent-task-legend span{display:inline-flex;align-items:center;gap:5px}
+.agent-task-swatch{display:inline-block;width:10px;height:10px;border-radius:2px}

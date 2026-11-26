@@ -200,7 +200,8 @@ export function buildTaskTimeline(intervals, turns, dayStart, dayEnd) {
     seen.add(id);
     const start=ms(t.startedAt),end=ms(t.endedAt);
     const turn={turnId:t.turnId??t.upstreamTurnId??id,provider:t.provider,start,end,
-      elapsedMs:t.elapsedMs??null,providerDurationMs:t.providerDurationMs??null,status:t.status};
+      elapsedMs:t.elapsedMs??null,providerDurationMs:t.providerDurationMs??null,status:t.status,
+      ...(t.attribution ? {attribution:t.attribution} : {})};
     // Only observed anchored lifecycle intervals count toward coverage.
     // Preserve any contradictory provider duration as distinct evidence.
     if (start===null || end===null || end<start || t.anchored===false ||
@@ -225,4 +226,30 @@ export function buildTaskTimeline(intervals, turns, dayStart, dayEnd) {
   const coveredMs=intervalTotal(unionIntervals(windows.flatMap(w=>w.segments.map(t=>({start:t.visibleStart,end:t.visibleEnd})))));
   return {windows,unverified,trackedMs,coveredMs,uncoveredMs:trackedMs-coveredMs,coveragePct:trackedMs?100*coveredMs/trackedMs:null,
     matchedTurns:observed.length+unverified.length,observedTurnMs:observed.reduce((sum,t)=>sum+t.end-t.start,0)};
+}
+
+// Temporal overlap is independent of task attribution. Never promote a
+// time-only observation to a match, including when there is just one timer.
+export function buildObservedTaskTimeline(task, rows, dayStart, dayEnd, assignments = null) {
+  const windows = task.intervals.map(i=>({start:Math.max(i.start,dayStart),end:Math.min(i.end,dayEnd)}))
+    .filter(i=>i.end>i.start);
+  const turns = rows.filter(row=>{
+    const start=ms(row.startedAt),end=ms(row.endedAt);
+    return windows.some(i=>{
+      if(start!==null && end!==null && end>=start)
+        return start===end ? start>=i.start && start<i.end : start<i.end && end>i.start;
+      // Incomplete observations are shown at known endpoints only.
+      return [start,end].some(t=>t!==null && t>=i.start && t<i.end);
+    });
+  }).map(row=>{
+    const url=assignments===null ? row.matchedUrl : assignments.get(row.turnId)?.url;
+    const attribution=url===task.url?'matched':url?'other_task':assignments!==null && assignments.has(row.turnId)?'model_unassigned':'unassigned';
+    return {...row,key:JSON.stringify([row.provider,row.turnId]),attribution};
+  });
+  const timeline=buildTaskTimeline(task.intervals,turns,dayStart,dayEnd);
+  const matched=buildTaskTimeline(task.intervals,turns.filter(t=>t.attribution==='matched'),dayStart,dayEnd);
+  return {...timeline,observedTurns:timeline.matchedTurns,matchedTurns:matched.matchedTurns,
+    matchedCoveredMs:matched.coveredMs,
+    unresolvedTurns:turns.filter(t=>t.attribution==='unassigned'||t.attribution==='model_unassigned').length,
+    otherTaskTurns:turns.filter(t=>t.attribution==='other_task').length};
 }

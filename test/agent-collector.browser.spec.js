@@ -312,6 +312,8 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
     ]);
     expect(outcome.result.tasks[0].timeline).toMatchObject({ matchedTurns: 2, observedTurnMs: 6000, coveredMs: 6000, trackedMs: 7200000 });
     expect(outcome.result.tasks[0].timeline.windows[0].segments).toHaveLength(2);
+    expect(outcome.result.tasks[0].observedTimeline).toMatchObject({ observedTurns: 3, matchedTurns: 2, coveredMs: 9000, matchedCoveredMs: 6000, unresolvedTurns: 1 });
+    expect(outcome.result.tasks[0].observedTimeline.windows[0].segments.map(t=>t.attribution)).toEqual(['unassigned','matched','matched']);
     expect(outcome.preview.preview.batches).toHaveLength(3);
     expect(outcome.preview.preview.batches.flatMap(b=>b.payload.turns).every(t=>t.messages.length===1)).toBe(true);
     expect(outcome.preview.preview.batches[0].payload.tasks[0].description).toBe('Hybrid retrieval');

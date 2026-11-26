@@ -1,7 +1,7 @@
 import { createSemanticExtractor, semanticContext, makeSemanticBatches, redactSemanticText } from './semantic-matching.js';
 import { scanAgentJsonl } from './jsonl-reader.js';
 import { parseAgentRow, projectAgentTurns } from './parsers.js';
-import { extractCodexMatchingRow, matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline, MATCH_RULE_VERSION } from './task-matching.js';
+import { extractCodexMatchingRow, matchingEvidenceByTurn, matchingTasks, explainAgentMatch, buildTaskTimeline, buildObservedTaskTimeline, MATCH_RULE_VERSION } from './task-matching.js';
 import { markStaleOpenAgentTurns, summarizeAgentTurns, summarizeAgentWorkflow } from './metrics.js';
 import {
   acquireAgentLease, beginAgentReindex, commitAgentBatch, forgetAgentRoot,
@@ -449,5 +449,6 @@ export async function getAgentMatchingDiagnostics(records, dayStart, dayEnd, { p
   return { ...(semantic ? { preview } : {}), ruleVersion: MATCH_RULE_VERSION, providers, totalTurns: dayTurns.length, omittedTurns: dayTurns.length - selected.length,
     bytesRead, partial, dayStart, dayEnd, tasks: tasks.map(task => ({
       ...task, timeline: buildTaskTimeline(task.intervals, byTask.get(task.url), dayStart, dayEnd),
+      observedTimeline: buildObservedTaskTimeline(task, rows, dayStart, dayEnd),
     })), rows };
 }
