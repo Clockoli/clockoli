@@ -30,6 +30,7 @@ export function branchIssueNumbers(value) {
   // in a branch name (versions, dates, commit abbreviations, etc.).
   const numbers = new Set();
   for (const part of value.split('/')) {
+    if (/^\d{4}[-_]\d{1,2}[-_]\d{1,2}(?:[-_]|$)/.test(part)) continue;
     const match = part.match(/^(?:issue[-_]|#)?([1-9][0-9]{0,14})(?:[-_]|$)/i);
     if (match) numbers.add(match[1]);
   }
@@ -142,7 +143,11 @@ export function explainAgentMatch(turn, evidence, tasks, { partial = false } = {
   });
   let reason = 'no_strong_identity', matchedUrl = null, state = 'unassigned';
   const strong = candidates.filter(c => c.contained && (c.explicit || c.branch));
-  const explicitConflict = refs.length > 1 || (refs.length === 1 && strong.some(c => !c.explicit));
+  const explicitIdentity = refs.length === 1 ? githubTask(refs[0]) : null;
+  const contradictoryBranch = Boolean(explicitIdentity && repo && evidence?.branchNumbers?.length &&
+    (explicitIdentity.repository !== repo || explicitIdentity.kind !== 'issues' ||
+      !evidence.branchNumbers.includes(explicitIdentity.number)));
+  const explicitConflict = refs.length > 1 || contradictoryBranch || (refs.length === 1 && strong.some(c => !c.explicit));
   const branchConflict = (evidence?.branchNumbers?.length ?? 0) > 1;
   if (partial) reason = 'task_history_incomplete';
   else if (!evidence || evidence.error) reason = evidence?.error || 'source_evidence_unavailable';
