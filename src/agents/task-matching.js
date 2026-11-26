@@ -1,0 +1,168 @@
+// Matching is intentionally deterministic and local. No source text, commands,
+// absolute directories or arbitrary branch strings are returned in diagnostics.
+const COORD = '[A-Za-z0-9_.-]{1,100}';
+const TASK = new RegExp('^https://github\\.com/(' + COORD + ')/(' + COORD + ')/(issues|pull)/([1-9][0-9]{0,14})/?$', 'i');
+const LINK = new RegExp('https://github\\.com/' + COORD + '/' + COORD + '/(?:issues|pull)/[1-9][0-9]{0,14}(?![0-9A-Za-z])', 'gi');
+const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const validId = value => typeof value === 'string' && SAFE_ID.test(value) ? value : null;
+const boundedString = (value, max) => typeof value === 'string' && value.length <= max ? value : null;
+const ms = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
+export const MATCH_RULE_VERSION = 1;
+
+export function githubTask(value) {
+  const match = typeof value === 'string' && value.match(TASK);
+  if (!match) return null;
+  const [, owner, repo, kind, number] = match;
+  if ([owner, repo].some(part => part === '.' || part === '..')) return null;
+  const repository = (owner + '/' + repo).toLowerCase();
+  return { repository, kind: kind.toLowerCase(), number, url: 'https://github.com/' + repository + '/' + kind.toLowerCase() + '/' + number };
+}
+export function githubRepository(value) {
+  if (typeof value !== 'string' || value.length > 500) return null;
+  const match = value.match(new RegExp('^(?:https://github\\.com/|git@github\\.com:|ssh://git@github\\.com/)(' + COORD + ')/(' + COORD + ')/?$', 'i'));
+  if (!match) return null;
+  const owner = match[1], repo = match[2].replace(/\\.git$/i, '');
+  return repo && ![owner, repo].some(part => part === '.' || part === '..') ? (owner + '/' + repo).toLowerCase() : null;
+}
+export function branchIssueNumbers(value) {
+  if (typeof value !== 'string' || value.length > 300) return [];
+  // Accept conventional issue-prefixed path segments, not arbitrary numbers
+  // in a branch name (versions, dates, commit abbreviations, etc.).
+  const numbers = new Set();
+  for (const part of value.split('/')) {
+    const match = part.match(/^(?:issue[-_]|#)?([1-9][0-9]{0,14})(?:[-_]|$)/i);
+    if (match) numbers.add(match[1]);
+  }
+  return [...numbers].sort();
+}
+function promptRefs(parts) {
+  let remaining = 32_768, incomplete = false;
+  const refs = new Set();
+  for (const part of parts) {
+    if (typeof part !== 'string') continue;
+    if (part.length > remaining) incomplete = true;
+    for (const match of part.slice(0, remaining).matchAll(LINK)) {
+      const task = githubTask(match[0]);
+      if (task) refs.add(task.url);
+      if (refs.size > 20) return { refs: [], incomplete: true };
+    }
+    remaining = Math.max(0, remaining - part.length);
+  }
+  return { refs: [...refs].sort(), incomplete };
+}
+
+/** Small transient evidence records. Caller must not persist these rows. */
+export function extractCodexMatchingRow(row) {
+  const p = row?.payload;
+  if (row?.type === 'session_meta') return { type: 'session', sessionId: validId(p?.id),
+    repository: githubRepository(p?.git?.repository_url), branchNumbers: branchIssueNumbers(p?.git?.branch),
+    cwd: boundedString(p?.cwd, 4096), client: p?.originator === 'air-plugin:phpstorm' ? 'phpstorm'
+      : p?.originator === 'codex_exec' ? 'exec' : 'other' };
+  const turnId = validId(p?.turn_id);
+  if (!turnId) return null; // Never guess ownership of an unscoped prompt.
+  if (row.type === 'turn_context') return { type: 'context', turnId, cwd: boundedString(p.cwd, 4096) };
+  if (row.type !== 'event_msg') return null;
+  if (['task_started', 'task_complete', 'turn_aborted'].includes(p.type)) {
+    return { type: p.type, turnId, timestamp: row.timestamp };
+  }
+  if (p.type === 'item_completed' && p.item?.type === 'UserMessage' && Array.isArray(p.item.content)) {
+    return { type: 'prompt', turnId, ...promptRefs(p.item.content.filter(block => block?.type === 'text').map(block => block.text)) };
+  }
+  if (p.type === 'user_message' && typeof p.message === 'string') {
+    return { type: 'prompt', turnId, ...promptRefs([p.message]) };
+  }
+  return null;
+}
+
+export function matchingEvidenceByTurn(rows) {
+  const result = new Map();
+  let session = null;
+  for (const row of rows) {
+    if (row.type === 'session') { session = row; continue; }
+    if (!session?.sessionId || !row.turnId) continue;
+    const key = JSON.stringify([session.sessionId, row.turnId]);
+    let e = result.get(key);
+    if (!e) {
+      e = { sessionId: session.sessionId, turnId: row.turnId, repository: session.repository,
+        branchNumbers: session.branchNumbers, client: session.client, contextSeen: false, cwdMismatch: false,
+        refs: [], promptScanIncomplete: false, startedAt: null, endedAt: null };
+      result.set(key, e);
+    }
+    if (row.type === 'context') {
+      e.contextSeen ||= Boolean(row.cwd && session.cwd);
+      if (row.cwd && session.cwd && row.cwd !== session.cwd) e.cwdMismatch = true;
+    } else if (row.type === 'prompt') {
+      e.refs = [...new Set([...e.refs, ...row.refs])].sort();
+      e.promptScanIncomplete ||= row.incomplete || e.refs.length > 20;
+      if (e.refs.length > 20) e.refs = [];
+    } else if (row.type === 'task_started') {
+      const t = ms(row.timestamp);
+      if (t !== null && (e.startedAt === null || t < e.startedAt)) e.startedAt = t;
+    } else if (['task_complete', 'turn_aborted'].includes(row.type)) {
+      const t = ms(row.timestamp);
+      if (t !== null && (e.endedAt === null || t < e.endedAt)) e.endedAt = t;
+    }
+  }
+  return [...result.values()];
+}
+
+/** Group the actual tracked entries, not all repository issues. */
+export function matchingTasks(records, dayStart, dayEnd) {
+  const tasks = new Map();
+  for (const row of records) {
+    const start = ms(row.startedAt), end = ms(row.endedAt);
+    if (start === null || end === null || end <= start || start >= dayEnd || end <= dayStart ||
+        typeof row.taskUrl !== 'string' || !row.taskUrl || row.taskUrl.length > 2048) continue;
+    const canonical = githubTask(row.taskUrl)?.url ?? row.taskUrl;
+    let task = tasks.get(canonical);
+    if (!task) {
+      task = { url: canonical, title: String(row.taskTitle || canonical).slice(0, 500), intervals: [] };
+      tasks.set(canonical, task);
+    }
+    task.intervals.push({ start, end, active: Boolean(row.active) });
+  }
+  return [...tasks.values()].sort((a, b) => a.url.localeCompare(b.url));
+}
+
+export function explainAgentMatch(turn, evidence, tasks, { partial = false } = {}) {
+  const start = ms(turn.startedAt), end = ms(turn.endedAt);
+  const validInterval = start !== null && end !== null && end >= start;
+  const repo = evidence?.cwdMismatch ? null : evidence?.repository ?? null;
+  const refs = evidence?.refs ?? [];
+  const candidates = tasks.map(task => {
+    const identity = githubTask(task.url);
+    const overlapMs = validInterval ? task.intervals.reduce((sum, interval) =>
+      sum + Math.max(0, Math.min(end, interval.end) - Math.max(start, interval.start)), 0) : 0;
+    const contained = validInterval && task.intervals.some(interval => start >= interval.start &&
+      start < interval.end && end <= interval.end);
+    const repository = Boolean(repo && identity?.repository === repo);
+    const branch = Boolean(repository && identity.kind === 'issues' && evidence.branchNumbers.includes(identity.number));
+    const explicit = refs.includes(task.url);
+    return { url: task.url, title: task.title, overlapMs, contained, repository, branch, explicit };
+  });
+  let reason = 'no_strong_identity', matchedUrl = null, state = 'unassigned';
+  const strong = candidates.filter(c => c.contained && (c.explicit || c.branch));
+  const explicitConflict = refs.length > 1 || (refs.length === 1 && strong.some(c => !c.explicit));
+  const branchConflict = (evidence?.branchNumbers?.length ?? 0) > 1;
+  if (partial) reason = 'task_history_incomplete';
+  else if (!evidence || evidence.error) reason = evidence?.error || 'source_evidence_unavailable';
+  else if (evidence.startedAt !== start || evidence.endedAt !== end) reason = 'source_lifecycle_changed';
+  else if (!validInterval || !['completed', 'interrupted'].includes(turn.status) || turn.anchored === false) reason = 'interval_unverified';
+  else if (end - start > 60 * 60_000) reason = 'extended_turn';
+  else if (evidence.promptScanIncomplete) reason = 'prompt_reference_scan_incomplete';
+  else if (evidence.cwdMismatch) reason = 'working_directory_changed';
+  else if (explicitConflict || branchConflict || strong.length > 1) reason = 'conflicting_identity';
+  else if (strong.length === 1 && (strong[0].explicit || evidence.contextSeen)) {
+    state = 'matched'; matchedUrl = strong[0].url;
+    reason = strong[0].explicit ? 'explicit_url_and_containment' : 'repository_branch_and_containment';
+  } else if (strong.length) reason = 'session_context_unverified';
+  else if (candidates.some(c => c.explicit || c.branch)) reason = 'identity_outside_tracked_interval';
+  else if (candidates.some(c => c.contained && c.repository)) reason = 'repository_only';
+  else if (candidates.some(c => c.contained || c.overlapMs > 0)) reason = 'time_only';
+  else reason = 'no_overlapping_task';
+  return { state, reason, matchedUrl, candidates, signals: {
+    repository: evidence?.repository ?? null, branchIssueNumbers: evidence?.branchNumbers ?? [],
+    explicitTaskUrls: refs, contextSeen: Boolean(evidence?.contextSeen),
+    cwdMismatch: Boolean(evidence?.cwdMismatch), client: evidence?.client ?? null,
+  } };
+}
