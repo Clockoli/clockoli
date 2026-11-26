@@ -1,5 +1,5 @@
 import { OnboardingError, RepositoryInspectionService } from './github-app-onboarding.js';
-import { ensureUserStorageBranch, parseUserBranchMetadata, userStorageBranch, USER_METADATA_PATH } from './user-storage-branch.js';
+import { ensureUserStorageBranch, parseUserBranchMetadata, userStorageBranch, verifyRestoredStorageBranch, USER_METADATA_PATH } from './user-storage-branch.js';
 import { parseTaskIndex, TASK_INDEX_PATH } from '../domain/task-index.js';
 
 function transitionError(state) {
@@ -76,9 +76,27 @@ export class OnboardingCoordinator {
     const required = inspectIds === null ? null : [
       ...inspectIds, ...existing.map(config => ({ installationId: config.installationId, repoId: config.repoId })),
     ];
-    const discovery = await this.inspectDiscovery(auth, required);
+    const discovery = await this.inspectDiscovery(auth, required, existing);
     const configs = [];
     for (const repository of discovery.repositories) {
+      const restored = existing.find(config => config.repoId === repository.repoId && config.restoredStorageUserId);
+      if (restored) {
+        if (!repository.eligible) continue;
+        const config = { ...restored, owner: repository.owner, repo: repository.repo, installationId: repository.installationId };
+        const github = this.githubFactory({ credentialProvider: auth.credentialProvider, owner: config.owner, repo: config.repo,
+          branch: config.branch, expectedRepositoryId: config.repoId, branchMode: 'custom' });
+        try {
+          await verifyRestoredStorageBranch(github, config, config.restoredStorageUserId);
+          Object.assign(repository, { state: 'initialized_member', storageLogin: config.storageLogin,
+            canAdd: true, canJoin: false, canInitialize: false, ready: true, restoredStorageUserId: config.restoredStorageUserId });
+          configs.push(config);
+        } catch (error) {
+          repository.ready = false;
+          repository.eligible = false;
+          repository.inspectionError = 'restored_storage_unverified';
+        }
+        continue;
+      }
       if (repository.state !== 'initialized_member' || !repository.eligible) continue;
       repository.ready = false;
       const branch = userStorageBranch(auth.snapshot.auth.githubUserId);
@@ -155,10 +173,11 @@ export class OnboardingCoordinator {
     }
   }
 
-  async inspectDiscovery(auth, inspectIds = null) {
+  async inspectDiscovery(auth, inspectIds = null, existing = []) {
     const discovery = await this.discoveryFactory({ credentialProvider: auth.credentialProvider }).discover();
     const selected = repository => inspectIds === null || inspectIds.some(id => id.installationId === repository.installationId && id.repoId === repository.repoId);
-    const pending = discovery.repositories.filter(repository => selected(repository) && !repository.state);
+    const restored = repository => existing.some(config => config.repoId === repository.repoId && config.restoredStorageUserId);
+    const pending = discovery.repositories.filter(repository => selected(repository) && !repository.state && !restored(repository));
     if (!pending.length) return discovery;
     if (!Number.isSafeInteger(this.maxRepositoryInspections) || this.maxRepositoryInspections <= 0
         || pending.length > this.maxRepositoryInspections) {
@@ -167,7 +186,7 @@ export class OnboardingCoordinator {
     const user = { id: auth.snapshot.auth.githubUserId, login: auth.snapshot.auth.githubLogin };
     const inspected = [];
     for (const repository of discovery.repositories) {
-      if (repository.state || !selected(repository)) { inspected.push(repository); continue; }
+      if (repository.state || !selected(repository) || restored(repository)) { inspected.push(repository); continue; }
       const github = this.githubFactory({
         credentialProvider: auth.credentialProvider,
         owner: repository.owner, repo: repository.repo, branch: repository.defaultBranch || 'main',
@@ -223,6 +242,9 @@ export class OnboardingCoordinator {
       this.store.getConfigurationSnapshot(), this.store.ensureDataVersion(5),
     ]);
     const previousConfig = configurationBefore.config;
+    if (Object.values(configurationBefore.registry?.destinations ?? {}).some(config => config.repoId === repoId && config.restoredStorageUserId)) {
+      throw new OnboardingError('Remove the restored time repository before selecting your own storage branch.', 'repository_action_unavailable');
+    }
     let migrationGithub = null, migrationIdentity = null;
     const migratingPat = auth.source === 'pending' && auth.currentSnapshot.auth?.mode === 'pat';
     if (migratingPat) {
@@ -388,6 +410,17 @@ export class OnboardingCoordinator {
       || config.installationId !== candidate.installationId || config.branch !== selectedBranch;
     // Recovery is not an onboarding action: inspect remotely, then repair only
     // local coordinates. Never initialize, join, provision, or move accepted work.
+    if (config.restoredStorageUserId) {
+      const repaired = { ...config, owner: candidate.owner, repo: candidate.repo, installationId: candidate.installationId };
+      const personal = this.githubFactory({ credentialProvider: this.currentCredentialProvider,
+        owner: repaired.owner, repo: repaired.repo, branch: repaired.branch,
+        expectedRepositoryId: repaired.repoId, branchMode: 'custom' });
+      await verifyRestoredStorageBranch(personal, repaired, config.restoredStorageUserId);
+      if (!await this.store.repairGitHubAppRepositoryCoordinates(repaired, current.authGeneration, configuration.generation)) {
+        throw new OnboardingError('Authentication or repository configuration changed during recovery. Check access and try again.', 'onboarding_superseded');
+      }
+      return { recovered: changed, config: repaired };
+    }
     const github = this.githubFactory({ credentialProvider: this.currentCredentialProvider,
       owner: candidate.owner, repo: candidate.repo, branch: candidate.defaultBranch,
       expectedRepositoryId: config.repoId, branchMode: 'default' });

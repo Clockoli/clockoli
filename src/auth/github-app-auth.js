@@ -319,11 +319,47 @@ export class CredentialBroker {
     this.now = now;
     this.refreshWindowMs = refreshWindowMs;
     this.refreshPromise = null;
+    this.pausedForLocalDataChange = false;
   }
 
-  async getAccessToken({ forceRefresh = false, rejectedToken = '' } = {}) {
+  async pauseForLocalDataChange() {
+    this.pausedForLocalDataChange = true;
+    // A refresh token is single-use. Let a refresh that has already started
+    // persist the replacement pair before a backup can replace the database.
+    await this.refreshPromise?.catch(() => {});
+  }
+
+  resumeAfterLocalDataChange() {
+    this.pausedForLocalDataChange = false;
+  }
+
+  assertAvailable() {
+    if (this.pausedForLocalDataChange) {
+      throw new GitHubAppAuthError('Clockoli is reloading after a local data change.', 'auth_superseded');
+    }
+  }
+
+  async getAccessTokenForRestore(userId, options = {}) {
+    if (!this.pausedForLocalDataChange || !Number.isSafeInteger(userId) || userId <= 0) {
+      throw new GitHubAppAuthError('GitHub restore verification is not active.', 'auth_superseded');
+    }
+    const token = await this.getAccessToken(options, userId);
+    const { auth } = await this.store.getAuthSnapshot();
+    if (!this.pausedForLocalDataChange || auth?.mode !== 'github_app'
+        || auth.githubUserId !== userId || auth.accessToken !== token) {
+      throw new GitHubAppAuthError('GitHub sign-in changed during backup verification.', 'auth_superseded');
+    }
+    return token;
+  }
+
+  async getAccessToken({ forceRefresh = false, rejectedToken = '' } = {}, restoreUserId = null) {
+    if (restoreUserId === null) this.assertAvailable();
     const snapshot = await this.store.getAuthSnapshot();
     const auth = snapshot.auth;
+    if (restoreUserId === null) this.assertAvailable();
+    else if (!this.pausedForLocalDataChange || auth?.mode !== 'github_app' || auth.githubUserId !== restoreUserId) {
+      throw new GitHubAppAuthError('GitHub sign-in changed during backup verification.', 'auth_superseded');
+    }
     if (!auth?.accessToken) throw new GitHubAppAuthError('Connect Clockoli to GitHub.', 'auth_required');
     if (auth.mode === 'pat') return auth.accessToken;
     if (auth.mode !== 'github_app') throw new GitHubAppAuthError('Clockoli authentication is invalid.', 'auth_required');
@@ -338,7 +374,9 @@ export class CredentialBroker {
   async refresh(snapshot) {
     const auth = snapshot.auth, now = this.now();
     if (!auth?.refreshToken || Number(auth.refreshTokenExpiresAt) <= now) {
-      throw new GitHubAppAuthError('Clockoli needs to reconnect to GitHub.', 'auth_expired');
+      throw Object.assign(new GitHubAppAuthError('Clockoli needs to reconnect to GitHub.', 'auth_expired'), {
+        authReason: auth?.refreshToken ? 'refresh-token-expired' : 'refresh-token-missing',
+      });
     }
     const clientId = requireClientId(this.clientId);
     const response = await this.fetchImpl(TOKEN_URL, {
@@ -352,10 +390,23 @@ export class CredentialBroker {
     });
     const body = await jsonResponse(response);
     if (!response.ok || body?.error) {
+      // A delayed request can have captured a token that another caller has
+      // already consumed. Re-read the durable credentials before asking the
+      // user to sign in again, and never return another account's token.
+      const latest = (await this.store.getAuthSnapshot()).auth;
+      if (latest?.mode === 'github_app' && latest.githubUserId === auth.githubUserId
+          && latest.accessToken && latest.accessToken !== auth.accessToken
+          && Number(latest.accessTokenExpiresAt) > this.now()) return latest.accessToken;
+      if (response.status === 429 || response.status >= 500
+          || ['server_error', 'temporarily_unavailable'].includes(body?.error)) {
+        throw new GitHubAppAuthError('GitHub could not renew access temporarily. Try again later.', 'network_error', response.status);
+      }
       const error = oauthError(body, response.status);
       if (['authentication_failed', 'invalid_device_flow'].includes(error.code)) {
         error.code = 'auth_expired';
         error.message = 'Clockoli could not renew GitHub access. Reconnect GitHub in Settings.';
+        error.authReason = ['bad_refresh_token', 'incorrect_client_credentials', 'invalid_grant'].includes(body?.error)
+          ? body.error : 'renewal-rejected';
       }
       throw error;
     }
@@ -369,7 +420,8 @@ export class CredentialBroker {
     if (saved) return next.accessToken;
 
     const current = await this.store.getAuthSnapshot();
-    if (current.auth?.mode === 'github_app' && current.auth.accessToken !== auth.accessToken) return current.auth.accessToken;
+    if (current.auth?.mode === 'github_app' && current.auth.githubUserId === auth.githubUserId
+        && current.auth.accessToken !== auth.accessToken) return current.auth.accessToken;
     throw new GitHubAppAuthError('Authentication changed while GitHub credentials were refreshing.', 'auth_superseded');
   }
 }

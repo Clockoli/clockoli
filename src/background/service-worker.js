@@ -43,7 +43,7 @@ import { readyRepositoryMemberIds } from '../services/repository-team-status.js'
 import { OnboardingCoordinator } from '../services/onboarding-coordinator.js';
 import { RepositoryInvitationService } from '../services/repository-invitations.js';
 import { withRepositoryRecovery } from '../services/repository-operation-recovery.js';
-import { discoverUserStorageBranches } from '../services/user-storage-branch.js';
+import { discoverUserStorageBranches, verifyRestoredStorageBranch } from '../services/user-storage-branch.js';
 import { addTimeForSender, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
 import { activeDestinationId, requireConfiguredDestinationId, resolveStartDestinationId, selectReadDestinations, syncPendingAll } from './destination-runtime.js';
 import { emitClockifyMigrationProgress, isClockifyProgressRequestId, registerClockifyMigrationProgressPort } from './clockify-migration-progress.js';
@@ -115,6 +115,30 @@ function githubForConfig(config, { measureMigration = false, rateLimitGate = nul
   });
 }
 
+async function verifyCrossAccountRestore(auth, destinations) {
+  // The paused broker is reserved for this preflight. Renew the current
+  // account's token if needed, without ever using credentials from the backup.
+  const credentials = { credentialProvider: {
+    getAccessToken: options => currentCredentialProvider.getAccessTokenForRestore(auth.githubUserId, options),
+  } };
+  const github = new GitHubClient(credentials);
+  const identity = await github.getAuthenticatedIdentity();
+  if (identity.id !== auth.githubUserId) throw new Error('The current GitHub sign-in could not be verified.');
+  if (!destinations.length) return;
+  const discovery = await new InstallationDiscoveryService({ github }).discover();
+  for (const config of destinations) {
+    const candidate = discovery.candidates.find(value => value.repoId === config.repoId
+      && value.owner.toLowerCase() === config.owner.toLowerCase() && value.repo.toLowerCase() === config.repo.toLowerCase()
+      && value.appPermissions?.contents === 'write' && value.userPermissions?.push === true);
+    if (!candidate) throw new Error(`Your GitHub account does not have write access through Clockoli to ${config.owner}/${config.repo}. Nothing was restored.`);
+    const branch = new GitHubClient({ ...credentials, owner: config.owner, repo: config.repo, branch: config.branch,
+      branchMode: 'custom', expectedRepositoryId: config.repoId });
+    await verifyRestoredStorageBranch(branch, config, config.restoredStorageUserId ?? auth.githubUserId);
+    // An installation can change independently of the repository and branch.
+    config.installationId = candidate.installationId;
+  }
+}
+
 // Only verified default-branch settings define PTO. The local projection is an
 // offline hint for routine tracking; future time and final reports use fresh GitHub reads.
 async function timeOffSettingsForDestination(destinationId, { fresh = false, signal } = {}) {
@@ -179,6 +203,7 @@ function serializeError(error, message) {
     message: error?.message || 'Unexpected error',
     code: error?.name === 'AbortError' ? 'aborted' : error?.code || 'error',
     status: error?.status || 0,
+    ...(error?.authReason ? { authReason: error.authReason } : {}),
     ...(error?.retryAt ? { retryAt: error.retryAt } : {}),
     recovery: READ_RETRY_MESSAGES.has(message?.type) ? 'read-retry' : 'mutation-recovery',
   };
@@ -255,6 +280,7 @@ async function onboardingState() {
     label: config.label || `${config.owner}/${config.repo}`,
     branch: config.branch || 'main', defaultBranch: config.defaultBranch || 'main',
     storageLogin: config.storageLogin || '', installationId: config.installationId || null,
+    ...(config.restoredStorageUserId ? { restoredStorageUserId: config.restoredStorageUserId } : {}),
     repositoryFormatVersion: config.repositoryFormatVersion || null,
     default: registry.defaultDestinationId === id,
     active: tracking.activeTimer?.destinationId === id,
@@ -288,7 +314,10 @@ async function checkCurrentRepositoryAccess(destinationId = null) {
     await onboarding.recoverCurrentRepository();
     snapshot = await configuredSnapshot({ destinationId: selectedId });
   }
-  const repository = await githubForConfig(snapshot.config).assertDestinationReachable();
+  const github = githubForConfig(snapshot.config);
+  const repository = snapshot.config.restoredStorageUserId
+    ? (await verifyRestoredStorageBranch(github, snapshot.config, snapshot.config.restoredStorageUserId)).repository
+    : await github.assertDestinationReachable();
   const lastVerifiedAt = new Date().toISOString();
   await store.saveDestinationVerification(selectedId, 'access_checked', lastVerifiedAt);
   return {
@@ -321,11 +350,14 @@ async function contextForDestination(destinationId, { localOnly = false, persist
     if (!user) throw new Error('Refresh the GitHub connection to load your tracking identity.');
     if (persistUser) await destinationStore.patchState({ user });
   }
-  const reports = new ReportService({ github, cache: store });
+  const reports = new ReportService({ github, cache: store, cacheGeneration: snapshot.generation });
+  // Work-record actor identity belongs to the storage user, not the GitHub
+  // credential holder. GitHub itself authenticates the actual writer.
+  const storageUserId = config.restoredStorageUserId ?? auth.githubUserId;
   return {
     config, destinationId,
     reports,
-    tracker: new TrackerService({ github, store: destinationStore, reports, user, actorId: Number.isSafeInteger(auth.githubUserId) ? `github:${auth.githubUserId}` : `clockoli:${config.repoId}:${user}`, actorName: user, recentDays: config.recentDays || 7 }),
+    tracker: new TrackerService({ github, store: destinationStore, reports, user, actorId: Number.isSafeInteger(storageUserId) ? `github:${storageUserId}` : `clockoli:${config.repoId}:${user}`, actorName: user, recentDays: config.recentDays || 7 }),
   };
 }
 
@@ -386,9 +418,21 @@ function broadcastLocalPreferencesChanged(revision) {
 
 async function loadExchangeRates(message) {
   const payload = message.payload || {};
+  const epoch = await loadCoordinator.beginLoad();
+  const generation = await store.getConfigurationGeneration();
+  loadCoordinator.assertCurrent(epoch);
   emitReportProgress(payload.requestId, { label: 'Loading exchange rates from Frankfurter…', value: 85 });
-  const service = new ExchangeRateService({ cache: store });
+  const service = new ExchangeRateService({ cache: {
+    getExchangeRateCache: () => store.getExchangeRateCache(),
+    saveExchangeRateCache: async value => {
+      loadCoordinator.assertCurrent(epoch);
+      if (!await store.saveExchangeRateCache(value, generation)) {
+        throw new DOMException('Exchange rate load was superseded by a local data change.', 'AbortError');
+      }
+    },
+  } });
   const result = await service.ratesForDates(payload);
+  loadCoordinator.assertCurrent(epoch);
   emitReportProgress(payload.requestId, { label: 'Applying exchange rates…', value: 95 });
   return result;
 }
@@ -416,7 +460,7 @@ async function loadReport(message) {
       currentUsers[destination.id] = await destinationUser(destination, auth);
       const branch = destination.branch || 'main';
       const reports = new ReportService({
-        github: githubForConfig(destination), cache: store,
+        github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
       const [records, settings] = await Promise.all([
@@ -567,7 +611,7 @@ async function loadTaskParticipants(message, sender, extensionOrigin) {
       const tracker = await trackerForDestination(destination.id, { localOnly: true });
       await tracker.getState({ refresh: true, signal });
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
-      const records = await new ReportService({ github: githubForConfig(destination), cache: store })
+      const records = await new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation })
         .loadRepositoryTask(taskUrl, { defaultBranch: destination.defaultBranch || destination.branch || 'main', signal });
       timerStates.set(destination.id, await tracker.getState());
       return records;
@@ -617,7 +661,7 @@ async function loadTimes(message, sender) {
       if (!user) throw Object.assign(new Error('Tracking identity is unavailable.'), { code: 'identity_unavailable' });
       currentUsers[destination.id] = user;
       const reports = new ReportService({
-        github: githubForConfig(destination), cache: store,
+        github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
       const recent = await reports.loadUserRange(readRange, user, { includeStorageMetadata: true, signal }, {
@@ -634,8 +678,12 @@ async function loadTimes(message, sender) {
         : projected.records;
     }, { signal: controller.signal });
     loadCoordinator.assertCurrent(loadEpoch);
-    const pendingWrites = [...recoveries.entries()].flatMap(([destinationId, recovery]) => (recovery.pendingWrites || [])
-      .map(operation => safePendingProjection(operation, destinationId, { includeDetails: true })));
+    // Recovery summaries omit operation payloads; use the current local queue.
+    const local = await store.getTrackingSnapshot();
+    loadCoordinator.assertCurrent(loadEpoch);
+    const pendingWrites = [...recoveries.entries()].flatMap(([destinationId]) =>
+      (local.destinationStates.entries[destinationId]?.pendingWrites ?? [])
+        .map(operation => safePendingProjection(operation, destinationId, { includeDetails: true })));
     return {
       configured: true,
       recent: classifyTimeOffRecords(loaded.records.map(({ _record, ...record }) => record), timeOffConfigs)
@@ -652,7 +700,45 @@ async function loadTimes(message, sender) {
   finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
 }
 
+async function loadMergeTasks(message, sender) {
+  const payload = message.payload || {};
+  const loadEpoch = await loadCoordinator.beginLoad();
+  await store.ensureDataVersion(5);
+  const snapshot = await configuredSnapshot({ localOnly: true });
+  loadCoordinator.assertCurrent(loadEpoch);
+  const { auth } = snapshot, destinations = selectReadDestinations(snapshot, payload);
+  if (!auth || destinations.length !== 1) throw new Error('Choose one time repository before merging tasks.');
+  const destination = destinations[0];
+  if (payload.selectedUsers !== undefined && (!Array.isArray(payload.selectedUsers)
+      || payload.selectedUsers.some(user => typeof user !== 'string'))) throw new Error('Invalid people selection.');
+  const loadKey = `all:merge-tasks:${sender?.documentId ?? sender?.tab?.id ?? sender?.url ?? 'extension'}`;
+  const previous = reportLoads.get(loadKey);
+  previous?.controller.abort();
+  const controller = new AbortController();
+  const promise = (async () => {
+    await previous?.promise.catch(() => {});
+    controller.signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
+    const currentUser = await destinationUser(destination, auth);
+    const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
+      onProgress: progress => emitReportProgress(payload.requestId, { ...progress, destinationId: destination.id }) });
+    const result = await reports.loadMergeTaskCatalog(payload, {
+      defaultBranch: destination.defaultBranch || destination.branch || 'main',
+      currentUser, selectedUsers: payload.selectedUsers, signal: controller.signal,
+    });
+    controller.signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
+    const local = await store.destinationStore(destination.id).getState();
+    controller.signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
+    return { ...result, configured: true, currentUsers: { [destination.id]: currentUser },
+      pendingCount: local.pendingWrites?.length || 0,
+      tasks: result.tasks.map(task => ({ ...task, destinationIds: [destination.id] })) };
+  })();
+  reportLoads.set(loadKey, { controller, promise });
+  try { return await promise; }
+  finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
+}
+
 async function loadTasks(message, sender) {
+  if (message.payload?.mergePreview === true) return loadMergeTasks(message, sender);
   const startedAt = Date.now();
   const loadEpoch = await loadCoordinator.beginLoad();
   await store.ensureDataVersion(5);
@@ -680,7 +766,7 @@ async function loadTasks(message, sender) {
       await tracker.getState({ refresh: true, signal });
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
       const reports = new ReportService({
-        github: githubForConfig(destination), cache: store,
+        github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation,
         onProgress: progress => emitReportProgress(message.payload?.requestId, { ...progress, destinationId: destination.id }),
       });
       const [records, settings] = await Promise.all([
@@ -751,8 +837,8 @@ async function loadTasks(message, sender) {
   finally { if (reportLoads.get(loadKey)?.promise === promise) reportLoads.delete(loadKey); }
 }
 
-async function searchTasks(sender, query = '', { refresh = false, includeImported = false, destinationId = null } = {}) {
-  const loadEpoch = await loadCoordinator.beginLoad();
+async function searchTasks(sender, query = '', { refresh = false, includeImported = false, destinationId = null, waitForConfiguration = true } = {}) {
+  const loadEpoch = await loadCoordinator.beginLoad({ wait: waitForConfiguration });
   await store.ensureDataVersion(5); loadCoordinator.assertCurrent(loadEpoch);
   const snapshot = await configuredSnapshot({ localOnly: true }); loadCoordinator.assertCurrent(loadEpoch);
   const { auth } = snapshot, destinations = selectReadDestinations(snapshot,
@@ -797,7 +883,7 @@ async function searchTasks(sender, query = '', { refresh = false, includeImporte
       readStatus: cached.readStatus, partial: false, conflicts: [], fallback: false }
       : await loadDestinationRecords(destinations, async (destination, signal) => {
         signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
-        const reports = new ReportService({ github: githubForConfig(destination), cache: store, concurrency: 10 });
+        const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation, concurrency: 10 });
         const catalog = await reports.loadRepositoryTaskCatalog({
           defaultBranch: destination.defaultBranch || destination.branch || 'main', signal, budgets,
         });
@@ -844,7 +930,7 @@ async function searchTasks(sender, query = '', { refresh = false, includeImporte
     }
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       signal.throwIfAborted(); loadCoordinator.assertCurrent(loadEpoch);
-      const reports = new ReportService({ github: githubForConfig(destination), cache: store, concurrency: 2 });
+      const reports = new ReportService({ github: githubForConfig(destination), cache: store, cacheGeneration: snapshot.generation, concurrency: 2 });
       const records = await reports.loadRepositoryRange({ startDate: '0001-01-01', endDate: '9999-12-31' }, {
         defaultBranch: destination.defaultBranch || destination.branch || 'main', signal, includeStorageMetadata: true,
         budgets, preserveDuplicateIds: true,
@@ -900,13 +986,16 @@ const DIRECT_DEVICE_FLOW_MESSAGES = new Set([
 
 const READ_RETRY_MESSAGES = new Set([
   'LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'LOAD_TASKS', 'LOAD_TIMES', 'LOAD_RECENT', 'SEARCH_TASKS',
-  'GET_STATE', 'GET_PAGE_STATE', 'GET_STOPPED_OVERLAP', 'GET_EXCHANGE_RATES', 'GET_ONBOARDING_STATE',
+  'GET_STATE', 'GET_PAGE_STATE', 'GET_STOPPED_OVERLAP', 'GET_ACTIVE_START_CONFLICT',
+  'GET_PENDING_COMPLETION_CONFLICT', 'GET_QUEUED_START_RECOVERY', 'GET_EXCHANGE_RATES', 'GET_ONBOARDING_STATE',
   'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES',
 ]);
 
 const RECOVERABLE_REPOSITORY_MESSAGES = new Set([
   'LOAD_REPORT', 'LOAD_TASK_PARTICIPANTS', 'LOAD_TASKS', 'LOAD_TIMES', 'SEARCH_TASKS', 'GET_STATE', 'GET_PAGE_STATE', 'START', 'SWITCH_TASK', 'STOP', 'DISCARD_ACTIVE', 'SYNC',
-  'LOAD_RECENT', 'BULK_ADD_TIMES', 'ADD_TIME', 'ADD_DAY_RANGE', 'EDIT_ENTRIES', 'EDIT_ACTIVE_START', 'QUEUE_ENTRY_EDIT', 'QUEUE_ENTRIES_EDIT', 'QUEUE_ACTIVE_START_EDIT', 'DELETE_ENTRY', 'RESOLVE_PENDING', 'RESOLVE_STOPPED_OVERLAP',
+  'LOAD_RECENT', 'BULK_ADD_TIMES', 'ADD_TIME', 'ADD_DAY_RANGE', 'EDIT_ENTRIES', 'EDIT_ACTIVE_START', 'QUEUE_ENTRY_EDIT', 'QUEUE_ENTRIES_EDIT', 'QUEUE_ACTIVE_START_EDIT', 'DELETE_ENTRY', 'RESOLVE_PENDING',
+  // Destination-scoped conflict actions must be explicitly rechecked rather
+  // than replayed after recovery of the default repository.
 ]);
 
 async function withCurrentRepositoryRecovery(message, operation) {
@@ -963,9 +1052,24 @@ function safeQueuedRecord(record) {
 }
 function queuedSubjects(operation) {
   const type = operation.operation ?? operation.stage;
-  if (['startTimer', 'completeTimerAndStart'].includes(type)) {
+  if (type === 'completeTimerAndStart') {
+    const original = safeQueuedRecord(operation.entry);
+    const proposed = safeQueuedRecord(operation.nextActive);
+    return original || proposed ? [{ ...(original ? { original } : {}),
+      ...(proposed ? { proposed } : {}) }] : [];
+  }
+  if (type === 'startTimer') {
     const proposed = safeQueuedRecord(operation.nextActive);
     return proposed ? [{ proposed }] : [];
+  }
+  if (type === 'discardActive') {
+    const original = safeQueuedRecord(operation.activeSnapshot);
+    return original ? [{ original }] : [];
+  }
+  if (type === 'editActiveStart') {
+    const original = safeQueuedRecord({ startedAt: operation.original?.startedAt });
+    const proposed = safeQueuedRecord({ startedAt: operation.startedAt });
+    return original || proposed ? [{ original, proposed }] : [];
   }
   const requests = ['editEntry', 'deleteEntry'].includes(type) ? [operation.request]
     : type === 'editEntries' ? operation.request?.entries : null;
@@ -995,6 +1099,8 @@ function safePendingProjection(operation, destinationId, { includeDetails = fals
   return {
     id, destinationId, status, stage, operation: operation.operation, queuedAt,
     retryCount: Math.max(0, Number(retryCount) || 0),
+    ...(operation.operation === 'editActiveStart' && typeof operation.original?.id === 'string'
+      ? { timerId: operation.original.id } : {}),
     ...(conflictReason ? { conflictReason } : {}),
     ...(lastError ? { lastError: diagnosticError(lastError) } : {}),
     ...(diagnostics.length ? { diagnostics } : {}),
@@ -1146,7 +1252,7 @@ function resumeClockifyMigration(requestId = null) {
         sourceUsers: job.data.users, entries: job.data.entries, mappings: job.mappings,
         github: githubForConfig(verified.config, { measureMigration: true, rateLimitGate: gate }),
         sourceBranch: verified.config.defaultBranch,
-        destinationUser: { id: verified.auth.githubUserId, login: verified.config.storageLogin || verified.auth.githubLogin },
+        destinationUser: { id: verified.config.restoredStorageUserId ?? verified.auth.githubUserId, login: verified.config.storageLogin || verified.auth.githubLogin },
         completedOutcomes: job.outcomes,
         onOutcome: outcome => clockifyMigrationJobs.checkpoint(job.id, outcome),
         onProgress: progress => { latestProgress = progress; publish(progress); },
@@ -1166,14 +1272,38 @@ async function replaceFullLocalData(operation) {
   // A passive GitHub pull is not on the mutation executor. Finish any pull
   // before wiping storage, and stop new pulls and syncs until the reload.
   globalThis.clockoliLocalDataTransitioning = true;
+  const brokers = [currentCredentialProvider, pendingCredentialProvider];
   try {
+    // Read-only GitHub requests can refresh credentials outside the mutation
+    // executor. Freeze new refreshes and let active ones persist before restore.
+    await Promise.all(brokers.map(broker => broker.pauseForLocalDataChange()));
     if (pendingPull) await pendingPull.catch(() => {});
     return await operation();
   } catch (error) {
+    for (const broker of brokers) broker.resumeAfterLocalDataChange();
     globalThis.clockoliLocalDataTransitioning = false;
     requestPendingSync();
     throw error;
   }
+}
+
+function validConflictEntryEdits(edits) {
+  const fields = Object.keys(edits && typeof edits === 'object' && !Array.isArray(edits) ? edits : {}).sort().join(',');
+  return fields === 'billable,description,endedAt,startedAt,taskTitle,taskUrl'
+    && typeof edits.taskUrl === 'string' && edits.taskUrl.length <= 500
+    && typeof edits.taskTitle === 'string' && edits.taskTitle.length <= 500
+    && typeof edits.description === 'string' && edits.description.length <= 2000
+    && typeof edits.billable === 'boolean'
+    && [edits.startedAt, edits.endedAt].every(value => typeof value === 'string'
+      && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+      && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value);
+}
+
+function validReviewedPrevious(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'id,sha'
+    && typeof value.id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value.id)
+    && typeof value.sha === 'string' && /^[a-f0-9]{40}$/.test(value.sha);
 }
 
 async function handle(message, sender) {
@@ -1605,6 +1735,23 @@ async function handle(message, sender) {
     return result;
   }
   if (message.type === 'RESERVE_INVOICE_NUMBER') return store.reserveInvoiceNumber();
+  if (message.type === 'CLEAR_LOCAL_CACHE') {
+    if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) throw new Error('Only Settings can clear the local cache.');
+    if (Object.keys(message).length !== 1) throw new Error('Invalid cache clear request.');
+    // The configuration load coordinator has already cancelled tracked reads,
+    // and the two executors serialize this with local accepts and Git writes.
+    // A passive pull runs outside the executor; let it finish before clearing.
+    globalThis.clockoliLocalDataTransitioning = true;
+    try {
+      if (pendingPull) await pendingPull.catch(() => {});
+      const result = await store.clearLocalCache();
+      destinationValidationCache.clear();
+      return result;
+    } finally {
+      globalThis.clockoliLocalDataTransitioning = false;
+      requestPendingSync();
+    }
+  }
   if (['EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA'].includes(message.type)) {
     if (sender?.url !== chrome.runtime.getURL('src/options/options.html')) {
       throw new Error('Only Settings can manage full local backups.');
@@ -1630,7 +1777,9 @@ async function handle(message, sender) {
     }
     if (Object.keys(message).length !== 3 || typeof message.text !== 'string'
         || message.text.length > 64 * 1024 * 1024) throw new Error('Invalid full backup file.');
-    return replaceFullLocalData(() => store.importFullLocalBackup(message.text, message.password));
+    return replaceFullLocalData(() => store.importFullLocalBackup(message.text, message.password, {
+      verifyCrossAccount: verifyCrossAccountRestore,
+    }));
   }
   if (message.type === 'EXPORT_SETTINGS') return store.exportSettings();
   if (message.type === 'MARK_SETTINGS_EXPORTED') return { marked: await store.markSettingsExported(message.revision) };
@@ -1949,7 +2098,7 @@ async function handle(message, sender) {
               const branch = byLogin.get(user.toLowerCase());
               if (!branch) throw new Error(`Clockoli storage for ${user} is no longer available. Reload Settings.`);
               const detachedStore = { getState: async () => ({ pendingWrites: [], recentCache: [] }), patchState: async () => {} };
-              return { user: branch.login, tracker: new TrackerService({ github: branch.github, store: detachedStore, user: branch.login, actorId: `github:${branch.id}`, actorName: branch.login, recentDays: destination.recentDays || 7 }) };
+              return { user: branch.login, tracker: new TrackerService({ github: branch.github, store: detachedStore, reports: new ReportService({ github: branch.github, cache: store, cacheGeneration: snapshot.generation }), user: branch.login, actorId: `github:${branch.id}`, actorName: branch.login, recentDays: destination.recentDays || 7 }) };
             });
             for (const { tracker } of targets) {
               const result = await tracker.mergeTasks(request);
@@ -1986,23 +2135,148 @@ async function handle(message, sender) {
       requestPendingSync();
       return { ...result, destinationId: destinationIds[0] };
     }
+    case 'GET_QUEUED_START_RECOVERY':
+    case 'SAVE_QUEUED_START_AS_TIME':
+    case 'CONFIRM_SAVED_QUEUED_START': {
+      if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) {
+        throw new Error('Only Activity can recover queued Start time.');
+      }
+      const expected = message.type === 'SAVE_QUEUED_START_AS_TIME'
+        ? 'destinationId,edits,id,type' : message.type === 'CONFIRM_SAVED_QUEUED_START'
+          ? 'destinationId,id,savedSha,type' : 'destinationId,id,type';
+      if (Object.keys(message).sort().join(',') !== expected
+          || typeof message.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)
+          || (message.type === 'SAVE_QUEUED_START_AS_TIME' && !validConflictEntryEdits(message.edits))
+          || (message.type === 'CONFIRM_SAVED_QUEUED_START'
+            && (typeof message.savedSha !== 'string' || !/^[a-f0-9]{40}$/.test(message.savedSha)))) {
+        throw new Error('Invalid queued Start recovery request.');
+      }
+      const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+      const tracker = await trackerForDestination(destinationId,
+        message.type === 'GET_QUEUED_START_RECOVERY' ? { localOnly: true, persistUser: false } : {});
+      if (message.type === 'GET_QUEUED_START_RECOVERY') {
+        return tracker.getQueuedStartRecoveryContext(message.id);
+      }
+      const result = message.type === 'CONFIRM_SAVED_QUEUED_START'
+        ? await tracker.confirmSavedQueuedStart(message.id, message.savedSha)
+        : await tracker.saveQueuedStartAsCompletedTime(message.id, message.edits);
+      requestPendingSync();
+      return result;
+    }
+    case 'GET_PENDING_COMPLETION_CONFLICT':
+    case 'EDIT_PENDING_COMPLETION_CONFLICT':
+    case 'DELETE_PENDING_COMPLETION_CONFLICT':
+    case 'CONFIRM_SAVED_COMPLETION_CONFLICT': {
+      if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) {
+        throw new Error('Only Activity can resolve a stopped-time conflict.');
+      }
+      const keys = Object.keys(message).sort().join(',');
+      const expected = message.type === 'EDIT_PENDING_COMPLETION_CONFLICT'
+        ? 'destinationId,edits,id,type' : 'destinationId,id,type';
+      if (keys !== expected || typeof message.id !== 'string'
+          || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)
+          || (message.type === 'EDIT_PENDING_COMPLETION_CONFLICT' && !validConflictEntryEdits(message.edits))) {
+        throw new Error('Invalid stopped-time conflict request.');
+      }
+      const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+      const tracker = await trackerForDestination(destinationId,
+        message.type === 'GET_PENDING_COMPLETION_CONFLICT' ? { localOnly: true, persistUser: false } : {});
+      if (message.type === 'GET_PENDING_COMPLETION_CONFLICT') {
+        return tracker.getPendingCompletionConflictContext(message.id);
+      }
+      if (message.type === 'EDIT_PENDING_COMPLETION_CONFLICT') {
+        const result = await tracker.editPendingCompletionConflict(message.id, message.edits);
+        requestPendingSync();
+        return result;
+      }
+      if (message.type === 'CONFIRM_SAVED_COMPLETION_CONFLICT') {
+        const result = await tracker.confirmSavedCompletionConflict(message.id);
+        requestPendingSync();
+        return result;
+      }
+      const result = await tracker.deletePendingCompletionConflict(message.id);
+      requestPendingSync();
+      return result;
+    }
+    case 'GET_ACTIVE_START_CONFLICT':
+    case 'RESOLVE_ACTIVE_START_CONFLICT':
+    case 'EDIT_ACTIVE_START_CONFLICT':
+    case 'DELETE_ACTIVE_START_CONFLICT': {
+      if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) {
+        throw new Error('Only Activity can resolve a start-time conflict.');
+      }
+      const keys = Object.keys(message).sort().join(',');
+      const expected = message.type === 'GET_ACTIVE_START_CONFLICT' || message.type === 'DELETE_ACTIVE_START_CONFLICT'
+        ? 'destinationId,id,type'
+        : message.type === 'EDIT_ACTIVE_START_CONFLICT' ? 'destinationId,edits,id,type'
+          : ['manual', 'after'].includes(message.choice)
+            ? 'choice,destinationId,id,startedAt,type' : 'choice,destinationId,id,type';
+      if (keys !== expected || typeof message.id !== 'string'
+          || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)) {
+        throw new Error('Invalid start-time conflict request.');
+      }
+      if (message.type === 'EDIT_ACTIVE_START_CONFLICT' && !validConflictEntryEdits(message.edits)) {
+        throw new Error('Invalid edited timer details.');
+      }
+      const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
+      const tracker = await trackerForDestination(destinationId,
+        message.type === 'GET_ACTIVE_START_CONFLICT' ? { localOnly: true, persistUser: false } : {});
+      if (message.type === 'GET_ACTIVE_START_CONFLICT') return tracker.getActiveStartConflictContext(message.id);
+      if (message.type === 'EDIT_ACTIVE_START_CONFLICT') {
+        const result = await tracker.editStoppedActiveConflict(message.id, message.edits);
+        requestPendingSync();
+        return result;
+      }
+      if (message.type === 'DELETE_ACTIVE_START_CONFLICT') {
+        const result = await tracker.deleteStoppedActiveConflict(message.id);
+        requestPendingSync();
+        return result;
+      }
+      if (!['undo', 'after', 'manual'].includes(message.choice)
+          || (['manual', 'after'].includes(message.choice) && (typeof message.startedAt !== 'string'
+            || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(message.startedAt)
+            || !Number.isFinite(Date.parse(message.startedAt))
+            || new Date(message.startedAt).toISOString() !== message.startedAt))) {
+        throw new Error('Invalid start-time conflict resolution.');
+      }
+      const result = await tracker.resolveActiveStartConflict(message.id,
+        { choice: message.choice, ...(['manual', 'after'].includes(message.choice) ? { startedAt: message.startedAt } : {}) });
+      requestPendingSync();
+      return result;
+    }
     case 'GET_STOPPED_OVERLAP':
     case 'RESOLVE_STOPPED_OVERLAP':
+    case 'EDIT_STOPPED_OVERLAP':
     case 'DELETE_STOPPED_OVERLAP': {
       if (sender?.url !== chrome.runtime.getURL('src/times/times.html')) throw new Error('Only Activity can review this overlap.');
       const keys = Object.keys(message).sort().join(',');
-      if (keys !== (message.type === 'GET_STOPPED_OVERLAP' ? 'destinationId,id,type'
-        : message.type === 'DELETE_STOPPED_OVERLAP' ? 'destinationId,id,side,type' : 'destinationId,endedAt,id,side,startedAt,type')
-          || typeof message.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)) {
+      const read = message.type === 'GET_STOPPED_OVERLAP';
+      const needsReview = message.type === 'RESOLVE_STOPPED_OVERLAP' || (!read && message.side === 'previous');
+      const expected = ['destinationId', 'id', 'type', ...(!read ? ['side'] : []),
+        ...(needsReview ? ['reviewedPrevious'] : []),
+        ...(message.type === 'EDIT_STOPPED_OVERLAP' ? ['edits']
+          : message.type === 'RESOLVE_STOPPED_OVERLAP' ? ['startedAt', 'endedAt'] : [])].sort().join(',');
+      if (keys !== expected || typeof message.id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(message.id)
+          || (needsReview && !validReviewedPrevious(message.reviewedPrevious))) {
         throw new Error('Invalid overlap request.');
+      }
+      const reviewed = needsReview ? { reviewedPrevious: message.reviewedPrevious } : {};
+      if (message.type === 'EDIT_STOPPED_OVERLAP'
+          && (!['previous', 'local'].includes(message.side) || !validConflictEntryEdits(message.edits))) {
+        throw new Error('Invalid edited overlap details.');
       }
       const destinationId = await requireConfiguredDestinationId(store, message.destinationId);
       const tracker = await trackerForDestination(destinationId,
         message.type === 'GET_STOPPED_OVERLAP' ? { localOnly: true, persistUser: false } : {});
       if (message.type === 'GET_STOPPED_OVERLAP') return tracker.getStoppedOverlapContext(message.id);
+      if (message.type === 'EDIT_STOPPED_OVERLAP') {
+        const result = await tracker.editStoppedOverlap(message.id, { side: message.side, edits: message.edits, ...reviewed });
+        requestPendingSync();
+        return result;
+      }
       if (message.type === 'DELETE_STOPPED_OVERLAP') {
         if (!['previous', 'local'].includes(message.side)) throw new Error('Invalid overlap delete.');
-        const result = await tracker.deleteStoppedOverlap(message.id, { side: message.side });
+        const result = await tracker.deleteStoppedOverlap(message.id, { side: message.side, ...reviewed });
         requestPendingSync();
         return result;
       }
@@ -2014,7 +2288,7 @@ async function handle(message, sender) {
         throw new Error('Invalid overlap edit.');
       }
       const result = await tracker.resolveStoppedOverlap(message.id,
-        { side: message.side, startedAt: message.startedAt, endedAt: message.endedAt });
+        { side: message.side, startedAt: message.startedAt, endedAt: message.endedAt, ...reviewed });
       requestPendingSync();
       return result;
     }
@@ -2026,12 +2300,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'LOCAL_PREFERENCES_CHANGED' || message?.type === 'TOOLBAR_CONTEXT_UPDATED') return undefined;
   const reportReadOnly = ['LOAD_REPORT', 'LOAD_MY_TIME_OFF', 'LOAD_TEAM_TIME_OFF', 'LOAD_TASK_PARTICIPANTS', 'CANCEL_REPORT', 'GET_EXCHANGE_RATES'].includes(message?.type);
   const localStateRead = ['GET_STATE', 'GET_PAGE_STATE'].includes(message?.type) && !message?.refresh;
-  const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS', 'GET_TIME_OFF_SETTINGS', 'CHECK_TIME_OFF_TASK'].includes(message?.type);
-  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER', 'SAVE_TIME_OFF_SETTINGS'].includes(message?.type);
+  const readOnly = reportReadOnly || localStateRead || ['GET_CACHED_VIEW', 'LOAD_TASKS', 'LOAD_TIMES', 'GET_STOPPED_OVERLAP', 'GET_ACTIVE_START_CONFLICT', 'GET_PENDING_COMPLETION_CONFLICT', 'GET_QUEUED_START_RECOVERY', 'SEARCH_TASKS', 'SEARCH_ENTRY_TASKS', 'GET_ONBOARDING_STATE', 'RESUME_DEVICE_FLOW', 'DISCOVER_REPOSITORIES', 'GET_ADDON_SETTINGS', 'GET_CLOCKIFY_MIGRATION_PREVIEW', 'SEARCH_INVITEE_USERS', 'SEARCH_CLOCKIFY_GITHUB_USERS', 'LOAD_REPOSITORY_COLLABORATORS', 'GET_TIME_OFF_SETTINGS', 'CHECK_TIME_OFF_TASK'].includes(message?.type);
+  const changesConfiguration = ['SAVE_CONFIG', 'UPDATE_DISPLAY_PREFERENCES', 'IMPORT_SETTINGS', 'EXPORT_FULL_LOCAL_BACKUP', 'IMPORT_FULL_LOCAL_BACKUP', 'RESET_FULL_LOCAL_DATA', 'CLEAR_LOCAL_CACHE', 'CHECK_REPOSITORY_ACCESS', 'SELECT_REPOSITORY', 'SET_DEFAULT_DESTINATION', 'REMOVE_DESTINATION', 'DISCONNECT_GITHUB_APP', 'CLEAR_LOCAL_CONFIGURATION', 'INVITE_REPOSITORY_USER', 'SAVE_TIME_OFF_SETTINGS'].includes(message?.type);
   let operation;
   if (changesConfiguration) {
     try {
       assertMessageAllowed(message.type, sender, chrome.runtime.getURL(''));
+      if (message.type === 'CLEAR_LOCAL_CACHE' && Object.keys(message).length !== 1) throw new Error('Invalid cache clear request.');
       operation = acceptanceExecutor.run(() => loadCoordinator.save(() => cancelReports(), () => handle(message, sender)));
     } catch (error) { operation = Promise.reject(error); }
   } else {
@@ -2163,7 +2438,9 @@ async function refreshTaskSearchAfterSync({ retry = false } = {}) {
     // The alarm is one-shot. A successful foreground rebuild already made the
     // cache clean; do not re-read GitHub when its scheduled wakeup arrives.
     if (retry && await store.isTaskSearchDirty?.() === false) return;
-    const result = await searchTasks(null, '', { refresh: true });
+    // A direct completed write may hold the mutation executor. Its durable
+    // refresh alarm can retry if a cache/configuration transaction is queued.
+    const result = await searchTasks(null, '', { refresh: true, waitForConfiguration: false });
     const pending = await store.getTrackingSnapshot();
     const complete = result.configured && !result.partial && !result.conflicts?.length
       && !hasCompletedPending(pending) && !directCompletedWrites

@@ -79,6 +79,8 @@ Open **Activity → Review sync issues**. Check the saved GitHub entry or active
 
 Common causes include changed GitHub permissions, branch rules, a renamed repository, a file changed on another device, or overlapping time.
 
+For an unknown operation, select **Recheck GitHub** and inspect **Technical details** and the last sync error. If it remains unresolved, report those details without credentials; keep browser data intact.
+
 Overlaps are real intersections in time; intervals that only touch at one endpoint are allowed. A running timer can overlap a completed entry even when the two track the same task.
 
 For complex pending Start/Stop conflicts and exact recovery actions, see [Advanced sync recovery](sync-recovery.md). For the general model, see [Sync and offline work](sync.md).
@@ -93,9 +95,9 @@ In Activity List, moving a Start into the previous entry or an End into the next
 
 Refresh Activity and review the latest entry. Clockoli refuses to apply an edit or delete to a stale GitHub record.
 
-### Timeline or Calendar cannot display a week
+### Timeline or Calendar switches to List
 
-Existing overlapping entries may make the view unreadable. Select **Go to List**, correct the intervals, and refresh. Do not assume the entries are missing.
+Saved overlaps switch Timeline and Calendar to List for editing. Use **Review sync issues** for queued conflicts.
 
 ### A manually changed GitHub file cannot be read
 

@@ -146,6 +146,7 @@ select{appearance:none;padding-right:32px;background-image:url("data:image/svg+x
 .full-backup-password input[aria-invalid="true"]{border-color:var(--fgColor-danger);box-shadow:0 0 0 1px var(--fgColor-danger)}
 #full-backup-password-feedback.error{color:var(--fgColor-danger)}
 
+#merge-task-progress-value { width: 100%; }
 .repository-time-off{margin-top:16px;padding:12px;border:1px solid var(--borderColor-muted);border-radius:6px}
 .repository-time-off>summary{cursor:pointer;font-weight:600}
 .repository-time-off>.help{margin:8px 0;color:var(--fgColor-muted)}

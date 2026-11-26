@@ -92,6 +92,8 @@ To change only the running timer's start time, select **Started** in the running
 
 To change its date, open the running entry in Timeline or Calendar and select **Edit**. Its task, description, and End are not changed in that form. The 24-hour creation limit does not apply to editing an already running timer.
 
+Changing a running timer's start normally checks local time and pending changes without waiting for GitHub. If cached time appears to overlap, Clockoli rechecks the saved history before rejecting the edit. GitHub is checked again during background sync, so an overlap that was not known locally is preserved as a sync conflict rather than written over other time.
+
 ## Overlap checks
 
 Entries that share actual time overlap; entries that only touch at one boundary do not.

@@ -75,6 +75,7 @@
           <div id="reauth-required" class="notice error-notice" role="status" hidden>
             <strong>GitHub sign-in required</strong>
             <p>GitHub did not renew Clockoli's access. Sign in again with the same account to continue. Your time repositories and pending work are still here.</p>
+            <p id="restore-auth-diagnostic" class="help" hidden></p>
           </div>
           <p class="lead">Keep your time records in a private GitHub repository you control.</p>
           <div id="authorize-panel" class="primary-action-block">
@@ -282,6 +283,10 @@
         </div>
       </details>
     </div>
+    <div id="merge-task-progress" role="status" aria-live="polite" hidden>
+      <p id="merge-task-progress-label" class="help">Loading tasks…</p>
+      <progress id="merge-task-progress-value" max="100" aria-label="Loading merge tasks"></progress>
+    </div>
     <div class="merge-task-columns">
       <section class="merge-task-picker" aria-labelledby="merge-source-title"><h3 id="merge-source-title">Task to replace</h3><label class="visually-hidden" for="merge-source-filter">Filter tasks to replace</label><input id="merge-source-filter" type="search" placeholder="Filter by task name or URL"><div id="merge-source-list" class="merge-task-list" role="listbox" aria-label="Tasks to replace"></div></section>
       <span class="merge-task-arrow" aria-hidden="true">→</span>
@@ -444,6 +449,11 @@
       <h2 id="local-data-title">Recovery and access</h2>
       <div class="advanced-actions-grid">
 
+        <div>
+          <button id="clear-cache" type="button" class="secondary" aria-describedby="clear-cache-help">Clear cache</button>
+          <p id="clear-cache-help" class="help">Removes downloaded history and report caches so Clockoli fetches fresh data. Keeps GitHub sign-in, settings, connected repositories, the running timer and local tracking data needed for safe edits.</p>
+          <p id="clear-cache-feedback" class="form-feedback" role="status" aria-live="polite"></p>
+        </div>
         <div>
           <button id="clear-local" type="button" class="danger">Reset to defaults</button>
           <p class="help">Clears the entire local database and browser preferences, including GitHub sign-in and unsynced work. Before resetting, stop any running timer and use Sync until no pending changes remain, or export a full backup. After resetting, reconnect GitHub to use your real account. Repository data is not deleted.</p>

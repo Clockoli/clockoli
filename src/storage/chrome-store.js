@@ -5,6 +5,7 @@ import {
 import { listAddons } from '../addons/registry.js';
 import { decryptFullBackup, encryptFullBackup } from './full-local-backup.js';
 import { validateJoinRepository } from '../domain/join-invitation.js';
+import { userStorageBranch } from '../services/user-storage-branch.js';
 const DEFAULT_STATE = Object.freeze({ activeCache: null, recentCache: [], summaryCache: null, pendingWrites: [], user: null, dataVersion: 0 });
 const DESTINATION_STATE_DEFAULT = Object.freeze({ user: null, recentCache: [], summaryCache: null, pendingWrites: [], dayRangeIntervals: [] });
 const CONFIGURATION_GENERATION = 'configurationGeneration';
@@ -53,6 +54,80 @@ function preservedProjectClients(values) {
 
 function generationValue(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function restoreAuthDecision(current, saved) {
+  if (!current?.accessToken) return 'backup-no-current-sign-in';
+  if (!saved?.accessToken) return 'backup-no-saved-sign-in';
+  if (current.mode !== saved.mode) return 'backup-different-sign-in-method';
+  if (!Number.isSafeInteger(current.githubUserId) || current.githubUserId <= 0
+      || !Number.isSafeInteger(saved.githubUserId) || saved.githubUserId <= 0) {
+    // An identical nonempty credential is proof of the same session even in
+    // a legacy snapshot without a verified numeric identity. Never use login
+    // strings alone to associate credentials with another account.
+    if (current.accessToken !== saved.accessToken
+        && !(current.mode === 'github_app' && current.refreshToken
+          && current.refreshToken === saved.refreshToken)) return 'backup-unverified-identity';
+  } else if (current.githubUserId !== saved.githubUserId) return 'backup-different-account';
+  if (current.mode === 'pat') return 'kept-current';
+  if (current.mode !== 'github_app') return 'backup-unsupported-sign-in-method';
+  const now = Date.now();
+  // A token with a future access expiry is usable even inside the proactive
+  // refresh window. Restore itself must not force a network request.
+  return (typeof current.refreshToken === 'string' && Boolean(current.refreshToken)
+      && Number(current.refreshTokenExpiresAt) > now)
+    || Number(current.accessTokenExpiresAt) > now
+    ? 'kept-current' : 'backup-current-expired';
+}
+
+function restoreAccountLabel(auth) {
+  const login = typeof auth?.githubLogin === 'string'
+    && /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(auth.githubLogin) ? `@${auth.githubLogin}` : 'unknown username';
+  const id = Number.isSafeInteger(auth?.githubUserId) && auth.githubUserId > 0
+    ? ` (GitHub user ID ${auth.githubUserId})` : ' (GitHub user ID unavailable)';
+  return login + id;
+}
+
+function fullBackupAuth(values) {
+  return values[AUTH] ?? (values.token ? { mode: 'pat', accessToken: values.token } : null);
+}
+
+function delegatedRestoreRegistry(values, saved, live) {
+  if (values.dataVersion !== 5 || !validV5Structures(values)) {
+    throw new Error('Restoring another GitHub account requires a backup with current, verified personal storage branches.');
+  }
+  const registry = structuredClone(values[DESTINATION_REGISTRY]);
+  for (const [id, config] of Object.entries(registry.destinations)) {
+    const storageUserId = config.restoredStorageUserId ?? saved.githubUserId;
+    if (id !== destinationIdForConfiguration(config) || config.storageBranchVersion !== 1
+        || config.branchMode !== 'custom' || config.authMode !== 'github_app'
+        || config.branch !== userStorageBranch(storageUserId)
+        || typeof config.storageLogin !== 'string'
+        || !/^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(config.storageLogin)) {
+      throw new Error('The backup does not identify a verified personal storage branch. Your current data was not changed.');
+    }
+    if (storageUserId !== live.githubUserId) config.restoredStorageUserId = storageUserId;
+    else delete config.restoredStorageUserId;
+  }
+  // Use the same runtime validator as Settings and Activity before committing.
+  // A backup must not install a registry that those readers will reject.
+  const destinations = normalizedRegistryDestinations(registry.destinations);
+  normalizeDefaultDestinationId(registry.defaultDestinationId, destinations);
+  normalizeProjectDefinitions(values[PROJECTS] || [], destinations);
+  return registry;
+}
+
+function assertRestoreAccountCompatible(decision, current, saved) {
+  if (!current?.accessToken || ['kept-current', 'backup-current-expired'].includes(decision)) return;
+  const liveLabel = restoreAccountLabel(current);
+  const backupLabel = saved?.accessToken ? restoreAccountLabel(saved) : 'no saved GitHub sign-in';
+  let reason = 'Clockoli cannot verify that both sign-ins belong to the same account.';
+  if (decision === 'backup-different-account') reason = 'This backup belongs to a different GitHub account.';
+  if (decision === 'backup-different-sign-in-method') reason = 'The backup uses a different GitHub sign-in method.';
+  if (decision === 'backup-no-saved-sign-in') reason = 'This backup does not contain a saved GitHub sign-in.';
+  throw Object.assign(new Error(
+    `${reason} Current: ${liveLabel}. Backup: ${backupLabel}. Nothing was restored; your current data and sign-in are unchanged. Check the sign-in methods and saved storage identity, then try again.`
+  ), { code: 'backup_account_mismatch' });
 }
 
 function storageFormatError(message) {
@@ -182,13 +257,26 @@ export class IndexedDbBackend {
     return keys.map((key, index) => [key, values[index]]);
   }
 
-  async replaceAllEntries(entries) {
+  async replaceAllEntries(entries, { readKeys = [], prepare } = {}) {
     const database = await this.open();
     const transaction = database.transaction('values', 'readwrite');
     const done = transactionDone(transaction);
     const objectStore = transaction.objectStore('values');
-    objectStore.clear();
-    for (const [key, value] of entries) objectStore.put(value, key);
+    // Read the current values and replace the snapshot in the same transaction.
+    // Abort on a failed compatibility check or synchronous write error, so a
+    // rejected import can never commit a partial snapshot.
+    try {
+      if (prepare) {
+        const pairs = await Promise.all(readKeys.map(async key => [key, await requestResult(objectStore.get(key))]));
+        entries = prepare(entries, Object.fromEntries(pairs));
+      }
+      objectStore.clear();
+      for (const [key, value] of entries) objectStore.put(value, key);
+    } catch (error) {
+      try { transaction.abort(); } catch { /* The transaction may have already aborted. */ }
+      await done.catch(() => {});
+      throw error;
+    }
     await done;
   }
 
@@ -262,15 +350,130 @@ export class ChromeStore {
     return encryptFullBackup({ version: 1, entries, githubLogin, localStorage }, password);
   }
 
-  async importFullLocalBackup(text, password) {
+  async importFullLocalBackup(text, password, { verifyCrossAccount } = {}) {
     const backup = await decryptFullBackup(text, password);
-    await this.backend.replaceAllEntries(backup.entries);
+    let githubLogin = backup.githubLogin;
+    let authRestore, delegatedRegistry, verifiedAuth;
+    // A cross-account restore is an explicit request to keep the current
+    // credential and operate on the backed-up user's existing branches.
+    // Verify access before replacing anything; never try the backup's token.
+    if (verifyCrossAccount) {
+      const current = fullBackupAuth(await this.backend.getMany([AUTH, 'token']));
+      const values = Object.fromEntries(backup.entries);
+      const saved = fullBackupAuth(values);
+      if (restoreAuthDecision(current, saved) === 'backup-different-account'
+          && current.mode === 'github_app' && saved.mode === 'github_app') {
+        delegatedRegistry = delegatedRestoreRegistry(values, saved, current);
+        await verifyCrossAccount(current, Object.values(delegatedRegistry.destinations));
+        // The preflight may have legitimately rotated the current credentials.
+        // Pin the durable replacement pair, not the preflight's starting pair.
+        verifiedAuth = fullBackupAuth(await this.backend.getMany([AUTH, 'token']));
+        if (verifiedAuth?.mode !== current.mode || verifiedAuth.githubUserId !== current.githubUserId
+            || !verifiedAuth.accessToken) {
+          throw new Error('GitHub sign-in changed while verifying backup access. Nothing was restored; try again.');
+        }
+      }
+    }
+    await this.backend.replaceAllEntries(backup.entries, {
+      readKeys: [AUTH, AUTH_GENERATION, PENDING_AUTH_GENERATION, CONFIGURATION_GENERATION, 'token'],
+      prepare: (entries, current) => {
+        const restored = new Map(entries);
+        const savedAuth = fullBackupAuth(Object.fromEntries(entries));
+        const liveAuth = fullBackupAuth(current);
+        // GitHub invalidates both old tokens when a user token is refreshed.
+        // Never roll back the current session for a verified matching account.
+        // Do not mix authentication modes: the restored repository configuration
+        // may depend on the access model used in the backup.
+        authRestore = restoreAuthDecision(liveAuth, savedAuth);
+        if (delegatedRegistry) {
+          if (authRestore !== 'backup-different-account' || liveAuth.githubUserId !== verifiedAuth.githubUserId
+              || liveAuth.accessToken !== verifiedAuth.accessToken || liveAuth.refreshToken !== verifiedAuth.refreshToken) {
+            throw new Error('GitHub sign-in changed while verifying backup access. Nothing was restored; try again.');
+          }
+          authRestore = 'kept-current-restored-storage';
+          restored.set(DESTINATION_REGISTRY, delegatedRegistry);
+          restored.set(CONFIGURATION_GENERATION, Math.max(generationValue(current[CONFIGURATION_GENERATION]),
+            generationValue(restored.get(CONFIGURATION_GENERATION))) + 1);
+          restored.set(REPOSITORY_VERIFICATION, Object.fromEntries(Object.keys(delegatedRegistry.destinations)
+            .map(id => [id, { status: 'access_checked', lastVerifiedAt: new Date().toISOString() }])));
+        } else {
+          assertRestoreAccountCompatible(authRestore, liveAuth, savedAuth);
+          if (authRestore !== 'kept-current') return entries;
+        }
+        const generation = Math.max(generationValue(current[AUTH_GENERATION]),
+          generationValue(restored.get(AUTH_GENERATION))) + 1;
+        restored.set(AUTH, { ...liveAuth, generation });
+        restored.set(AUTH_GENERATION, generation);
+        restored.delete('token');
+        // Do not resume a historical sign-in flow or let an old candidate
+        // supersede the live account's credentials after the worker restarts.
+        if (restored.has(PENDING_AUTH) || restored.has(DEVICE_ATTEMPT)
+            || restored.has(PENDING_AUTH_GENERATION) || current[PENDING_AUTH_GENERATION] !== undefined) {
+          restored.delete(PENDING_AUTH);
+          restored.delete(DEVICE_ATTEMPT);
+          restored.set(PENDING_AUTH_GENERATION, Math.max(generationValue(current[PENDING_AUTH_GENERATION]),
+            generationValue(restored.get(PENDING_AUTH_GENERATION))) + 1);
+        }
+        githubLogin = liveAuth.githubLogin || githubLogin;
+        return [...restored];
+      },
+    });
     // Credentials and the full database remain within this privileged context.
-    return { localStorage: backup.localStorage, githubLogin: backup.githubLogin };
+    return { localStorage: backup.localStorage, githubLogin, authRestore };
   }
 
   async resetFullLocalData() {
     await this.backend.replaceAllEntries([]);
+  }
+
+  // Only discard downloaded history and presentation caches. Recent records
+  // and weekly entries are also the local overlap/rebase working set, even
+  // when there are no pending writes. Retain them until an authoritative
+  // refresh replaces them; invalidate summary display and passive-pull ETags.
+  // dayRangeIntervals is a durable overlap guard, not a downloaded cache.
+  async clearLocalCache() {
+    const caches = ['reportCache', 'pageSnapshots', 'taskMetadataCache', EXCHANGE_RATE_CACHE];
+    // Do not deserialize potentially huge history blobs just to delete them.
+    const keys = ['dataVersion', DESTINATION_STATES, 'recentCache', 'summaryCache',
+      'pendingWrites', 'taskSearchCache', CONFIGURATION_GENERATION];
+    return this.backend.mutateMany(keys, values => {
+      const version = values.dataVersion ?? 0;
+      if (!Number.isSafeInteger(version) || version < 0 || version > 5) throw storageFormatError('Unsupported local data version.');
+      let retained = 0;
+      const clearProjection = state => {
+        if (!state || typeof state !== 'object' || Array.isArray(state)) {
+          throw storageFormatError('Invalid local tracking state.');
+        }
+        const pending = Boolean(state.pendingWrites?.length || state.recentCache?.some(entry => entry?._pending));
+        if (pending) retained += 1;
+        const summary = state.summaryCache;
+        if (!summary) return state;
+        const { silentPull, ...rest } = summary;
+        // Pending work keeps its local summary; otherwise show no cached totals
+        // until the next successful read. In both cases keep the week entries
+        // for immediate local overlap checks, not as a report snapshot.
+        return { ...state, summaryCache: pending ? rest : { ...rest, reportDate: null } };
+      };
+      const set = {};
+      if (version === 5) {
+        const states = values[DESTINATION_STATES];
+        if (!states || states.version !== 1 || !states.entries || typeof states.entries !== 'object'
+            || Array.isArray(states.entries)) throw storageFormatError('Clockoli local data version 5 is incomplete or invalid.');
+        set[DESTINATION_STATES] = { ...states, entries: Object.fromEntries(
+          Object.entries(states.entries).map(([id, state]) => [id, clearProjection(state)]),
+        ) };
+      } else {
+        const projected = clearProjection(values);
+        if (Object.hasOwn(values, 'recentCache')) set.recentCache = projected.recentCache;
+        if (Object.hasOwn(values, 'summaryCache')) set.summaryCache = projected.summaryCache;
+      }
+      // Preserve a monotonic revision, even though the search payload is gone.
+      // Invalidate generations so a previously started read cannot publish an
+      // old page snapshot, task index or task metadata after this transaction.
+      set.taskSearchCache = { revision: (values.taskSearchCache?.revision ?? 0) + 1, dirty: retained > 0 };
+      set[CONFIGURATION_GENERATION] = generationValue(values[CONFIGURATION_GENERATION]) + 1;
+      return { delete: caches, set, result: { cleared: true, retainedPendingDestinations: retained } };
+    });
   }
 
   // Repository identifiers are unverified intent, never evidence of GitHub access.
@@ -483,6 +686,10 @@ export class ChromeStore {
     // storage-login changes would redirect already accepted work.
     const coordinatesChanged = existing && ['branch', 'branchMode', 'storageLogin']
       .some(key => Object.hasOwn(existingConfig, key) && (existingConfig[key] ?? null) !== (config[key] ?? null));
+    if (existingConfig?.restoredStorageUserId && (coordinatesChanged
+        || config.restoredStorageUserId !== existingConfig.restoredStorageUserId)) {
+      throw new Error('Remove the restored time repository before switching its storage user or branch.');
+    }
     if (acceptedWork && coordinatesChanged) {
       throw new Error('Cannot replace destination coordinates while it has accepted work. Finish or resolve that work first.');
     }
@@ -885,8 +1092,11 @@ export class ChromeStore {
     return reportCache?.version === 2 && reportCache.entries?.[repositoryKey] || null;
   }
 
-  async saveReportCache(value) {
-    await this.backend.mutateMany(['reportCache'], current => {
+  async saveReportCache(value, expectedGeneration = null) {
+    return this.backend.mutateMany(['reportCache', CONFIGURATION_GENERATION], current => {
+      if (expectedGeneration !== null && generationValue(current[CONFIGURATION_GENERATION]) !== expectedGeneration) {
+        return { result: false };
+      }
       const existing = current.reportCache?.version === 2 && current.reportCache.entries
         ? current.reportCache.entries
         : current.reportCache?.repositoryKey ? { [current.reportCache.repositoryKey]: current.reportCache } : {};
@@ -992,8 +1202,11 @@ export class ChromeStore {
     return values[EXCHANGE_RATE_CACHE] ?? null;
   }
 
-  async saveExchangeRateCache(value) {
-    await this.backend.mutateMany([EXCHANGE_RATE_CACHE], current => {
+  async saveExchangeRateCache(value, expectedGeneration = null) {
+    return this.backend.mutateMany([EXCHANGE_RATE_CACHE, CONFIGURATION_GENERATION], current => {
+      if (expectedGeneration !== null && generationValue(current[CONFIGURATION_GENERATION]) !== expectedGeneration) {
+        return { result: false };
+      }
       const existing = current[EXCHANGE_RATE_CACHE];
       const entries = existing?.version === value.version && existing.entries && typeof existing.entries === 'object'
         ? { ...existing.entries } : {};
@@ -1445,7 +1658,7 @@ export class ChromeStore {
         if (existing) {
           // Readiness proves only these exact coordinates and this user's branch.
           // Refresh trust metadata, never replace configuration or accepted work.
-          if (config.branch === `clockoli/users/${values[AUTH].githubUserId}`
+          if (config.branch === `clockoli/users/${existing.restoredStorageUserId ?? values[AUTH].githubUserId}`
               && ['owner', 'repo', 'repoId', 'installationId', 'branch', 'branchMode', 'storageLogin', 'authMode']
                 .every(key => existing[key] === config[key])
               && !['access_checked', 'write_verified'].includes(next[REPOSITORY_VERIFICATION]?.[id]?.status)) {
