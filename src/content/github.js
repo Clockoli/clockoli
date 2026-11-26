@@ -2635,7 +2635,7 @@
           } catch (error) { setError(error); }
         });
         track.title = label; track.setAttribute('aria-label', label); track.append(running ? icon('stop', STOP_PATH) : icon('play', PLAY_PATH));
-        track.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+        track.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
         actions.append(track);
       }
       actions.append(edit, inline.cancel, inline.save, remove);
@@ -3720,11 +3720,11 @@
         isEditable: !entry._active && (timesMode || completeVisualWeekStart === weekWindow().start),
         isPending: Boolean(entry.isPending),
         isStartDisabled: !trackableTaskIdentityOf(entry) || timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || sameTask(entry, pageState.active)
-          || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict')),
+          || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_')))),
         isStopDisabled: Boolean(entry._active && (timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight
-          || pageState.pendingWrites?.some(item => item.status === 'conflict'))),
+          || pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))))),
         isDeleteDisabled: timelineDeleteInFlight || timelineStartInFlight || timelineStopInFlight
-          || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict')),
+          || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_')))),
       };
     });
     return { items, rows, byId };
@@ -3753,7 +3753,7 @@
   function timelineTrackActionDisabled() {
     const current = taskFromLocation();
     return !current || sameTask(current, pageState.active) || timelineStartInFlight || timelineStopInFlight
-      || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+      || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
   }
 
   function timelineNow() {
@@ -4726,7 +4726,7 @@
         try { await stopTimelineEntry({ ...current, description: description.value }, { preserveSavedDescription: !hasDraft }); } catch {}
       });
       stop.setAttribute('data-strip-primary', 'true'); stop.setAttribute('data-panel-action', 'stop');
-      stop.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+      stop.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
       const { metrics } = globalThis.ClockoliTrackingCard.createTrackingCard(document, { root: strip, task: copy, description: descriptionField, elapsed, today: null, stop });
       const stats = el('div', undefined, 'running-status-stats'); stats.append(startField, metrics);
       strip.insertBefore(stats, stop);
@@ -4746,7 +4746,7 @@
         quickStart.append(el('span', 'Quick start from recent tasks:', 'running-status-quick-label'));
         const choices = el('div', undefined, 'running-status-recent');
         const seen = new Set();
-        for (const entry of [...quickStartRecent].sort((left, right) =>
+        for (const entry of quickStartRecent.filter(entry => !(Date.parse(entry.startedAt) > Date.now())).sort((left, right) =>
           Date.parse(right.endedAt || right.startedAt) - Date.parse(left.endedAt || left.startedAt))) {
           const identity = trackableTaskIdentityOf(entry);
           if (!identity || seen.has(identity)) continue;
@@ -4757,7 +4757,7 @@
           });
           choice.title = identity; choice.setAttribute('aria-label', `Start tracking ${label}`);
           choice.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight
-            || sameTask(entry, pageState.active) || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+            || sameTask(entry, pageState.active) || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
           const play = el('span', undefined, 'running-status-recent-play'); play.setAttribute('aria-hidden', 'true'); play.append(icon('play', PLAY_PATH));
           choice.append(play, el('span', label, 'running-status-recent-name'));
           choices.append(choice);
@@ -4775,7 +4775,7 @@
     if (preserveActiveDescription) {
       const elapsed = strip.querySelector('.running-elapsed'); if (elapsed) elapsed.textContent = formatElapsedCard(active.startedAt);
       const stop = strip.querySelector('[data-panel-action="stop"]');
-      if (stop) stop.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+      if (stop) stop.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
       const track = switchAction.querySelector('[data-panel-action="track"]'); if (track) track.disabled = timelineTrackActionDisabled();
     }
     // Queue reconciliation may refresh the panel while an unsaved List editor is
@@ -4987,7 +4987,7 @@
           finally { finishTimelineStop(); }
         });
         stop.disabled = timelineStartInFlight || timelineStopInFlight || timelineDeleteInFlight
-          || pageState.pendingWrites?.some(item => item.status === 'conflict'); body.append(stop);
+          || pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))); body.append(stop);
         };
         makeStop(false);
         if (switchToCurrent) makeStop(true);
@@ -5025,7 +5025,7 @@
           }
         });
         startButton.disabled = !current || timelineStopInFlight || timelineDeleteInFlight
-          || pageState.pendingWrites?.some(item => item.status === 'conflict');
+          || pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_')));
         body.append(startButton);
         if (!current) body.append(el('div', 'Clockoli tracks any HTTP(S) task URL; a title is optional.', 'muted'));
       }
@@ -5068,7 +5068,7 @@
     label.textContent = alreadyTracking ? 'Tracking this task' : pageState.active ? 'Switch to this task' : 'Track this task';
     track.disabled = !pageState.configured || alreadyTracking || timelineStartInFlight
       || timelineStopInFlight || timelineDeleteInFlight
-      || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict'));
+      || Boolean(pageState.pendingWrites?.some(item => item.status === 'conflict' && ((item.operation ?? item.stage) !== 'timeOffChange' || String(item.conflictReason || '').startsWith('queued_write_'))));
   }
 
   async function refreshActionSourceContext() {

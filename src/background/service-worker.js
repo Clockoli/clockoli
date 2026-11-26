@@ -5,6 +5,7 @@ import {
   GITHUB_AUTHORIZATIONS_URL, GITHUB_NEW_REPOSITORY_URL, GITHUB_NEW_ORGANIZATION_REPOSITORY_URL,
 } from '../config/github-app.js';
 import { activeRecordPath } from '../domain/work-records.js';
+import { localDateInTimezone } from '../domain/records.js';
 import { classifyTimeOffRecords, isTimeOffTask, normalizeTimeOffConfig, normalizeTimeOffChange } from '../domain/time-off.js';
 import { parseBulkTimeText } from '../domain/bulk-time.js';
 import { createUlid } from '../domain/ulid.js';
@@ -141,27 +142,51 @@ async function verifyCrossAccountRestore(auth, destinations) {
 
 // Only verified default-branch settings define PTO. The local projection is an
 // offline hint for routine tracking; future time and final reports use fresh GitHub reads.
+// Read-start ordering, not completion ordering, decides which remote snapshot
+// can update the local settings. A successful settings save also bumps revision.
+function nextTimeOffSettingsRead() {
+  const startedAt = Math.max(Date.now(), (nextTimeOffSettingsRead.last ?? 0) + 1);
+  nextTimeOffSettingsRead.last = startedAt;
+  return startedAt;
+}
+
 async function timeOffSettingsForDestination(destinationId, { fresh = false, signal } = {}) {
+  const startedAt = nextTimeOffSettingsRead();
   const registry = await store.getDestinationRegistry();
   const configured = registry?.destinations?.[destinationId];
   if (!configured) throw new Error('Time repository is no longer configured.');
   const destination = { id: destinationId, ...configured };
   const key = `time-off-config:${destinationId}`;
-  if (!fresh) {
-    const cached = (await timeOffCacheBackend.getMany([key]))[key];
-    if (cached?.repoId === destination.repoId && cached?.defaultBranch === destination.defaultBranch) {
+  const matching = cached => cached?.repoId === destination.repoId && cached?.defaultBranch === destination.defaultBranch;
+  const cachedResult = cached => {
+    if (matching(cached)) {
       try { return { config: normalizeTimeOffConfig(cached.config), sha: cached.sha ?? null, cached: true }; }
       catch { /* Stale or malformed local cache must not be trusted. */ }
     }
     return { config: normalizeTimeOffConfig(), sha: null, cached: false };
-  }
+  };
+  const initial = await timeOffCacheBackend.getMany([key, 'configurationGeneration']);
+  if (!fresh) return cachedResult(initial[key]);
+  const revision = initial[key]?.revision ?? 0;
   const github = githubForConfig(destination).forBranch(destination.defaultBranch || destination.branch || 'main', 'default');
   const result = await readTimeOffSettings(github, { signal });
-  await timeOffCacheBackend.setMany({ [key]: {
-    repoId: destination.repoId, defaultBranch: destination.defaultBranch,
-    config: result.config, sha: result.sha,
-  } });
-  return result;
+  signal?.throwIfAborted();
+  return timeOffCacheBackend.mutateMany([key, 'configurationGeneration'], current => {
+    signal?.throwIfAborted();
+    if ((initial.configurationGeneration ?? 0) !== (current.configurationGeneration ?? 0)) {
+      throw new DOMException('Time repository configuration changed.', 'AbortError');
+    }
+    const cached = current[key];
+    if ((cached?.revision ?? 0) !== revision || (cached?.startedAt ?? 0) > startedAt) {
+      const newer = cachedResult(cached);
+      if (!newer.cached) throw new DOMException('Time off settings changed.', 'AbortError');
+      return { result: newer };
+    }
+    return { set: { [key]: {
+      repoId: destination.repoId, defaultBranch: destination.defaultBranch,
+      config: result.config, sha: result.sha, revision, startedAt,
+    } }, result };
+  });
 }
 
 async function timeOffTaskForDestination(destinationId, taskUrl, { fresh = false } = {}) {
@@ -1210,7 +1235,8 @@ async function globalTrackerState({ refresh = false, includeSummary = false, inc
   const active = activeId ? safeActiveProjection(states.get(activeId)?.active, activeId) : null;
   const recent = [...states].flatMap(([destinationId, state]) => (state.recent ?? [])
     .map(entry => ({ ...entry, destinationId })))
-    .sort((left, right) => new Date(right.startedAt) - new Date(left.startedAt)).slice(0, 50);
+    .sort((left, right) => Number(Date.parse(left.startedAt) > Date.now()) - Number(Date.parse(right.startedAt) > Date.now())
+      || new Date(right.startedAt) - new Date(left.startedAt)).slice(0, 50);
   const pendingWrites = [...states].flatMap(([destinationId, state]) => (state.pendingWrites ?? [])
     .map(operation => safePendingProjection(operation, destinationId, { includeDetails: includePendingDetails })));
   const result = { configured: true, active, recent, pendingWrites };
@@ -1244,7 +1270,9 @@ async function loadRecentAcrossDestinations(message, sender, extensionOrigin) {
     states.set(destination.id, state);
     return state.recent || [];
   });
-  const recent = loaded.records.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt)).slice(0, 50);
+  const recent = loaded.records.sort((a, b) =>
+    Number(Date.parse(a.startedAt) > Date.now()) - Number(Date.parse(b.startedAt) > Date.now())
+      || new Date(b.startedAt) - new Date(a.startedAt)).slice(0, 50);
   if (!message.menuData) return recent;
   const tracking = await store.getTrackingSnapshot();
   const activeId = tracking.activeTimer?.destinationId;
@@ -1474,10 +1502,11 @@ async function handle(message, sender) {
     const github = githubForConfig(snapshot.config).forBranch(snapshot.config.defaultBranch || snapshot.config.branch || 'main', 'default');
     const saved = await saveTimeOffSettings(github, { taskUrls: message.taskUrls, expectedSha: message.expectedSha });
     const key = `time-off-config:${destinationId}`;
-    await timeOffCacheBackend.setMany({ [key]: {
+    const startedAt = nextTimeOffSettingsRead();
+    await timeOffCacheBackend.mutateMany([key], current => ({ set: { [key]: {
       repoId: snapshot.config.repoId, defaultBranch: snapshot.config.defaultBranch,
-      config: saved.config, sha: saved.sha,
-    } });
+      config: saved.config, sha: saved.sha, startedAt, revision: (current[key]?.revision ?? 0) + 1,
+    } }, result: true }));
     // Reclassification can affect every year, even years with no new entries.
     await invalidateCachedTeamTimeOff(timeOffCacheBackend);
     return saved;
@@ -2157,11 +2186,12 @@ async function handle(message, sender) {
       const { tracker, destinationId } = await context({ localOnly: true });
       const requested = parseBulkTimeText(text, { billable });
       const settings = await timeOffSettingsForDestination(destinationId);
-      const rows = requested.map(entry => ({
-        ...entry, billable: isTimeOffTask(entry.taskUrl, settings.config) ? false : entry.billable,
-      }));
-      if (rows.some(entry => entry.date > new Date().toISOString().slice(0, 10)
-          && !isTimeOffTask(entry.taskUrl, settings.config))) {
+      const rows = requested.map(entry => {
+        const allowFuture = isTimeOffTask(entry.taskUrl, settings.config);
+        return { ...entry, allowFuture, billable: allowFuture ? false : entry.billable };
+      });
+      const today = localDateInTimezone(new Date(), tracker.timezone);
+      if (rows.some(entry => entry.date > today && !entry.allowFuture)) {
         throw new Error('Only time off tasks may be scheduled in the future.');
       }
       const result = await tracker.bulkAddTimes('', { background: true, requested: rows });

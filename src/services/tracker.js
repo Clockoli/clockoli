@@ -475,9 +475,28 @@ function localTimeOffRecords(state, user, repositoryKey, taskUrls) {
   const snapshot = timeOffSnapshotFor(state, user, repositoryKey);
   const recent = [...(state.summaryCache?.weekEntries ?? []), ...(state.recentCache ?? [])];
   const records = snapshot ? [...snapshot.records,
-    ...recent.filter(entry => !snapshot.taskUrls.includes(taskUrlOf(entry)))] : recent;
+    ...recent.filter(entry => !snapshot.taskUrls.includes(taskUrlOf(entry))
+      || (snapshot.complete === false && !snapshot.records.some(saved => saved.id === entry.id)))] : recent;
   return overlayPendingEntries(records, state.pendingWrites ?? [])
     .filter(entry => entry.user === user && taskUrls.includes(taskUrlOf(entry)));
+}
+
+function timeOffSnapshotPatch(state, user, repositoryKey, savedEntries, removedIds = [], taskUrls = []) {
+  const snapshot = timeOffSnapshotFor(state, user, repositoryKey);
+  if (!snapshot && state.timeOffRevision === undefined && !taskUrls.length) return {};
+  const patch = { timeOffRevision: (state.timeOffRevision ?? 0) + 1 };
+  if (!snapshot && !taskUrls.length) return patch;
+  const urls = [...new Set([...(snapshot?.taskUrls ?? []), ...taskUrls])];
+  const replaced = new Set([...removedIds, ...savedEntries.map(entry => entry.id)]);
+  const records = snapshot?.records ?? (state.recentCache ?? []).filter(entry =>
+    !entry._pending && entry.user === user && urls.includes(taskUrlOf(entry)));
+  patch.timeOffSnapshot = {
+    user, repositoryKey, taskUrls: urls,
+    complete: Boolean(snapshot && snapshot.complete !== false && urls.every(url => snapshot.taskUrls.includes(url))),
+    records: [...records.filter(entry => !replaced.has(entry.id)),
+      ...savedEntries.filter(entry => entry.user === user && urls.includes(taskUrlOf(entry)))],
+  };
+  return patch;
 }
 
 function completedWriteFootprint(operation) {
@@ -501,7 +520,20 @@ function completedWriteFootprint(operation) {
   return intervals;
 }
 export function independentCompletedWrite(operation, blockedOperations) {
-  const next = completedWriteFootprint(operation);
+  // Timer writes remain FIFO barriers relative to other timer writes. Only
+  // a blocked completed PTO change is allowed to be bypassed by a timer.
+  const onlyTimeOff = blockedOperations.length > 0 && blockedOperations.every(item =>
+    item.operation === 'timeOffChange' && !String(item.conflictReason || '').startsWith('queued_write_'));
+  let next = completedWriteFootprint(operation);
+  if (!next && onlyTimeOff) {
+    const point = record => ({ id: record?.id, start: Date.parse(record?.startedAt), end: Date.parse(record?.startedAt) + 1 });
+    const interval = record => ({ id: record?.id, start: Date.parse(record?.startedAt), end: Date.parse(record?.endedAt) });
+    if (operation.operation === 'startTimer') next = [point(operation.nextActive)];
+    else if (operation.operation === 'completeTimer') next = [interval(operation.entry)];
+    else if (operation.operation === 'completeTimerAndStart') next = [interval(operation.entry), point(operation.nextActive)];
+    else if (operation.operation === 'discardActive') next = [point(operation.activeSnapshot)];
+    if (next?.some(item => !item.id || !Number.isFinite(item.start) || !Number.isFinite(item.end) || item.end < item.start)) return false;
+  }
   if (!next?.length || !blockedOperations.length) return false;
   for (const blocked of blockedOperations) {
     const earlier = completedWriteFootprint(blocked);
@@ -520,7 +552,7 @@ function hasLaterEntryEdit(queue, operationId, id) {
   return index >= 0 && queue.slice(index + 1).some(operation => operationEditsEntry(operation, id));
 }
 
-function completedCacheAfterSync(state, operation) {
+function completedCacheAfterSync(state, operation, now) {
   if (!operation.entry) return state.recentCache ?? [];
   const queue = state.pendingWrites ?? [], position = queue.findIndex(item => item.id === operation.id);
   const later = position < 0 ? [] : queue.slice(position + 1);
@@ -530,12 +562,11 @@ function completedCacheAfterSync(state, operation) {
   const edited = later.some(item => operationEditsEntry(item, id));
   const locallyEdited = edited ? (state.recentCache ?? []).find(item => item.id === id) : null;
   const visible = deleted ? null : locallyEdited ?? operation.entry;
-  return [...(visible ? [visible] : []), ...(state.recentCache ?? []).filter(item =>
-    !sameCompletion(item, operation) && !(item._pending && sameTimer(item, operation.activeSnapshot)))]
-    .sort(newestFirst).slice(0, 50);
+  return recentEntries([...(visible ? [visible] : []), ...(state.recentCache ?? []).filter(item =>
+    !sameCompletion(item, operation) && !(item._pending && sameTimer(item, operation.activeSnapshot)))], now);
 }
 
-function completedCacheAfterAddition(state, operation, savedEntries) {
+function completedCacheAfterAddition(state, operation, savedEntries, now) {
   const cache = state.recentCache ?? [], queue = state.pendingWrites ?? [];
   const index = queue.findIndex(item => item.id === operation.id);
   const later = index >= 0 ? queue.slice(index + 1) : [];
@@ -546,7 +577,7 @@ function completedCacheAfterAddition(state, operation, savedEntries) {
         && item.request?.original?.id === entry.id)) return [];
     return [later.some(item => operationEditsEntry(item, entry.id)) ? inCache.get(entry.id) : entry];
   });
-  return [...updated, ...cache.filter(entry => !ids.has(entry.id))].sort(newestFirst).slice(0, 50);
+  return recentEntries([...updated, ...cache.filter(entry => !ids.has(entry.id))], now);
 }
 
 function retargetLaterEntryEdits(queue, currentIndex, savedEntries) {
@@ -663,6 +694,13 @@ function summaryProjection(state, now) {
   };
 }
 function newestFirst(a, b) { return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(); }
+
+// Scheduled records remain in the queue/snapshot, not ahead of recent work.
+function recentEntries(entries, now, limit = 50) {
+  const instant = new Date(now).getTime();
+  return [...entries].sort((a, b) =>
+    Number(Date.parse(a.startedAt) > instant) - Number(Date.parse(b.startedAt) > instant) || newestFirst(a, b)).slice(0, limit);
+}
 function stripInternal(value) { return Object.fromEntries(Object.entries(value || {}).filter(([key]) => !['_path', '_sha', '_index', '_pending', 'destinationId'].includes(key))); }
 function appendQueueDiagnostic(operation, message) {
   const diagnostics = Array.isArray(operation.diagnostics) ? operation.diagnostics : (operation.diagnostics = []);
@@ -818,21 +856,18 @@ export class TrackerService {
       } else pendingWrites[index] = structuredClone(operation);
       const resolved = typeof patch === 'function' ? patch(state) : patch;
       if (hasLaterOperation && Object.hasOwn(resolved, 'activeCache')) delete resolved.activeCache;
-      if (remove && (state.timeOffRevision !== undefined || state.timeOffSnapshot || operation.operation === 'timeOffChange')) {
+      if (remove && (state.timeOffRevision !== undefined || state.timeOffSnapshot || operation.operation === 'timeOffChange'
+          || savedEntries.some(entry => Date.parse(entry.endedAt) > Date.parse(operation.queuedAt)))) {
         // A remote read started before this commit must not publish its old
         // snapshot after the corresponding local operation leaves the queue.
         resolved.timeOffRevision = (state.timeOffRevision ?? 0) + 1;
-        const snapshot = timeOffSnapshotFor(state, this.user, this.github.repositoryKey ?? '');
         const removed = new Set(operation.operation === 'timeOffChange'
           ? (operation.previous ?? []).map(item => item.id)
           : operation.operation === 'deleteEntry' ? [operation.request?.original?.id] : []);
-        const updated = new Set(savedEntries.map(entry => entry.id));
-        if (snapshot) {
-          resolved.timeOffSnapshot = { ...snapshot, records: [
-            ...snapshot.records.filter(entry => !removed.has(entry.id) && !updated.has(entry.id)),
-            ...savedEntries.filter(entry => entry.user === this.user && snapshot.taskUrls.includes(taskUrlOf(entry))),
-          ] };
-        }
+        Object.assign(resolved, timeOffSnapshotPatch(state, this.user, this.github.repositoryKey ?? '',
+          savedEntries, removed, operation.operation === 'timeOffChange'
+            ? (operation.timeOffTaskUrls ?? [operation.taskUrl]).filter(Boolean)
+            : savedEntries.filter(entry => Date.parse(entry.endedAt) > Date.parse(operation.queuedAt)).map(taskUrlOf)));
         if (operation.operation === 'timeOffChange') {
           const originals = new Map((operation.originalEntries ?? []).map(entry => [entry.id, entry]));
           const aliases = (state.timeOffReplans ?? []).filter(alias =>
@@ -1678,7 +1713,7 @@ export class TrackerService {
           if (index >= 0) queue.splice(index, 1);
           await this.persistQueueOperation(operation, {
             remove: true, savedEntries: [saved],
-            patch: state => ({ recentCache: completedCacheAfterAddition(state, operation, [saved]) }),
+            patch: state => ({ recentCache: completedCacheAfterAddition(state, operation, [saved], this.clock()) }),
           });
           continue;
         }
@@ -1736,7 +1771,7 @@ export class TrackerService {
           await this.persistQueueOperation(operation, {
             remove: true, savedEntries: saved,
             patch: state => ({
-              recentCache: completedCacheAfterAddition(state, operation, saved),
+              recentCache: completedCacheAfterAddition(state, operation, saved, this.clock()),
               ...(operation.requested?.every(item => item.startTime === '09:00')
                 ? { dayRangeIntervals: rememberDayRangeIntervals(state.dayRangeIntervals, saved) } : {}),
             }),
@@ -1765,7 +1800,7 @@ export class TrackerService {
                 : item.operation === 'deleteEntry' ? [item.request?.original?.id] : []));
               const intervals = saved.filter(entry => !cancelled.has(entry.id));
               return {
-                recentCache: projected.sort(newestFirst).slice(0, 50),
+                recentCache: recentEntries(projected, this.clock()),
                 dayRangeIntervals: rememberDayRangeIntervals(
                   updateDayRangeIntervals(state.dayRangeIntervals, [], [...removed, ...cancelled]), intervals),
                 ...(state.summaryCache?.weekEntries ? { summaryCache: { ...state.summaryCache,
@@ -1807,6 +1842,8 @@ export class TrackerService {
                 const remaining = pendingWrites.filter(item => !batchIds.has(item.id));
                 return {
                   pendingWrites: remaining,
+                  ...timeOffSnapshotPatch(latest, this.user, this.github.repositoryKey ?? '', saved),
+                  dayRangeIntervals: updateDayRangeIntervals(latest.dayRangeIntervals, saved),
                   recentCache: (latest.recentCache ?? []).map(entry => {
                     const persisted = savedById.get(entry.id);
                     return persisted && !remaining.some(item => operationEditsEntry(item, entry.id))
@@ -1816,7 +1853,10 @@ export class TrackerService {
               });
               for (const item of batch) {
                 const index = queue.findIndex(candidate => candidate.id === item.id);
-                if (index !== -1) queue.splice(index, 1);
+                if (index !== -1) {
+                  retargetLaterEntryEdits(queue, index, saved);
+                  queue.splice(index, 1);
+                }
               }
               continue;
             } catch (error) {
@@ -2006,7 +2046,7 @@ export class TrackerService {
           patch: latest => ({
             activeCache: nextActive,
             // An edit or delete accepted while Stop synced is still authoritative.
-            recentCache: completedCacheAfterSync(latest, operation),
+            recentCache: completedCacheAfterSync(latest, operation, this.clock()),
           }),
         });
       } catch (caughtError) {
@@ -2998,7 +3038,7 @@ export class TrackerService {
       const remaining = latest.pendingWrites.filter(item => item.id !== operation.id);
       return {
         pendingWrites: remaining,
-        recentCache: [...replace(latest.recentCache), ...records].sort(newestFirst).slice(0, 50),
+        recentCache: recentEntries([...replace(latest.recentCache), ...records], this.clock()),
         dayRangeIntervals: rememberDayRangeIntervals(updateDayRangeIntervals(latest.dayRangeIntervals, [], ids), records),
         timeOffRevision: (latest.timeOffRevision ?? 0) + 1,
         timeOffReplans: (latest.timeOffReplans ?? []).filter(alias => !ids.has(alias.before.id)),
@@ -3463,8 +3503,8 @@ export class TrackerService {
         return null;
       }
       return {
-        recentCache: overlayPendingEntries(remoteEntries, state.pendingWrites ?? [])
-          .filter(entry => dateSet.has(startDate(entry))).sort(newestFirst).slice(0, limit),
+        recentCache: recentEntries(overlayPendingEntries(remoteEntries, state.pendingWrites ?? [])
+          .filter(entry => dateSet.has(startDate(entry))), now, limit),
         summaryCache,
       };
     });
@@ -3552,7 +3592,7 @@ export class TrackerService {
       applied = true;
       return {
         activeCache: remoteActive,
-        recentCache: remoteEntries.filter(entry => days.has(startDate(entry))).sort(newestFirst).slice(0, 50),
+        recentCache: recentEntries(remoteEntries.filter(entry => days.has(startDate(entry))), now),
         summaryCache: {
           reportDate: today,
           weekEntries: remoteEntries.filter(entry => startDate(entry) >= thisWeekStart),
@@ -4159,7 +4199,7 @@ export class TrackerService {
     const state = await this.store.getState();
     const snapshot = timeOffSnapshotFor(state, this.user, this.github.repositoryKey ?? '');
     return { records: localTimeOffRecords(state, this.user, this.github.repositoryKey ?? '', taskUrls),
-      complete: Boolean(snapshot && taskUrls.every(url => snapshot.taskUrls.includes(url))) };
+      complete: Boolean(snapshot && snapshot.complete !== false && taskUrls.every(url => snapshot.taskUrls.includes(url))) };
   }
 
   async rememberTimeOffOccupancy(records, { taskUrls, expectedRevision } = {}) {
@@ -4273,8 +4313,8 @@ export class TrackerService {
       accepted = resultEntries;
       return {
         pendingWrites,
-        recentCache: [...resultEntries, ...(state.recentCache ?? []).filter(
-          item => !priorIds.has(item.id) && !newIds.has(item.id))].sort(newestFirst).slice(0, 50),
+        recentCache: recentEntries([...resultEntries, ...(state.recentCache ?? []).filter(
+          item => !priorIds.has(item.id) && !newIds.has(item.id))], queuedAt),
         dayRangeIntervals: rememberDayRangeIntervals(
           updateDayRangeIntervals(state.dayRangeIntervals, [], [...priorIds]), entries),
       };
@@ -4490,8 +4530,7 @@ export class TrackerService {
       }];
       return {
         pendingWrites,
-        recentCache: [acceptedEntry, ...(state.recentCache ?? []).filter(item => item.id !== entry.id)]
-          .sort(newestFirst).slice(0, 50),
+        recentCache: recentEntries([acceptedEntry, ...(state.recentCache ?? []).filter(item => item.id !== entry.id)], now),
       };
     });
     return { entry: acceptedEntry, pending: true };
@@ -4716,7 +4755,8 @@ export class TrackerService {
         if (!files.has(path)) files.set(path, { path, month: item.date.slice(0, 7), entries: [] });
       }
       const planned = this.planBulkRows(requested, files, state.activeCache);
-      if (noFuture && planned.some(entry => new Date(entry.endedAt) > queuedAt)) {
+      if (planned.some((entry, index) => new Date(entry.endedAt) > queuedAt
+          && (noFuture || requested[index]?.allowFuture === false))) {
         throw new Error('Day range would add time in the future. No entries were added.');
       }
       accepted = planned.map(entry => ({
@@ -4730,8 +4770,7 @@ export class TrackerService {
       const newIds = new Set(accepted.map(entry => entry.id));
       return {
         pendingWrites,
-        recentCache: [...accepted, ...(state.recentCache ?? []).filter(entry => !newIds.has(entry.id))]
-          .sort(newestFirst).slice(0, 50),
+        recentCache: recentEntries([...accepted, ...(state.recentCache ?? []).filter(entry => !newIds.has(entry.id))], queuedAt),
         ...(noFuture ? { dayRangeIntervals: rememberDayRangeIntervals(state.dayRangeIntervals, planned) } : {}),
       };
     });

@@ -502,7 +502,7 @@ async function loadTeam({ refresh = false } = {}) {
     if (state.teamRequestIds.get(year) !== request
         || (identity !== null && identity !== state.teamIdentity)) return;
     if (result.partial && previous && !previous.partial) {
-      if (request === state.teamRequestId && state.year === year) {
+      if (state.teamRequestIds.get(year) === request && state.year === year) {
         activateTeamYear(year);
         state.teamIncomplete = true;
         $('team-time-off-status').textContent =
@@ -513,16 +513,16 @@ async function loadTeam({ refresh = false } = {}) {
     state.teamYears.delete(year);
     state.teamYears.set(year, result);
     while (state.teamYears.size > 5) state.teamYears.delete(state.teamYears.keys().next().value);
-    if (request === state.teamRequestId && state.year === year) activateTeamYear(year);
+    if (state.teamRequestIds.get(year) === request && state.year === year) activateTeamYear(year);
   } catch (error) {
-    if (request !== state.teamRequestId || state.year !== year) return;
+    if (state.teamRequestIds.get(year) !== request || state.year !== year) return;
     if (previous) activateTeamYear(year);
     $('team-time-off-status').textContent =
       (error.message || 'Could not load team time off.') +
       (previous ? ' Showing the last locally saved calendar.' : '');
     state.teamIncomplete = true;
   } finally {
-    if (request === state.teamRequestId && state.year === year) {
+    if (state.teamRequestIds.get(year) === request && state.year === year) {
       state.teamLoading = false;
       renderYear(); renderInspector();
     }
