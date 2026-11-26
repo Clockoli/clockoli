@@ -1080,7 +1080,7 @@ export class TrackerService {
       if (sameTimer(active, operation.activeSnapshot)) {
         const remoteActive = stripInternal(active), localCompletion = operation.entry;
         if (operation.editedCompletion && !sameValue(remoteActive, operation.activeSnapshot)) {
-          throw new TrackerConflictError('The original timer changed on GitHub. The edited completion is still stored locally.');
+          throw new TrackerConflictError('The original timer changed on GitHub. The edited completion is still stored locally.', 'active_changed_no_completion');
         }
         operation.activeSha = file.sha;
         operation.activeSnapshot = remoteActive;
@@ -1160,6 +1160,9 @@ export class TrackerService {
     ]);
     let found = await this.completionAlreadySaved(file, operation);
     if (found) return found;
+    if (operation.editedCompletion && hasSavedCompletion(indexFile, [], operation.entry.id)) {
+      throw new TrackerConflictError('The timer ID already exists in the GitHub task index. The edited completion was kept.');
+    }
     const proposed = [...file.entries, operation.entry];
     let overlap = null;
     if (operation.requireNoOverlap) {
@@ -2052,15 +2055,18 @@ export class TrackerService {
     const matchingSaved = this.verifiedSavedCompletion(stop.entry,
       saved.files.find(file => file.path === stop.monthlyPath), index);
     const remoteSameTimer = sameTimer(remote, stop.entry);
-    const available = Boolean(parts.safe && !alreadySaved && !remoteSameTimer);
+    const available = Boolean(parts.safe && !alreadySaved && (!remoteSameTimer || remote._sha));
     const canConfirm = Boolean(parts.safe && matchingSaved && !remoteSameTimer);
     return {
       kind: 'pending_completion', id: operationId,
       blocked: recoveryRecordFields(stop.entry), remote: recoveryRecordFields(remote),
       next: recoveryRecordFields(stop.nextActive), switching: stop.operation === 'completeTimerAndStart',
-      canEdit: available, canDelete: available, canConfirm,
-      reason: parts.reason || (remoteSameTimer
-        ? 'This timer is still running on GitHub. Review it before changing the queued Stop.'
+      canEdit: available, canDelete: available && !remoteSameTimer, canConfirm,
+      ...(available && remoteSameTimer ? { reviewedRemoteSha: remote._sha } : {}),
+      reason: parts.reason || (remoteSameTimer && available
+        ? 'This is the same timer, still running on GitHub. Stop and save the recorded interval, or edit it first.'
+        : remoteSameTimer
+          ? 'This timer is still running on GitHub and its completion could not be verified. Recheck GitHub.'
         : matchingSaved
           ? 'The completion matches GitHub. Confirm saved time to clear this local conflict.'
           : alreadySaved
@@ -2104,10 +2110,13 @@ export class TrackerService {
     return { confirmed: true, ...(stop.nextActive ? { nextTimerPending: true } : {}) };
   }
 
-  async editPendingCompletionConflict(operationId, edits) {
+  async editPendingCompletionConflict(operationId, edits, reviewedRemoteSha = null) {
     const context = await this.getPendingCompletionConflictContext(operationId);
     if (!context?.canEdit) {
       throw new TrackerConflictError(context?.reason || 'This stopped timer changed. Recheck it before editing.');
+    }
+    if ((context.reviewedRemoteSha ?? null) !== reviewedRemoteSha) {
+      throw new TrackerConflictError('The active timer changed since review. Recheck GitHub before saving the Stop.');
     }
     const state = await this.store.getState(), queue = state.pendingWrites ?? [];
     const parts = pendingCompletionConflictParts(queue, operationId, state.activeCache);
@@ -2118,10 +2127,11 @@ export class TrackerService {
     const [remote, taskIndex, overlap] = await Promise.all([
       this.readRemoteActive(), this.readTaskIndex(), this.readEditOverlapFiles([corrected]),
     ]);
-    if (sameTimer(remote, corrected)) {
-      throw new TrackerConflictError('The timer is still running on GitHub. Your stopped time was kept.');
+    const sameRemote = sameTimer(remote, corrected);
+    if (reviewedRemoteSha ? !sameRemote || remote._sha !== reviewedRemoteSha : sameRemote) {
+      throw new TrackerConflictError('The active timer changed since review. Your stopped time was kept.');
     }
-    if (remote && Date.parse(corrected.endedAt) > Date.parse(remote.startedAt)) {
+    if (remote && !sameRemote && Date.parse(corrected.endedAt) > Date.parse(remote.startedAt)) {
       throw new TrackerConflictError('The edited time overlaps the current GitHub timer. Choose an End before its Start.');
     }
     if (state.activeCache && Date.parse(corrected.endedAt) > Date.parse(state.activeCache.startedAt)) {
@@ -2142,12 +2152,29 @@ export class TrackerService {
         && item.start < Date.parse(corrected.endedAt) && item.end > Date.parse(corrected.startedAt))) {
       throw new TrackerConflictError('Another queued entry overlaps this time. Your queued Stop was preserved.');
     }
-    const addition = recoveredAddition(corrected, now, queue.length);
+    let replacement = recoveredAddition(corrected, now, queue.length);
+    if (sameRemote) {
+      // Finish the existing active record atomically with its completion, rather
+      // than adding time that would overlap that same running timer.
+      const history = await this.readRecoveryHistory();
+      if (!sameTimer(history.remote, corrected) || history.remote._sha !== reviewedRemoteSha
+          || hasSavedCompletion(history.index, history.entries, corrected.id)) {
+        throw new TrackerConflictError('GitHub changed during recovery. Your stopped time was kept.');
+      }
+      assertNoCompletedOverlap(corrected, history.entries);
+      await this.assertRecoverySnapshotCurrent(history);
+      replacement = { ...structuredClone(parts.stop), operation: 'completeTimer',
+        entry: stripInternal(corrected), activeSnapshot: stripInternal(history.remote),
+        activeSha: reviewedRemoteSha, monthlyPath: monthlyRecordsPath(this.user, corrected.entryDate),
+        editedCompletion: true, requireNoOverlap: true, stage: 'verifyActive', status: 'pending',
+        activeCleared: false, preserveActive: false, retryCount: 0, lastError: '', conflictReason: '', conflictWith: null };
+      delete replacement.nextActive;
+    }
     await this.mutateState(latest => {
       assertRecoveryStateUnchanged(latest, state, 'The pending queue changed while editing. Your time was preserved.');
       const pendingWrites = structuredClone(queue);
       const recoveredStart = recoveredSwitchStart(parts.stop);
-      pendingWrites.splice(parts.index, 1, addition, ...(recoveredStart ? [recoveredStart] : []));
+      pendingWrites.splice(parts.index, 1, replacement, ...(recoveredStart ? [recoveredStart] : []));
       const local = { ...corrected, _path: monthlyRecordsPath(this.user, corrected.entryDate), _pending: true };
       const cache = latest.recentCache ?? [];
       const existing = cache.some(item => item.id === corrected.id);
@@ -2158,9 +2185,9 @@ export class TrackerService {
       };
     });
     const remaining = await this.syncPending({ canSync: async () =>
-      (await this.store.getState()).pendingWrites.some(item => item.id === addition.id
+      (await this.store.getState()).pendingWrites.some(item => item.id === replacement.id
         || parts.stop.nextActive && item.id === parts.stop.nextActive.id) });
-    return { resolved: !remaining.some(item => item.id === addition.id),
+    return { resolved: !remaining.some(item => item.id === replacement.id),
       ...(parts.stop.nextActive ? { nextTimerPending: remaining.some(item => item.id === parts.stop.nextActive.id) } : {}) };
   }
 
