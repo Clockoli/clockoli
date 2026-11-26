@@ -962,7 +962,7 @@ function applyReportResult(result, range, reportingUtc, { cached = false } = {})
     const failed = state.readStatus.filter(item => item.status === 'error');
     const conflictCount = result.conflicts?.length || 0;
     $('partial-status').hidden = !state.partial;
-    $('partial-status').textContent = !state.partial ? '' : [failed.length ? `${failed.length} time ${failed.length === 1 ? 'repository' : 'repositories'} could not be loaded.` : '', conflictCount ? `${conflictCount} conflicting ${conflictCount === 1 ? 'record was' : 'records were'} omitted.` : '', 'Exports are disabled until the report is complete.'].filter(Boolean).join(' ');
+    $('partial-status').textContent = !state.partial ? '' : [failed.length ? `${failed.length} time ${failed.length === 1 ? 'repository' : 'repositories'} could not be loaded.` : '', conflictCount ? `${conflictCount} conflicting ${conflictCount === 1 ? 'record was' : 'records were'} omitted.` : '', result.timeOffSettingsUnavailable?.length ? 'Time off settings could not be verified. Time and billing classification may be incomplete.' : '', 'Exports are disabled until the report is complete.'].filter(Boolean).join(' ');
     state.billing = { clientRates: result.billing?.clientRates || {}, invoicing: invoicingSettings(result.billing) };
     state.projectDefinitions = result.billing?.projects || [];
     state.otherProjectName = result.billing?.otherProjectName || 'Other';

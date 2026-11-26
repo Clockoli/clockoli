@@ -29,7 +29,7 @@ import '../services/clockify-identity-mapping.js';
 import '../services/clockify-import-cleanup.js';
 import { importClockifyOrganization } from '../services/clockify-organization-import.js';
 import '../services/clockify-record-import.js';
-import { independentCompletedWrite, TrackerService } from '../services/tracker.js';
+import { cancelledTimeOffCreationIds, independentCompletedWrite, TrackerService } from '../services/tracker.js';
 import { ConfigurationService } from '../services/configuration.js';
 import { annotateDestinationRecord, loadDestinationRecords, mergeDestinationRecords, mergeDestinationTaskSummaries, ReportService, withoutInternalMetadata } from '../services/reports.js';
 import { ExchangeRateService } from '../services/exchange-rates.js';
@@ -454,7 +454,7 @@ async function loadReport(message) {
   }
   const controller = new AbortController();
   const promise = (async () => {
-    const currentUsers = {}, timeOffConfigs = {};
+    const currentUsers = {}, timeOffConfigs = {}, timeOffSettingsUnavailable = [];
     const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
       loadCoordinator.assertCurrent(loadEpoch);
       currentUsers[destination.id] = await destinationUser(destination, auth);
@@ -467,7 +467,12 @@ async function loadReport(message) {
         reports.loadRepositoryRange(message.payload || {}, {
           defaultBranch: destination.defaultBranch || branch, signal, includeStorageMetadata: true,
         }),
-        timeOffSettingsForDestination(destination.id, { fresh: true, signal }),
+        timeOffSettingsForDestination(destination.id, { fresh: true, signal }).catch(async error => {
+          signal?.throwIfAborted();
+          if (error?.name === 'AbortError') throw error;
+          timeOffSettingsUnavailable.push(destination.id);
+          return timeOffSettingsForDestination(destination.id).catch(() => ({ config: normalizeTimeOffConfig() }));
+        }),
       ]);
       timeOffConfigs[destination.id] = settings.config;
       return records;
@@ -486,7 +491,9 @@ async function loadReport(message) {
       sourceRepositories: destinations.map(destination => destination.label),
       currentUsers, currentUser: users[0] || '',
       ...loaded,
-      pendingWrites, pendingCount: pendingWrites.length, partial: loaded.partial || pendingWrites.length > 0,
+      pendingWrites, pendingCount: pendingWrites.length,
+      timeOffSettingsUnavailable,
+      partial: loaded.partial || pendingWrites.length > 0 || timeOffSettingsUnavailable.length > 0,
       records: classifyTimeOffRecords(loaded.records.map(withoutInternalMetadata), timeOffConfigs),
       billing: await store.getLocalPreferences(),
     };
@@ -557,26 +564,51 @@ async function loadMyTimeOff(message, sender, extensionOrigin) {
   const snapshot = await configuredSnapshot({ localOnly: true });
   const destinations = selectReadDestinations(snapshot);
   if (!snapshot.auth || !destinations.length) return { configured: false, entries: [], repositories: [] };
-  const configs = {}, currentUsers = {};
+  const configs = {}, currentUsers = {}, cachedDestinations = new Set(), personalDestinations = new Set();
+  const loadEpoch = await loadCoordinator.beginLoad();
+  loadCoordinator.assertCurrent(loadEpoch);
   const loaded = await loadDestinationRecords(destinations, async (destination, signal) => {
     const user = await destinationUser(destination, snapshot.auth);
     if (!user) throw new Error('Tracking identity is unavailable.');
     currentUsers[destination.id] = user;
-    const reports = new ReportService({ github: githubForConfig(destination), cache: store });
-    const settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
-    configs[destination.id] = settings.config;
-    if (!settings.config.taskUrls.length) return [];
-    const records = await reports.loadUserRange(range, user, {
-      includeStorageMetadata: true, signal,
-    }, { maxFiles: 240, maxBytes: 100 * 1024 * 1024, maxRecords: 500_000 });
     const tracker = await trackerForDestination(destination.id, { localOnly: true });
-    // The personal PTO view has already loaded work and PTO records; reuse
-    // them as local occupancy hints for automatic start-time placement.
-    await tracker.rememberTimeOffOccupancy?.(records);
-    return (await tracker.projectActivityRecords(records, range)).records;
+    const revision = await tracker.getTimeOffRevision();
+    let settings;
+    try {
+      settings = await timeOffSettingsForDestination(destination.id, { fresh: true, signal });
+      configs[destination.id] = settings.config;
+      const reports = new ReportService({ github: githubForConfig(destination), cache: store,
+        cacheGeneration: snapshot.generation });
+      const records = settings.config.taskUrls.length ? await reports.loadUserRange(range, user, {
+        includeStorageMetadata: true, signal,
+      }, { maxFiles: 240, maxBytes: 100 * 1024 * 1024, maxRecords: 500_000 }) : [];
+      loadCoordinator.assertCurrent(loadEpoch);
+      if (await tracker.rememberTimeOffOccupancy(records, {
+        taskUrls: settings.config.taskUrls, expectedRevision: revision,
+      })) {
+        personalDestinations.add(destination.id);
+        return (await tracker.getLocalTimeOffRecords(settings.config.taskUrls)).records;
+      }
+      // A newer remote commit or refresh superseded this read. Use the
+      // newer local projection instead of resurrecting the old history.
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error?.name === 'AbortError') throw error;
+      loadCoordinator.assertCurrent(loadEpoch);
+      settings ??= await timeOffSettingsForDestination(destination.id);
+      configs[destination.id] = settings.config;
+    }
+    const local = await tracker.getLocalTimeOffRecords(settings.config.taskUrls);
+    cachedDestinations.add(destination.id);
+    if (local.complete) personalDestinations.add(destination.id);
+    return local.records;
   });
+  loadCoordinator.assertCurrent(loadEpoch);
   return {
-    configured: true, partial: loaded.partial, readStatus: loaded.readStatus, currentUsers,
+    configured: true, partial: loaded.partial || cachedDestinations.size > 0,
+    readStatus: loaded.readStatus.map(item => cachedDestinations.has(item.destinationId)
+      ? { ...item, status: 'cached' } : item),
+    personalDestinations: [...personalDestinations], currentUsers,
     repositories: destinations.map(destination => ({
       id: destination.id, label: destination.label || (destination.owner + '/' + destination.repo),
       taskUrls: configs[destination.id]?.taskUrls ?? [],
@@ -1883,8 +1915,25 @@ async function handle(message, sender) {
           throw new Error('Select a time off task configured for this repository in Settings.');
         }
       }
+      const settings = await timeOffSettingsForDestination(destinationId);
       const tracker = await trackerForDestination(destinationId, { localOnly: true });
-      const result = await tracker.queueTimeOffChange(input);
+      // All local accepts share acceptanceExecutor, including requests
+      // from different tabs. Check the latest projection, not a page snapshot.
+      if (!input.previous.length && input.days.length) {
+        const dates = new Set(input.days.map(day => day.date));
+        const snapshot = await configuredSnapshot({ localOnly: true });
+        for (const destination of selectReadDestinations(snapshot)) {
+          if (destination.id === destinationId) continue;
+          const otherSettings = await timeOffSettingsForDestination(destination.id);
+          if (!otherSettings.config.taskUrls.length) continue;
+          const other = await trackerForDestination(destination.id, { localOnly: true });
+          const local = await other.getLocalTimeOffRecords(otherSettings.config.taskUrls);
+          if (local.records.some(entry => dates.has(entry.entryDate))) {
+            throw new Error('You already have time off on a selected day.');
+          }
+        }
+      }
+      const result = await tracker.queueTimeOffChange(input, { taskUrls: settings.config.taskUrls });
       if (result.pending) requestPendingSync();
       return { ...result, destinationId };
     }
@@ -2404,6 +2453,7 @@ function hasRunnablePending(queue) {
   if (!first) return false;
   if (first.stage === 'awaitSourceCompletion') return true;
   if (first.status !== 'conflict') return true;
+  if (queue.some((_, index) => cancelledTimeOffCreationIds(queue, index).length)) return true;
   const operation = first.operation ?? first.stage;
   const retryableConflict = !String(first.conflictReason || '').startsWith('queued_write_');
   if (retryableConflict && ((first.stage === 'startNext' && first.nextActive)
@@ -2428,7 +2478,7 @@ async function refreshTaskSearchAfterSync({ retry = false } = {}) {
   try {
     const revision = await store.getTaskSearchRevision?.();
     const before = await store.getTrackingSnapshot();
-    const completed = new Set(['completeTimer', 'completeTimerAndStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry']);
+    const completed = new Set(['completeTimer', 'completeTimerAndStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry', 'timeOffChange']);
     const hasCompletedPending = snapshot => Object.values(snapshot.destinationStates?.entries ?? {})
       .some(entry => (entry.pendingWrites ?? []).some(write => completed.has(write.operation)));
     if (retry && (hasCompletedPending(before) || directCompletedWrites)) {
@@ -2468,7 +2518,7 @@ function syncPendingNow() {
     const before = await store.getTrackingSnapshot();
     const pendingIds = snapshot => Object.entries(snapshot.destinationStates?.entries ?? {})
       .flatMap(([id, entry]) => (entry.pendingWrites ?? []).map((write, index) => `${id}:${write.id ?? index}`));
-    const completedWrites = new Set(['completeTimer', 'completeTimerAndStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry']);
+    const completedWrites = new Set(['completeTimer', 'completeTimerAndStart', 'addTime', 'bulkAddTimes', 'editEntry', 'editEntries', 'deleteEntry', 'timeOffChange']);
     const beforeCompletedIds = Object.entries(before.destinationStates?.entries ?? {})
       .flatMap(([id, entry]) => (entry.pendingWrites ?? [])
         .map((write, index) => completedWrites.has(write.operation) ? `${id}:${write.id ?? index}` : null).filter(Boolean));

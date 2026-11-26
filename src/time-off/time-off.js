@@ -453,11 +453,11 @@ async function loadMine({ quiet = false } = {}) {
     state.entries = result.entries || [];
     state.repositories = result.repositories || [];
     state.currentUsers = result.currentUsers || {};
-    state.myLoadedDestinations = new Set((result.readStatus || [])
+    state.myLoadedDestinations = new Set(result.personalDestinations ?? (result.readStatus || [])
       .filter(item => item.status === 'ok').map(item => item.destinationId));
     renderRepositories(); renderMy(); renderYear(); renderInspector();
     if (changedIdentity) void loadTeam({ refresh: true });
-    if (result.partial) notice('Some time repositories could not be read. The calendar may be incomplete.');
+    if (result.partial) notice('Showing available local time off. Some GitHub data may be incomplete.');
     else if (!availableRepositories().length) notice('Configure a Time off task in Settings → Time repositories to get started.');
     else if (!quiet) notice('');
   } catch (error) {
@@ -620,13 +620,16 @@ async function saveForm(event) {
       taskTitle: taskName(taskUrl), description: $('edit-description').value.trim(),
       groupId: null, timezone: null, previous: [], days,
     });
+    // A read that started before this acceptance cannot replace it.
+    ++state.mineRequestId;
+    const ids = new Set((result.entries || []).map(entry => entry.id));
+    state.entries = state.entries.filter(entry => entry.destinationId !== result.destinationId || !ids.has(entry.id));
     state.entries.push(...(result.entries || []).map(entry => ({
       ...entry, isTimeOff: true, isPlannedTimeOff: Date.parse(entry.endedAt) > Date.now(),
       destinationId: result.destinationId,
       timeRepository: repositoryOf(result.destinationId)?.label || '',
       user: state.currentUsers[result.destinationId] || '',
     })));
-    state.myLoadedDestinations.add(result.destinationId);
     selectedDates.clear();
     selectionAnchor = null;
     pinDayUntilLeave = false;
@@ -707,11 +710,11 @@ async function confirmCancel() {
         ...(many ? { bulkDayDeletion: true } : { singleDayDeletion: true }),
         previous: records.map(entry => originalForDeletion(entry, many)), days: [],
       });
+      ++state.mineRequestId;
       completed += records.length;
       const ids = new Set(records.map(entry => entry.id));
       state.entries = state.entries.filter(entry =>
         entry.destinationId !== destinationId || !ids.has(entry.id));
-      state.myLoadedDestinations.add(destinationId);
       if (batch) state.cancelEntries = state.cancelEntries.filter(entry =>
         entry.destinationId !== destinationId || !ids.has(entry.id));
     }
