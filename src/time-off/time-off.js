@@ -636,7 +636,11 @@ async function saveForm(event) {
     // The local queue response already contains the optimistic change; do not
     // re-read GitHub simply because a user added or deleted PTO.
   } catch (error) { setFormError(error.message || 'Could not add time off.'); }
-  finally { state.formBusy = false; updateAddButton(); }
+  finally {
+    state.formBusy = false;
+    $('save-time-off').disabled = false;
+    updateAddButton();
+  }
 }
 function openDeleteEntry(entry) {
   if (!isOwnEntry(entry) || state.deletionBusy) return;
