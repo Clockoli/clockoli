@@ -32,7 +32,17 @@ The panel shows measured turn time, included and observed turn counts, median du
 
 Turns with measured or observed lifecycle duration over 60 minutes are listed separately and excluded from the index. Open, unknown and estimated durations are not included. A provider-reported duration may have no verified start/end interval; the panel identifies such observations. The panel warns when collection is incomplete, paused, or needs access.
 
-This is a description of the observed AI interaction rhythm, not continuous AI computation, a guarantee of uninterrupted focus, or proof of human waiting. Parallel turn durations may overlap. Agent observations are local and are not attributed to specific tasks, added to the human timer, sent to GitHub, or used in invoices.
+This is a description of the observed AI interaction rhythm, not continuous AI computation, a guarantee of uninterrupted focus, or proof of human waiting. Parallel turn durations may overlap. Agent observations are local and are not added to the human timer, sent to GitHub, or used in invoices. The experimental task-matching diagnostic below shows tentative local attribution without saving it.
+
+### AI Task Matching (debug)
+
+Choose a local calendar day and select **Analyze day**. The diagnostic reads the actual task intervals (including a running timer, when present) and re-reads available Codex journals that contain observed turns starting on that day, or ending on that day if their start is missing. It shows a per-task duration distribution and a turn-by-turn decision log with repository, extracted issue numbers, explicit GitHub task URLs from directly attributed user messages, working-directory agreement, and every candidate's overlap and containment.
+
+Rules version 1 matches a single strong identity (exact task URL, or matching repository and issue number from a branch with agreeing working-directory context) only within one tracked interval. Time overlap alone and repository alone are insufficient. Contradictory evidence, incomplete task history, missing/changed source evidence, unverified intervals and turns over 60 minutes remain unassigned. Branch naming and referenced URLs are heuristic, not ground truth. Claude observations remain unassigned until its matching evidence is supported.
+
+**Download debug JSON** saves the displayed diagnostics locally. The file contains private task titles and URLs, repository coordinates, issue numbers, times and pseudonymous turn identifiers. It does not include raw prompts, source paths, branch strings, credentials, commands or tool outputs. Share it only with people authorized to see those task details.
+
+This is an explicit, bounded, read-only experiment, not a continuous matching engine: at most 300 observed turns and 100 task candidates per day, 16 MiB per journal and 64 MiB total source reads. Missing journals, partial reads and exceeded limits are reported rather than guessed. It neither reindexes nor writes matching results to GitHub, IndexedDB, or tracked-time records. Re-analyze after changing task intervals or collecting new turns.
 
 ## Timeline and Calendar
 
