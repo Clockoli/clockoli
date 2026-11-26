@@ -34,6 +34,10 @@ function render(data) {
   panel.hidden = connected.length === 0;
   matchingPanel.hidden = panel.hidden;
   if (panel.hidden) clearMatching();
+  if (!data.providers.codex?.connected || data.providers.codex.paused || data.providers.codex.permission !== 'granted') {
+    semanticCache.clear();
+    if (prepared) clearSemantic();
+  }
   if (panel.hidden) { results.hidden = true; return; }
   const selected = connected.filter(([name]) => provider.value === 'all' || provider.value === name);
   if (!selected.length) {
@@ -262,6 +266,10 @@ function clearSemantic() {
   semanticStatus.textContent='';
 }
 function syncSemantic() {
+  semanticProvider.disabled=semanticRunning;
+  semanticModel.disabled=semanticRunning;
+  semanticKey.disabled=semanticRunning;
+  semanticConsent.disabled=semanticRunning;
   semanticRun.disabled=semanticRunning||!prepared?.preview?.batches?.length||!semanticConsent.checked||
     !semanticKey.value.trim()||!/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$/.test(semanticModel.value.trim());
 }
@@ -311,7 +319,9 @@ semanticRun.addEventListener('click',async()=>{
       if(generation!==semanticGeneration)break;
       semanticStatus.textContent='Classifying batch '+(index+1)+' / '+data.preview.batches.length+'…';
       // Session-page cache; exact model + exact preview; no persistent text or keys.
-      const cacheKey=JSON.stringify([p,model,data.preview.rootId,batch.payload]);
+      const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([p,model,data.preview.rootId,batch.payload])));
+      if(generation!==semanticGeneration)break;
+      const cacheKey=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
       try{
         let result=semanticCache.get(cacheKey);
         const cached=Boolean(result);
@@ -326,7 +336,8 @@ semanticRun.addEventListener('click',async()=>{
         for(const d of result.decisions){
           const i=batch.payload.turns.findIndex(t=>t.id===d.turn_id);
           const j=batch.payload.tasks.findIndex(t=>t.id===d.task_id);
-          if(i>=0)decisions.set(batch.turnIds[i],{...d,url:j>=0?batch.taskUrls[j]:null,cached});
+          const modelIndex=batch.payload.tasks.findIndex(t=>t.id===d.model_task_id);
+          if(i>=0)decisions.set(batch.turnIds[i],{...d,url:j>=0?batch.taskUrls[j]:null,modelUrl:modelIndex>=0?batch.taskUrls[modelIndex]:null,cached});
         }
         node('p','Batch '+(index+1)+(cached?' · cached':' · '+(result.usage.inputTokens??'—')+' input / '+(result.usage.outputTokens??'—')+' output tokens')+
           (result.usage.cost===null?'':' · provider cost '+result.usage.cost+' USD'),semanticResults);
@@ -345,7 +356,7 @@ semanticRun.addEventListener('click',async()=>{
       const task=data.tasks.find(t=>t.url===d?.url);
       node('summary',localTime(row.startedAt??row.endedAt)+' · '+(task?.title??(d?'Unassigned':'Not analyzed'))+' · '+time(row.elapsedMs),detail);
       node('p','Rule v1: '+row.reason+' · '+(row.matchedUrl||'Unassigned'),detail);
-      node('p','Model: '+(d?d.reason+' · '+d.confidence+' · '+d.explanation:'No model decision'),detail);
+      node('p','Model: '+(d?d.reason+' · '+d.confidence+' · '+(d.modelUrl||'null')+' · '+d.explanation:'No model decision'),detail);
       node('p','Turn ID: '+row.turnId,detail);
     }
     // Normal debug download contains no prompts, model explanations or raw
@@ -353,7 +364,7 @@ semanticRun.addEventListener('click',async()=>{
     const {preview,...safeData}=data;
     matchingData={date:matchingDate.value,thresholdMinutes:Number(matchingThreshold.value),...safeData,
       tasks:safeData.tasks.map(({description,...task})=>task),
-      semantic:{provider:p,model,usage,failures,decisions:[...decisions].map(([turnId,{url,reason,confidence,cached}])=>({turnId,url,reason,confidence,cached}))}};
+      semantic:{provider:p,model,usage,failures,decisions:[...decisions].map(([turnId,{url,modelUrl,reason,confidence,cached}])=>({turnId,url,modelUrl,reason,confidence,cached}))}};
     matchingExport.disabled=false;
     semanticStatus.textContent=decisions.size+' analyzed · '+[...decisions.values()].filter(d=>d.url).length+' proposed matches · '+usage.input+' input / '+usage.output+' output tokens this run'+(usage.unknown?' (some usage unavailable)':'')+(failures.length?' · stopped on error':'');
   }finally{apiKey='';semanticRunning=false;semanticPrepare.disabled=false;syncSemantic();}

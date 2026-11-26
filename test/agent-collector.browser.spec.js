@@ -313,8 +313,11 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
       const result = await collector.getAgentMatchingDiagnostics([
         { taskUrl, taskTitle: 'Hybrid search', startedAt: '2026-11-25T11:00:00Z', endedAt: '2026-11-25T13:00:00Z' },
       ], start - 3600000, start + 3600000);
+      const preview = await collector.getAgentMatchingDiagnostics([
+        { taskUrl, taskTitle: 'Hybrid search', startedAt: '2026-11-25T11:00:00Z', endedAt: '2026-11-25T13:00:00Z' },
+      ], start - 3600000, start + 3600000, {semantic:true,loadDescription:async()=> 'Hybrid retrieval'});
       const after = await store.getAgentProjection('codex', 1);
-      return { scanOk: scan.ok, result, beforeRevision: before.revision, afterRevision: after.revision };
+      return { scanOk: scan.ok, result, preview, beforeRevision: before.revision, afterRevision: after.revision };
     });
     expect(outcome.scanOk).toBe(true);
     expect(outcome.result.totalTurns).toBe(3);
@@ -322,6 +325,11 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
       'time_only', 'repository_branch_and_containment', 'repository_branch_and_containment',
     ]);
     expect(outcome.result.tasks[0].summary).toMatchObject({ totalTurns: 2, eligibleMs: 6000, shortSharePct: 100 });
+    expect(outcome.preview.preview.batches).toHaveLength(3);
+    expect(outcome.preview.preview.batches.flatMap(b=>b.payload.turns).every(t=>t.messages.length===1)).toBe(true);
+    expect(outcome.preview.preview.batches[0].payload.tasks[0].description).toBe('Hybrid retrieval');
+    expect(JSON.stringify(outcome.preview.preview.batches)).not.toContain('PRIVATE_CWD');
+    expect(JSON.stringify(outcome.preview.preview.batches)).not.toContain('realistic-turn-');
     expect(outcome.beforeRevision).toBe(outcome.afterRevision);
     expect(JSON.stringify(outcome.result)).not.toContain('PRIVATE_CWD');
     expect(JSON.stringify(outcome.result)).not.toContain('PRIVATE_PROMPT');
@@ -334,6 +342,11 @@ test('daily matching re-reads only observed journals and exposes per-task decisi
     await expect(browser.page.locator('#agent-matching-status')).toContainText('Task history incomplete');
     await expect(browser.page.locator('#agent-matching-export')).toBeEnabled();
     await expect(browser.page.locator('#agent-matching-results')).toContainText('Unassigned');
+    await browser.page.locator('#semantic-matching-controls summary').click();
+    await browser.page.locator('#semantic-prepare').click();
+    await expect(browser.page.locator('#semantic-status')).toContainText('0 request(s) prepared');
+    await expect(browser.page.locator('#semantic-run')).toBeDisabled();
+    expect(await browser.page.locator('#semantic-provider option').count()).toBe(3);
   } finally {
     await browser?.context.close().catch(() => {});
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

@@ -10,7 +10,7 @@ import { isUrlTaskIdentity, normalizeTaskUrl, parseGitHubProjectPaneIssueUrl, ta
 import { aggregateTaskParticipants, aggregateTrackedTasks } from '../domain/tasks.js';
 import { ChromeStore } from '../storage/chrome-store.js';
 import { IndexedDbBackend } from '../storage/chrome-store.js';
-import { classifySemantic, validateSemanticRequest } from '../agents/semantic-matching.js';
+import { classifySemantic } from '../agents/semantic-matching.js';
 import { githubTask } from '../agents/task-matching.js';
 import { getAgentRootState, resetAgentActivity } from '../storage/agent-activity-store.js';
 import { AGENT_ALARM, controlAgentCollector, ensureAgentAlarm, getAgentCollectorStatus, getAgentMatchingDiagnostics, scanAgentActivity } from '../agents/collector.js';
@@ -43,7 +43,7 @@ import { OnboardingCoordinator } from '../services/onboarding-coordinator.js';
 import { RepositoryInvitationService } from '../services/repository-invitations.js';
 import { withRepositoryRecovery } from '../services/repository-operation-recovery.js';
 import { discoverUserStorageBranches, verifyRestoredStorageBranch } from '../services/user-storage-branch.js';
-import { addTimeForSender, agentCollectorRequest, agentMatchingRequest, agentWorkflowRequest, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
+import { addTimeForSender, agentCollectorRequest, agentMatchingRequest, agentSemanticRequest, agentWorkflowRequest, assertMessageAllowed, cachedViewRequest, dayRangeForSender, destinationIdForCompletedMutation, entryTaskSearchForSender, optionalBillable, requestedStartDestinationId, taskUrlForParticipantLoad, taskUrlForStart, taskUrlForTimelineSwitch, weekRangeForSender } from './message-policy.js';
 import { activeDestinationId, requireConfiguredDestinationId, resolveStartDestinationId, selectReadDestinations, syncPendingAll } from './destination-runtime.js';
 import { emitClockifyMigrationProgress, isClockifyProgressRequestId, registerClockifyMigrationProgressPort } from './clockify-migration-progress.js';
 import { SerialExecutor } from './serial-executor.js';
@@ -1129,8 +1129,7 @@ async function handle(message, sender) {
   assertMessageAllowed(message.type, sender, extensionOrigin);
   if (globalThis.clockoliLocalDataTransitioning) throw new Error('Clockoli is reloading after a local data change.');
   if (message.type === 'AGENT_SEMANTIC_CLASSIFY') {
-    if (sender?.url !== extensionOrigin + 'src/times/times.html') throw new Error('Only Activity can classify agent turns');
-    const request = validateSemanticRequest(message);
+    const request = agentSemanticRequest(message, sender, extensionOrigin);
     const root = await getAgentRootState('codex');
     if (!root || root.paused || root.rootId !== request.rootId ||
         await root.handle.queryPermission({mode:'read'}) !== 'granted') throw new Error('Agent source access changed; prepare again');

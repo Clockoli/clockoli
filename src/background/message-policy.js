@@ -1,3 +1,4 @@
+import { validateSemanticRequest } from '../agents/semantic-matching.js';
 import { normalizeIssue, normalizeStoredTaskIdentity, normalizeTaskUrl, parseGitHubProjectPaneIssueUrl, parseIssueUrl, validateEntryId, validatePathSegment } from '../domain/values.js';
 
 const CONTENT_MESSAGES = new Set([
@@ -63,6 +64,12 @@ export function assertMessageAllowed(type, sender, extensionOrigin) {
   return context.kind;
 }
 
+export function agentSemanticRequest(message, sender, extensionOrigin) {
+  if (message?.type !== 'AGENT_SEMANTIC_CLASSIFY'
+      || assertMessageAllowed(message.type, sender, extensionOrigin) !== 'extension'
+      || sender?.url !== extensionOrigin + 'src/times/times.html') throw new Error('Only Activity can classify agent turns');
+  return validateSemanticRequest(message);
+}
 export function agentMatchingRequest(message, sender, extensionOrigin) {
   if (!['AGENT_MATCHING_DIAGNOSTICS', 'AGENT_SEMANTIC_PREVIEW'].includes(message?.type)
       || assertMessageAllowed(message.type, sender, extensionOrigin) !== 'extension'

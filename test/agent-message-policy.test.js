@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { agentCollectorRequest, agentMatchingRequest, agentWorkflowRequest, assertMessageAllowed } from '../src/background/message-policy.js';
+import { agentCollectorRequest, agentMatchingRequest, agentSemanticRequest, agentWorkflowRequest, assertMessageAllowed } from '../src/background/message-policy.js';
 const origin = 'chrome-extension://collector-test/';
 const settings = { url: `${origin}src/options/options.html` };
 const activity = { url: `${origin}src/times/times.html` };
@@ -57,4 +57,17 @@ test('matching diagnostic is Activity-only with an exact date and threshold', ()
     assert.throws(() => agentMatchingRequest(bad, activity, origin));
   }
   assert.throws(() => assertMessageAllowed('AGENT_MATCHING_DIAGNOSTICS', content, origin));
+});
+
+test('semantic preview and classification are Activity-only; no caller-specified URL', () => {
+  const preview={type:'AGENT_SEMANTIC_PREVIEW',date:'2026-11-25',thresholdMinutes:15};
+  assert.equal(agentMatchingRequest(preview,activity,origin).date,preview.date);
+  assert.throws(()=>agentMatchingRequest(preview,content,origin));
+  const request={type:'AGENT_SEMANTIC_CLASSIFY',provider:'openrouter',model:'test-model',apiKey:'fixture-only-key',
+    rootId:'test-root',confirmed:true,payload:{tasks:[{id:'c1',title:'Test',description:null}],
+    turns:[{id:'t1',repository:null,branchIssueNumbers:[],messages:[{text:'test',kind:'direct_event',truncated:false}],previousContext:[],candidates:['c1']}]}};
+  assert.equal(agentSemanticRequest(request,activity,origin).provider,'openrouter');
+  for(const sender of [settings,content,{url:origin+'src/times/times.html/extra'}])assert.throws(()=>agentSemanticRequest(request,sender,origin));
+  assert.throws(()=>agentSemanticRequest({...request,endpoint:'https://evil.example'},activity,origin));
+  assert.throws(()=>agentSemanticRequest({...request,confirmed:false},activity,origin));
 });
