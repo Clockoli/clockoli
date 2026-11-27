@@ -2439,16 +2439,37 @@
     return actions;
   }
 
+  async function retryPendingCompletionConflict(item, data, trigger) {
+    trigger.disabled = true;
+    try {
+      const result = await send({ type: 'RETRY_PENDING_COMPLETION_CONFLICT',
+        destinationId: item.destinationId, id: item.id, activeSha: data.activeSha });
+      stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
+      syncIssueError = result?.resolved === false
+        ? 'GitHub has not confirmed the Stop yet. Your time remains saved in this browser.' : '';
+      recentLoaded = false;
+      await refreshState(true, true);
+      if (result?.resolved) void refreshRecent(true).catch(setError);
+    } catch (error) {
+      stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
+      syncIssueError = error?.message || 'Could not retry the Stop. Your time remains saved in this browser.';
+      syncIssuesSignature = null; renderSyncIssues();
+    } finally { trigger.disabled = false; }
+  }
+
   function renderPendingCompletionConflict(box, item, data) {
     if (data?.kind !== 'pending_completion' || !data.blocked) return false;
     const pair = el('div', undefined, 'sync-overlap-pair');
     if (data.remote) pair.append(queuedConflictCard('Current timer on GitHub · still running', data.remote));
     if (data.next) pair.append(queuedConflictCard('Next timer · queued in this browser', data.next));
     const pending = queuedConflictCard('Pending time · saved in this browser', data.blocked);
-    if (data.canConfirm) {
+    if (data.canRetry || data.canConfirm) {
       const actions = el('div', undefined, 'entry-actions sync-overlap-actions');
-      const confirm = button('Confirm saved time', 'primary sync-resolution-apply', () =>
-        confirmSavedCompletionConflict(item, confirm));
+      const confirm = data.canRetry
+        ? button('Retry Stop', 'primary sync-resolution-apply', () =>
+          retryPendingCompletionConflict(item, data, confirm))
+        : button('Confirm saved time', 'primary sync-resolution-apply', () =>
+          confirmSavedCompletionConflict(item, confirm));
       actions.append(confirm);
       pending.append(actions);
     } else {
@@ -2463,6 +2484,19 @@
       ? 'Resolve the stopped time first. The next timer stays queued and will be checked separately against GitHub. It will never overwrite a newer running timer automatically.'
       : 'Edit pending time to choose a free interval or task. Delete pending time only if you want to discard the locally tracked time. Clockoli checks GitHub before either action.',
       'muted'));
+    if (!data.canRetry && !data.canConfirm && !data.canEdit && !data.canDelete) {
+      pair.append(button('Recheck GitHub', 'secondary', () => {
+        stoppedOverlapDetails.delete(item.destinationId + ':' + item.id);
+        syncIssuesSignature = null; renderSyncIssues();
+      }));
+    }
+    const technical = el('details', undefined, 'sync-conflict-technical');
+    technical.append(el('summary', 'Technical details'),
+      el('p', `Operation: ${safeQueueDetail(item.operation || 'unknown')} · `
+        + `Stage: ${safeQueueDetail(item.stage || 'unknown')} · `
+        + `Reason: ${safeQueueDetail(item.conflictReason || 'not provided')}`, 'muted'));
+    if (item.lastError) technical.append(el('p', `Last sync error: ${safeQueueDetail(item.lastError)}`, 'muted'));
+    pair.append(technical);
     box.append(pair);
     return true;
   }
